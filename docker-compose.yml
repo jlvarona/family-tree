@@ -1,0 +1,39 @@
+version: "3.9"
+
+# Local development dependencies only. Production runs on RDS PostgreSQL and a
+# deployed Keycloak instance (see ARCHITECTURE.md). Both services here exercise
+# the same protocols the server talks to in production: real Postgres wire
+# protocol and a real OIDC authorization-code flow, not a bypass/stub.
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: family-tree-postgres
+    environment:
+      POSTGRES_DB: family_tree
+      POSTGRES_USER: family_tree
+      POSTGRES_PASSWORD: family_tree
+    ports:
+      - "5432:5432"
+    volumes:
+      - family-tree-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U family_tree"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    container_name: family-tree-keycloak
+    command: start-dev --import-realm
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./ops/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+
+volumes:
+  family-tree-postgres-data:
