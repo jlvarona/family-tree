@@ -3,7 +3,9 @@
 Session-by-session record of what was actually built, why, and what's still open. This
 complements [concept-architecture.md](concept-architecture.md) (product scope, data
 model, decisions, roadmap) — that document says what the product is; this one says what
-exists in the repo right now and how it got there. Newest entry first.
+exists in the repo right now and how it got there. Session entries are newest first;
+the **Backlog** and **Database design** sections below them are living references kept
+up to date in place, not logged chronologically.
 
 ---
 
@@ -197,6 +199,130 @@ the server — this was a one-time setup step, not something that needs to stay 
 paths. (Keycloak has the identical port-8081 conflict with that other project's own
 Keycloak container, but that wasn't today's ask — flagged here so it doesn't surprise
 anyone later.)
+
+---
+
+## Backlog: next steps, nice-to-haves, future enhancements
+
+Everything below is **`Proposed`** — none of it is built. Organized as epics in rough
+dependency order (an epic's stories generally need an earlier epic's stories done
+first; stories inside an epic don't necessarily need each other). IDs are stable, for
+referencing from a future commit or PR once work starts. Sources: the "Not built yet"
+and "Deliberate omissions" notes above (found while building Phase 1), and the roadmap
+in [concept-architecture.md](concept-architecture.md).
+
+| Epic | Theme | Depends on |
+| --- | --- | --- |
+| **E1** | Close out Phase 1 — Foundations | current code |
+| **E2** | Phase 2 — Branches and sharing | E1 |
+| **E3** | Phase 3 — Mobile | E2 (a real multi-user mobile app needs grants first) |
+| **E4** | Phase 4 — Billing and import | E2 |
+| **E5** | Phase 5 — Collaboration depth | E2 |
+| **E6** | Phase 6 — Delight | mostly E1; a few touch E2 |
+| **E7** | Hardening & housekeeping | none — can happen anytime |
+
+### E1 — Close out Phase 1 (Foundations)
+
+- **FT-001 Update & delete endpoints.** Person/Union/UnionChild/Event/Place/Source
+  only support create + read today. Every one of those rows already carries a
+  `version` column for exactly this — a stale write should return `409`, not silently
+  overwrite.
+- **FT-002 Citation routes.** The `citation` table and `:core`'s `CitationTarget`
+  (person/event/union) already exist; there's no `service`/`routes` layer over it yet.
+- **FT-003 Stable OIDC-subject column on `account`.** Today's `AccountRepository`
+  looks accounts up by email (flagged in its own code comment) — fragile, since a
+  person's email can change but their OIDC `sub` claim can't. Add the column, backfill,
+  switch the lookup, before this matters in production.
+- **FT-004 "Whole tree" bundle endpoint.** One call returning every person + union for
+  a tree, for a client's first paint, instead of composing it from two separate list
+  calls. `Branch.direction = WHOLE_TREE` already exists in `:core`, unused.
+- **FT-005 Web tree-view UI** (Compose for Web) — the first real client. Full-tree,
+  ancestor, descendant views per `docs/mockups/tree-view.dc.html`, calling routes that
+  already exist.
+- **FT-006 Person page UI** (Compose for Web) — story, timeline, photos, sources, per
+  `docs/mockups/person-page.dc.html`.
+- **FT-007 Duplicate-merge workflow.** `DuplicatePersonScorer` only returns a warning
+  score today (`CreatePersonResponse.possibleDuplicates`); there's no UI or API path to
+  actually merge two person records into one yet.
+- **FT-008 Photo upload** (S3 presigned URLs + a `media` table). Blocked on an AWS
+  bucket/credentials decision — not something to guess at. `person.profile_media_id`
+  and `citation.media_id` are already typed `uuid` and FK-less, so the table can land
+  later without a breaking migration.
+
+### E2 — Phase 2: Branches and sharing
+
+- **FT-010 `Grant` + `GrantScope` tables and branch resolution.** The recursive CTE
+  that turns an anchor + direction + depth + include-partners into a resolved
+  person-id set (cached, rebuilt when the graph changes) — `Branch` already exists in
+  `:core` as the shared definition; nothing resolves it against real data yet.
+- **FT-011 Invitations** (email or link) **and account-to-person linking**, which
+  derives each member's home branch automatically once linked.
+- **FT-012 Real grant-based authorization**, replacing today's binary "is there a
+  membership row at all" check with resolution against `GrantScope` — same
+  `ForbiddenException` vocabulary already in place, just a different source of truth.
+- **FT-013 Real living-person redaction.** Replace today's hardcoded "only the tree
+  owner sees living people" (the conservative stand-in described above) with "redacted
+  unless a grant covers that person."
+- **FT-014 `ChangeProposal` workflow.** Out-of-branch edits become a proposal with a
+  before/after diff, approved per field by the branch owner or the tree owner.
+- **FT-015 Maternal/paternal "side" views** (`Branch.direction = SIDE`) — ancestors of
+  an anchor plus all of their descendants, nothing on the other side.
+- **FT-016 Activity feed UI + revert**, reading `audit_log` — it already carries
+  `before_json`/`after_json` for exactly this, nothing reads them yet.
+- **FT-017 Row-level security on `tree_id`**, the defense-in-depth backstop
+  `ARCHITECTURE.md` describes, once there's a performance/operational reason to add it
+  (not required for Phase 1/2 correctness — the service layer already enforces it).
+
+### E3 — Phase 3: Mobile
+
+- **FT-020 Android Compose screens.**
+- **FT-021 iOS Compose screens.**
+- **FT-022 Offline cache** (SQLDelight) on mobile.
+- **FT-023 Camera upload**, straight into the presigned-URL flow from FT-008.
+
+### E4 — Phase 4: Billing and import
+
+- **FT-030 Stripe plans + usage limits**, opening the product to the public.
+- **FT-031 GEDCOM 7 import.**
+- **FT-032 GEDCOM 7 / PDF export.**
+
+### E5 — Phase 5: Collaboration depth
+
+- **FT-040 Comments** on a person, event, or photo.
+- **FT-041 Live presence / WebSocket-pushed updates**, so collaborators see each
+  other's edits without refreshing.
+
+### E6 — Phase 6: Delight
+
+- **FT-050 "How are we related?" relationship calculator.**
+- **FT-051 Memory prompts** — text and voice answers added to a person's bio.
+- **FT-052 Photo face-tagging suggestions.**
+- **FT-053 Birthday / anniversary reminders.**
+- **FT-054 Fan chart, hourglass chart, timeline, and map views.**
+- **FT-055 Print/PDF charts and photo books.**
+
+### E7 — Hardening & housekeeping
+
+Found while building Phase 1; not gated on any epic above, can be picked up anytime.
+
+- **FT-060 Quiet the default log level.** `logback.xml` currently defaults to `TRACE`
+  (every SQL statement, full HTTP wire traces) — fine for debugging one request, noisy
+  for everyday dev. Default to `INFO`; keep `TRACE` available as an opt-in.
+- **FT-061 Migrate `audit_log.before_json`/`after_json` from `text` to `jsonb`** once
+  something actually needs to query into them (deferred deliberately, not an oversight
+  — see "Deliberate omissions" above).
+- **FT-062 Decide which citation source types to prioritize** beyond the 7 already
+  modeled (vital records, census, church records, newspapers, family bibles, oral
+  history, other) — the one remaining "Still open" item in `concept-architecture.md`.
+- **FT-063 `GraphIntegrationTest` can't run on a Docker Desktop newer than
+  Testcontainers 1.21.0 expects** (confirmed environment/tooling gap, not a code bug —
+  see the 2026-11-13 session entry above). Bump Testcontainers once a compatible
+  release exists, or find a probe-level workaround.
+- **FT-064 This dev machine runs Postgres (5432) and Keycloak (8081) for another
+  project on the same host ports `docker-compose.yml` claims here.** Today that's
+  worked around manually (session entry 7); parameterizing the compose file's host
+  ports (or documenting a per-developer override file) would make two projects'
+  stacks coexist without a manual `CREATE ROLE`/`CREATE DATABASE` each time.
 
 ---
 
