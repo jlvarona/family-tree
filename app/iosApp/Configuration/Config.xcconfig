@@ -1,0 +1,7 @@
+TEAM_ID=
+
+PRODUCT_NAME=family-tree
+PRODUCT_BUNDLE_IDENTIFIER=com.moxietech.family_tree.family-tree$(TEAM_ID)
+
+CURRENT_PROJECT_VERSION=1
+MARKETING_VERSION=1.0
