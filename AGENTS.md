@@ -7,6 +7,7 @@ Instructions for AI coding agents (Claude Code, Codex, Junie, etc.) working in t
 1. [ARCHITECTURE.md](ARCHITECTURE.md) — modules, core concepts, permission rules.
 2. [docs/concept-architecture.md](docs/concept-architecture.md) — product scope, data model, decisions log, roadmap.
 3. [docs/mockups/](docs/mockups/) — desktop tree view and person page (layout reference; they render only on the design canvas).
+4. [docs/delivery-log.md](docs/delivery-log.md) — what's actually been built so far, session by session, and the current DB design. Add an entry here at the end of a session that changes what's built; don't let it drift from the code.
 
 ## Project status
 
