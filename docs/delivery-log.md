@@ -205,8 +205,8 @@ erDiagram
         timestamptz created_at
     }
     MEMBERSHIP {
-        uuid tree_id PK FK
-        uuid account_id PK FK
+        uuid tree_id PK
+        uuid account_id PK
         uuid person_id FK
         text status
     }
@@ -243,8 +243,8 @@ erDiagram
         bigint version
     }
     UNION_CHILD {
-        uuid union_id PK FK
-        uuid child_id PK FK
+        uuid union_id PK
+        uuid child_id PK
         text relation
     }
     EVENT {
@@ -288,7 +288,7 @@ erDiagram
     }
 
     ACCOUNT ||--o{ TREE : owns
-    ACCOUNT ||--o{ MEMBERSHIP : "belongs via"
+    ACCOUNT ||--o{ MEMBERSHIP : grants
     TREE ||--o{ MEMBERSHIP : has
     TREE ||--o{ PERSON : contains
     TREE ||--o{ PLACE : contains
@@ -296,16 +296,16 @@ erDiagram
     TREE ||--o{ EVENT : contains
     TREE ||--o{ SOURCE : contains
     TREE ||--o{ AUDIT_LOG : logs
-    PERSON ||--o{ MEMBERSHIP : "is linked member's"
-    PERSON ||--o{ UNION_RECORD : "partner1/partner2"
+    PERSON ||--o{ MEMBERSHIP : links_to
+    PERSON ||--o{ UNION_RECORD : partners_in
     UNION_RECORD ||--o{ UNION_CHILD : has
-    PERSON ||--o{ UNION_CHILD : "is child in"
-    PERSON ||--o{ EVENT : "subject of"
-    UNION_RECORD ||--o{ EVENT : "subject of"
-    PLACE ||--o{ EVENT : "located at"
-    SOURCE ||--o{ CITATION : cited
+    PERSON ||--o{ UNION_CHILD : child_in
+    PERSON ||--o{ EVENT : subject_of
+    UNION_RECORD ||--o{ EVENT : subject_of
+    PLACE ||--o{ EVENT : located_at
+    SOURCE ||--o{ CITATION : cited_by
     ACCOUNT ||--o{ PERSON : created_by
-    ACCOUNT ||--o{ AUDIT_LOG : "acted as"
+    ACCOUNT ||--o{ AUDIT_LOG : acted_as
 ```
 
 ### Table reference
