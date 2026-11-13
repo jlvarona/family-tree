@@ -1,50 +1,175 @@
-This is a Kotlin Multiplatform project targeting Android, iOS, Web, Desktop (JVM), Server.
+# Family Tree
 
-* [/app/iosApp](./app/iosApp/iosApp) contains an iOS application. Even if you’re sharing your UI with Compose
-  Multiplatform, you need this entry point for your iOS app. This is also where you should add SwiftUI code for your
-  project.
+A multi-tenant family-tree SaaS: a family builds one private, shared tree — people,
+photos, life stories, source citations — and invites relatives to view or edit only the
+branches they belong to. "Any person can be the focal point" (ancestors, descendants,
+maternal/paternal side, re-centre on anyone) and "stories first" (a rich bio, a life
+timeline, a photo gallery, not just names and dates) are the two things meant to set
+this apart from a plain genealogy chart tool.
 
-* [/app/shared](./app/shared/src) is for code that will be shared across your Compose Multiplatform applications. It
-  contains several subfolders:
-    - [commonMain](./app/shared/src/commonMain/kotlin) is for code that’s common for all targets.
-    - Other folders are for Kotlin code that will be compiled for only the platform indicated in the folder name. For
-      example, if you want to use Apple’s CoreCrypto for the iOS part of your Kotlin app,
-      the [iosMain](./app/shared/src/iosMain/kotlin) folder would be the right place for such calls. Similarly, if you
-      want to edit the Desktop (JVM) specific part, the [jvmMain](./app/shared/src/jvmMain/kotlin)
-      folder is the appropriate location.
+Kotlin Multiplatform end to end: one `:core` module of domain rules, validation and DTOs
+shared by the Ktor server and every Compose Multiplatform client (Android, iOS, desktop,
+web). See [ARCHITECTURE.md](ARCHITECTURE.md) for the module map and core concepts,
+[docs/concept-architecture.md](docs/concept-architecture.md) for full product scope and
+the decisions log, and [docs/delivery-log.md](docs/delivery-log.md) for what's actually
+been built so far and the current database design.
 
-* [/core](./core/src) is for the code that will be shared between all targets in the project. The most important
-  subfolder is [commonMain](./core/src/commonMain/kotlin). If preferred, you can add code to the platform-specific
-  folders here too.
+**Status:** Phase 1 ("Foundations") is underway — accounts, trees, people, unions,
+events, sources and the ancestor/descendant graph queries exist behind a real Postgres +
+Keycloak backend. No Compose client screens yet; see the delivery log for the exact
+cut line.
 
-* [/server](./server/src/main/kotlin) is for the Ktor server application.
+## Repository layout
 
-### Running the apps
+| Module | What it is |
+| --- | --- |
+| [`core/`](./core/src) | Domain types, DTOs, validation, date parsing, name formatting — pure Kotlin, no I/O, shared by every target. Start in [`commonMain`](./core/src/commonMain/kotlin). |
+| [`server/`](./server/src/main/kotlin) | The Ktor server: routing, Postgres persistence (Exposed + Flyway), Keycloak OIDC auth. |
+| [`app/shared/`](./app/shared/src) | Compose Multiplatform UI, view models, API client — shared by Android/iOS/desktop/web. [`commonMain`](./app/shared/src/commonMain/kotlin) first; platform folders (`androidMain`, `iosMain`, `jvmMain`, `wasmJsMain`) only for `expect`/`actual` code. |
+| [`app/androidApp/`](./app/androidApp), [`app/desktopApp/`](./app/desktopApp), [`app/webApp/`](./app/webApp), [`app/iosApp/`](./app/iosApp) | Thin per-platform entry points. |
+| [`docs/`](./docs) | Product concept, decisions log, delivery log, desktop mockups. |
+| [`ops/keycloak/`](./ops/keycloak) | The seeded Keycloak realm used by local dev. |
 
-Use the run configurations provided by the run widget in your IDE's toolbar. You can also use these commands and
-options:
+## Prerequisites
 
-- Android app: `./gradlew :app:androidApp:assembleDebug`
-- Desktop app:
+- **JDK 21** — Gradle's toolchain auto-provisions it (via `gradle/gradle-daemon-jvm.properties`); you don't need to install it yourself.
+- **Docker Desktop** — runs the local Postgres and Keycloak used by the server and its tests.
+- **Android Studio** (only for the Android app) and an Android SDK; point `local.properties` (git-ignored) at it.
+- **Xcode on macOS** (only for the iOS app).
+- On Windows, use `gradlew.bat`, or `./gradlew` from Git Bash — all commands below are written for Git Bash/macOS/Linux shells.
+
+## Building
+
+```bash
+# One module at a time is faster while iterating (first run is slow; build/config cache speeds up the rest):
+./gradlew :core:jvmTest          # :core compiles for every target as a side effect of this
+./gradlew :server:compileKotlin
+
+# The full cross-target build (compiles Android/iOS/JS/Wasm too — needs the Android SDK and, for iOS targets, macOS):
+./gradlew build
+```
+
+## Setting up the database (and Keycloak)
+
+Local dev runs a real Postgres and a real Keycloak via `docker-compose.yml` — never a
+bypass login or an in-memory stand-in, so dev exercises the same code paths as
+production.
+
+```bash
+# Start Postgres 16 + Keycloak 26 in the background
+docker compose up -d postgres keycloak
+
+# Check they're healthy / see what they're doing
+docker compose ps
+docker logs -f family-tree-postgres
+docker logs -f family-tree-keycloak
+
+# Tear down (add -v to also wipe the Postgres volume for a totally clean slate)
+docker compose down
+docker compose down -v
+```
+
+There is no separate "run migrations" command — the server runs every pending Flyway
+migration from [`server/src/main/resources/db/migration`](./server/src/main/resources/db/migration)
+automatically on startup (`DatabaseConfig.migrate(...)` in `Application.kt`), against
+whatever Postgres `DB_URL`/`DB_USER`/`DB_PASSWORD` point at (see below). It's safe to
+restart the server repeatedly — already-applied migrations are a no-op. **Never edit an
+applied migration file** — add a new `V<n>__description.sql` instead.
+
+Keycloak comes up with a seeded `family-tree` realm
+([`ops/keycloak/realm-export.json`](./ops/keycloak/realm-export.json)):
+
+- Admin console: http://localhost:8081 (`admin` / `admin`)
+- A public client `family-tree-web` (what the server's `OIDC_ISSUER` points at) and a
+  confidential resource-server client `family-tree-server`
+- A seeded dev user: `dev@example.com` / `devpassword`
+
+Server configuration is all environment variables, defaulting to the values above —
+nothing to set for local dev, only for pointing at something else:
+
+| Variable | Default |
+| --- | --- |
+| `DB_URL` | `jdbc:postgresql://localhost:5432/family_tree` |
+| `DB_USER` | `family_tree` |
+| `DB_PASSWORD` | `family_tree` |
+| `OIDC_ISSUER` | `http://localhost:8081/realms/family-tree` |
+| `OIDC_JWKS_URI` | `${OIDC_ISSUER}/protocol/openid-connect/certs` |
+
+## Running a local copy end to end
+
+```bash
+# 1. Bring up Postgres + Keycloak
+docker compose up -d postgres keycloak
+
+# 2. Start the server (migrates the DB on boot, then listens on :8080)
+./gradlew :server:run
+
+# 3. In another shell, get a real access token for the seeded dev user
+TOKEN=$(curl -s http://localhost:8081/realms/family-tree/protocol/openid-connect/token \
+  -d "grant_type=password" -d "client_id=family-tree-web" \
+  -d "username=dev@example.com" -d "password=devpassword" \
+  | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+
+# 4. Call the API
+curl http://localhost:8080/api/v1/me -H "Authorization: Bearer $TOKEN"
+curl -X POST http://localhost:8080/api/v1/trees -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d '{"name":"My Family"}'
+```
+
+See [docs/delivery-log.md](docs/delivery-log.md) for the full route list.
+
+## Running the clients
+
+- **Server:** `./gradlew :server:run` (see above — needs Postgres + Keycloak running first)
+- **Desktop app:**
     - Hot reload: `./gradlew :app:desktopApp:hotRun --auto`
     - Standard run: `./gradlew :app:desktopApp:run`
-- Server: `./gradlew :server:run`
-- Web app:
+- **Web app:**
     - Wasm target (faster, modern browsers): `./gradlew :app:webApp:wasmJsBrowserDevelopmentRun`
     - JS target (slower, supports older browsers): `./gradlew :app:webApp:jsBrowserDevelopmentRun`
-- iOS app: open the [/app/iosApp](./app/iosApp) directory in Xcode and run it from there.
+- **Android app:** `./gradlew :app:androidApp:assembleDebug` (installs via Android Studio's run button, or `adb install` the built APK)
+- **iOS app:** open [`app/iosApp`](./app/iosApp) in Xcode and run from there.
 
-### Running tests
+Or use the run configurations in your IDE's toolbar instead of the CLI for any of these.
 
-Use the run button in your IDE's editor gutter, or run tests using Gradle tasks:
+## Running tests
 
-- Android tests: `./gradlew :app:shared:testAndroidHostTest`
-- Desktop tests: `./gradlew :app:shared:jvmTest`
-- Server tests: `./gradlew :server:test`
-- Web tests:
-    - Wasm target: `./gradlew :app:shared:wasmJsTest`
-    - JS target: `./gradlew :app:shared:jsTest`
-- iOS tests: `./gradlew :app:shared:iosSimulatorArm64Test`
+```bash
+./gradlew :core:jvmTest                        # :core domain/validation/format logic
+./gradlew :server:test                          # server routing tests + Testcontainers Postgres integration test
+./gradlew :app:shared:jvmTest                   # desktop-target shared code
+./gradlew :app:shared:wasmJsTest                # web (Wasm) shared code
+./gradlew :app:shared:jsTest                     # web (JS) shared code
+./gradlew :app:shared:testAndroidHostTest       # Android shared code
+./gradlew :app:shared:iosSimulatorArm64Test     # iOS shared code (macOS only)
+
+./gradlew check                                 # everything above, the intended full gate (slow; prefer the targeted commands while iterating)
+```
+
+`:server:test` needs Docker running (it spins up its own throwaway Postgres container
+via Testcontainers, separate from the `docker-compose` one above — no need to
+`docker compose up` first just to run tests).
+
+Per-module HTML test reports: `<module>/build/reports/tests/test/index.html`. Raw JUnit
+XML: `<module>/build/test-results/test/*.xml`.
+
+## Logs
+
+- **Server logs** go to stdout of whatever shell ran `./gradlew :server:run` — there's
+  no separate log file. Format and level are configured in
+  [`server/src/main/resources/logback.xml`](./server/src/main/resources/logback.xml);
+  it currently defaults to `TRACE`, which is very verbose (every SQL statement, every
+  routing decision, full HTTP wire traces) — useful when debugging a specific request,
+  noisy otherwise. Lower `<root level="trace">` to `info` there for quieter day-to-day
+  output.
+- **Flyway migration output** (each SQL statement run, and the final "Successfully
+  applied N migrations" line) appears inline in the same server stdout, right at startup.
+- **Postgres / Keycloak container logs:** `docker logs family-tree-postgres` /
+  `docker logs family-tree-keycloak` (`-f` to follow). `docker compose logs -f` follows
+  both at once.
+- **Test output:** Gradle prints failures to the console; full logs (including anything
+  written via logback during the test run) are in
+  `<module>/build/test-results/test/TEST-*.xml` and the HTML report linked above.
 
 ---
 
