@@ -59,10 +59,29 @@ object DuplicatePersonScorer {
     }
 
     private fun bigrams(text: String): List<String> {
-        val normalized = text.lowercase().filter { !it.isWhitespace() }
+        val normalized = foldDiacritics(text.lowercase()).filter { !it.isWhitespace() }
         if (normalized.length < 2) return listOf(normalized)
         return (0 until normalized.length - 1).map { normalized.substring(it, it + 2) }
     }
+
+    // "José" and "Jose", "Núñez" and "Nunez" etc. are the same name typed two
+    // ways (accents dropped on a keyboard, a scanned record, a client's own
+    // input method) and must not be scored as different people. commonMain
+    // has no java.text.Normalizer, so this is a direct lowercase-accented ->
+    // base-Latin map rather than a full Unicode NFD fold; extend it if a
+    // name turns up a character it doesn't cover.
+    private val DIACRITIC_FOLD: Map<Char, Char> = buildMap {
+        "àáâãäå".forEach { put(it, 'a') }
+        "èéêë".forEach { put(it, 'e') }
+        "ìíîï".forEach { put(it, 'i') }
+        "òóôõöø".forEach { put(it, 'o') }
+        "ùúûü".forEach { put(it, 'u') }
+        put('ñ', 'n')
+        put('ç', 'c')
+        put('ý', 'y')
+    }
+
+    private fun foldDiacritics(text: String): String = text.map { DIACRITIC_FOLD[it] ?: it }.joinToString("")
 
     /** null = no comparison possible; otherwise 0..100, falling off with years apart. */
     private fun dateProximity(a: GedcomDate?, b: GedcomDate?): Int? {

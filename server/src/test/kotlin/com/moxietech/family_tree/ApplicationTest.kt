@@ -9,12 +9,20 @@ import kotlin.test.*
 class ApplicationTest {
 
     @Test
-    fun testRoot() = testApplication {
+    fun `unauthenticated request to a protected route is rejected`() = testApplication {
         application {
             module()
         }
-        val response = client.get("/")
-        assertEquals(HttpStatusCode.OK, response.status)
-        assertEquals("Hello, Ktor!", response.bodyAsText())
+        val response = client.get("/api/v1/me")
+        assertEquals(HttpStatusCode.Unauthorized, response.status)
+    }
+
+    @Test
+    fun `unknown route returns 404, not an unhandled exception`() = testApplication {
+        application {
+            module()
+        }
+        val response = client.get("/nope")
+        assertEquals(HttpStatusCode.NotFound, response.status)
     }
 }

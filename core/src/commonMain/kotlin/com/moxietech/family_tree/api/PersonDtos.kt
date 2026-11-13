@@ -45,3 +45,9 @@ data class DuplicateCandidateDto(
     val person: PersonDto,
     val score: Int,
 )
+
+@Serializable
+data class CreatePersonResponse(
+    val person: PersonDto,
+    val possibleDuplicates: List<DuplicateCandidateDto> = emptyList(),
+)

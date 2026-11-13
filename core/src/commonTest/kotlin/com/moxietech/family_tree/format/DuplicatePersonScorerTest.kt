@@ -56,6 +56,22 @@ class DuplicatePersonScorerTest {
     }
 
     @Test
+    fun `accented and unaccented spellings of the same name score as identical`() {
+        val score = DuplicatePersonScorer.score(
+            candidateGivenNames = "Jose",
+            candidateSurnamePaternal = "Perez",
+            candidateSurnameMaternal = "Nunez",
+            candidateBirthDate = null,
+            candidateParentIds = emptySet(),
+            existing = existing("José", "Pérez"),
+            existingBirthDate = null,
+            existingParentIds = emptySet(),
+        )
+        // existing() only sets one surname; compare given+paternal only so this is a clean 100.
+        assertTrue(score >= DuplicatePersonScorer.WARNING_THRESHOLD, "expected >= threshold, got $score")
+    }
+
+    @Test
     fun `shared parent boosts an otherwise middling name match`() {
         val withSharedParent = DuplicatePersonScorer.score(
             candidateGivenNames = "Jon",

@@ -12,11 +12,12 @@ object Validation {
 
     private val EMAIL_PATTERN = Regex("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$")
 
-    fun validatePersonName(givenNames: String): List<String> =
-        if (givenNames.isBlank()) listOf("Given names must not be blank") else emptyList()
+    fun validateNotBlank(fieldLabel: String, value: String): List<String> =
+        if (value.isBlank()) listOf("$fieldLabel must not be blank") else emptyList()
 
-    fun validateTreeName(name: String): List<String> =
-        if (name.isBlank()) listOf("Tree name must not be blank") else emptyList()
+    fun validatePersonName(givenNames: String): List<String> = validateNotBlank("Given names", givenNames)
+
+    fun validateTreeName(name: String): List<String> = validateNotBlank("Tree name", name)
 
     fun validateEmail(email: String): List<String> =
         if (!EMAIL_PATTERN.matches(email)) listOf("'$email' is not a valid email address") else emptyList()
