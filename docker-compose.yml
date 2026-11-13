@@ -2,6 +2,13 @@
 # deployed Keycloak instance (see ARCHITECTURE.md). Both services here exercise
 # the same protocols the server talks to in production: real Postgres wire
 # protocol and a real OIDC authorization-code flow, not a bypass/stub.
+#
+# The postgres service is optional: if you already run a shared Postgres
+# container for another project (same host port 5432), skip `docker compose up
+# postgres` entirely and point this project at a new database/role on that
+# instance instead -- see README.md "Setting up the database" for the exact
+# commands. Starting this service while another container already holds 5432
+# will just fail to bind the port.
 
 services:
   postgres:

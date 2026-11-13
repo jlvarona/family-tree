@@ -51,9 +51,11 @@ cut line.
 
 ## Setting up the database (and Keycloak)
 
-Local dev runs a real Postgres and a real Keycloak via `docker-compose.yml` — never a
-bypass login or an in-memory stand-in, so dev exercises the same code paths as
-production.
+Local dev runs a real Postgres and a real Keycloak — never a bypass login or an
+in-memory stand-in, so dev exercises the same code paths as production. There are two
+ways to get the Postgres side; pick whichever matches your machine.
+
+**Option A — bundled container (default, nothing else running on 5432):**
 
 ```bash
 # Start Postgres 16 + Keycloak 26 in the background
@@ -68,6 +70,29 @@ docker logs -f family-tree-keycloak
 docker compose down
 docker compose down -v
 ```
+
+**Option B — reuse a Postgres container another project already has running** (same
+host, same port 5432 — starting `docker compose up postgres` here would just fail to
+bind the port). Create a dedicated role and database for this project inside it:
+
+```bash
+# Replace <container> and <admin-user>/<admin-db> with the other project's values
+docker exec <container> psql -U <admin-user> -d <admin-db> -c \
+  "CREATE ROLE family_tree LOGIN PASSWORD 'family_tree';"
+docker exec <container> psql -U <admin-user> -d <admin-db> -c \
+  "CREATE DATABASE family_tree OWNER family_tree;"
+
+# Verify
+docker exec <container> psql -U family_tree -d family_tree -c "\conninfo"
+```
+
+With a role/database both named `family_tree`, the server's defaults (below) work with
+no environment variables set, as long as the shared instance is reachable on
+`localhost:5432`. If it's on a different host/port, set `DB_URL` accordingly.
+
+Either way, Keycloak still needs to come from somewhere — either `docker compose up -d
+keycloak` here, or another running instance with its own realm, in which case point
+`OIDC_ISSUER`/`OIDC_JWKS_URI` (below) at it instead of the one seeded in this repo.
 
 There is no separate "run migrations" command — the server runs every pending Flyway
 migration from [`server/src/main/resources/db/migration`](./server/src/main/resources/db/migration)

@@ -176,6 +176,28 @@ in a normal dev machine or CI image.
   optimistic-concurrency behavior they need, given every row already carries a
   `version` column) are a deliberate next-session scope, not an oversight.
 
+### 7. Local dev database, pointed at a shared Postgres instance
+
+This machine already runs a Postgres 17 container (`mappy-roadmap-postgres-1`, for a
+separate project) bound to host port 5432 — the same port `docker-compose.yml`'s
+`postgres` service would try to claim. Rather than run a second, conflicting Postgres,
+this project now shares that instance: a dedicated `family_tree` role and `family_tree`
+database were created inside it (`CREATE ROLE ... LOGIN PASSWORD 'family_tree'`,
+`CREATE DATABASE family_tree OWNER family_tree`), isolated from that other project's
+own database, with its own login — not reusing the other project's admin credentials.
+
+Role/database name match the server's existing `DB_USER`/`DB_URL` defaults exactly, so
+no environment variables changed. Started the server once to let Flyway apply
+`V1__init.sql` against it, confirmed all 11 tables landed with `family_tree` as owner,
+and confirmed the other project's own tables (`mappy_dev`) were untouched. Then stopped
+the server — this was a one-time setup step, not something that needs to stay running.
+
+`docker-compose.yml`'s `postgres` service is still there and still works for a machine
+*without* a conflicting instance — see README.md "Setting up the database" for both
+paths. (Keycloak has the identical port-8081 conflict with that other project's own
+Keycloak container, but that wasn't today's ask — flagged here so it doesn't surprise
+anyone later.)
+
 ---
 
 ## Database design
