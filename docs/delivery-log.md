@@ -9,6 +9,24 @@ up to date in place, not logged chronologically.
 
 ---
 
+## 2026-11-14 — Review of the Phase 1 foundation
+
+Reviewed the backlog against the current code. The server create/read routes, core
+helpers, and local development stack are in place. The desktop greeting build repair
+is recorded as FT-100 (`44d6653`). The Compose clients still show the starter UI.
+
+The review found cross-tree access through event and relationship IDs, living-person
+details outside the redacted person routes, authorization based on inactive memberships,
+and a missing audit entry for place creation. The backlog now gives these gaps explicit
+stories alongside the identity, API validation, logging, and CI work. No implementation
+changed in this session.
+
+Gradle failed to connect to its daemon over loopback. Running existing compiled tests
+directly with JUnit passed 24 core, 2 shared, and 2 Ktor tests. Direct checks reproduced
+the overlapping and inverted date range issues in FT-071. Docker returned HTTP 400 to
+Testcontainers during setup, so the PostgreSQL suite did not execute. The access-control
+findings came from source inspection.
+
 ## 2026-11-13 — Phase 1 "Foundations": server scaffold, persistence, auth, graph API
 
 **Starting point:** a fresh Kotlin Multiplatform wizard template. `core/`, `server/`,
@@ -46,9 +64,8 @@ usable from both the server and (eventually) the Compose clients.
 - **`format/GedcomDateParser`** — parses what a researcher actually types ("abt 1890",
   "bef 12 Mar 1901", "bet 1880 and 1885", plain years/months/dates, English *and*
   Spanish month abbreviations) into a `GedcomDate` carrying both the original display
-  text and a sortable `(earliest, latest)` range. Never throws on unparseable input —
-  it just keeps the text with no range, because a date a user typed must always be
-  savable.
+  text and a sortable `(earliest, latest)` range. It is designed to preserve free text
+  without bounds when parsing fails. FT-071 covers gaps in range handling.
 - **`format/PersonNameFormatter`** — given names + two surnames → display string / sort
   key. Nothing formats a name by string concatenation anywhere else.
 - **`format/DuplicatePersonScorer`** — fuzzy name/date/parent match (0–100) backing the
@@ -75,11 +92,10 @@ New packages under `com.moxietech.family_tree.server.<feature>`, each with
 | `trees` | Create/list/get `Tree`; seeds an owner `Membership` row on creation |
 | `graph` | `Person` (create + duplicate check, list, get, ancestors, descendants), `Union` + `UnionChild`, `Event`, `Place` |
 | `sources` | `Source` create/list (`Citation` is modeled in the schema but has no routes yet — see "Not built") |
-| `collaboration` | `AuditLogRepository.append(...)`, called from inside the *same* Exposed transaction as every mutation above, and `AuditJson` for before/after snapshots |
+| `collaboration` | `AuditLogRepository.append(...)` and `AuditJson` for transactional snapshots. Place creation still needs coverage (FT-069). |
 | `errors` | `ValidationException` / `NotFoundException` / `ForbiddenException` — the vocabulary every service throws, mapped centrally by `StatusPagesConfig` |
 
-**Routes implemented** (all under `/api/v1`, all requiring a valid Keycloak-issued JWT
-except none — every route below is authenticated):
+**Routes implemented** (all under `/api/v1` and require authentication):
 
 ```
 GET    /api/v1/me
@@ -102,13 +118,11 @@ POST   /api/v1/trees/{treeId}/sources
 GET    /api/v1/trees/{treeId}/sources
 ```
 
-**Authorization**, for now: every route resolves the caller's `Account` from the JWT,
-then checks tree membership (`403` if the tree exists but the caller isn't a member,
-`404` if it doesn't exist at all). Branch-scoped grants (Phase 2) don't exist yet, so
-membership is currently binary — but **living-person redaction is enforced anyway**: a
-living person's record is reduced to `"Private"` (no name, bio, or photo) for everyone
-except the tree owner. That's the conservative, rule-correct default until grants land
-— `AGENTS.md`'s privacy rule applies from day one, not from whenever Phase 2 ships.
+**Authorization**, for now: routes resolve the caller's `Account` from the JWT.
+Tree-specific operations check for a membership row for the URL tree. The people list,
+detail, and branch routes redact a living person's name, bio, and profile media for
+non-owners. FT-065, FT-066, and FT-068 cover the gaps in resource scoping, privacy
+across responses, and membership checks.
 
 **Multi-table writes are one transaction** (e.g. create tree → insert owner membership
 → append audit entry): the service layer opens one Exposed `transaction { }` and the
@@ -202,134 +216,386 @@ anyone later.)
 
 ---
 
-## Backlog: next steps, nice-to-haves, future enhancements
+## Backlog: status, priority, and order of work
 
-Everything below is **`Proposed`** — none of it is built. Organized as epics in rough
-dependency order (an epic's stories generally need an earlier epic's stories done
-first; stories inside an epic don't necessarily need each other). IDs are stable, for
-referencing from a future commit or PR once work starts. Sources: the "Not built yet"
-and "Deliberate omissions" notes above (found while building Phase 1), and the roadmap
-in [concept-architecture.md](concept-architecture.md).
+Every story has a **status**, a **priority**, and a place in the **order** below. This
+section is kept up to date in place: change a story's status when work on it starts or
+finishes, in both the status board and the story's own line, in the same commit.
 
-| Epic | Theme | Depends on |
-| --- | --- | --- |
-| **E1** | Close out Phase 1 — Foundations | current code |
-| **E2** | Phase 2 — Branches and sharing | E1 |
-| **E3** | Phase 3 — Mobile | E2 (a real multi-user mobile app needs grants first) |
-| **E4** | Phase 4 — Billing and import | E2 |
-| **E5** | Phase 5 — Collaboration depth | E2 |
-| **E6** | Phase 6 — Delight | mostly E1; a few touch E2 |
-| **E7** | Hardening & housekeeping | none — can happen anytime |
+- **Status:** `Done` · `In progress` · `To do` · `Blocked` (waiting on a decision or an
+  outside dependency, named in the story).
+- **Priority:** `P1` must have to close the current phase · `P2` should have, picked up
+  alongside P1 work · `P3` later phase or only when needed.
+- **Order:** the sequence stories will be worked on (1 = next). Done stories have no
+  order number. A `Blocked` story keeps its slot and moves forward once it's unblocked.
+
+IDs are stable, so commits and PRs can reference them. E0's stories were numbered after
+the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
+
+### Status board
+
+**Done (11)** · **In progress (0)** · **To do (43)** · **Blocked (1)**
+
+| Order | ID | Story | Epic | Priority | Status |
+| --- | --- | --- | --- | --- | --- |
+| — | FT-090 | Resolve auth provider + persistence library | E0 | P1 | Done |
+| — | FT-091 | `:core` domain model with typed ids | E0 | P1 | Done |
+| — | FT-092 | `:core` shared logic: dates, names, duplicates, validation | E0 | P1 | Done |
+| — | FT-093 | `:core` API DTOs | E0 | P1 | Done |
+| — | FT-094 | Server scaffold: Postgres, Flyway, Keycloak JWT, error mapping | E0 | P1 | Done |
+| — | FT-095 | Accounts, trees, memberships | E0 | P1 | Done |
+| — | FT-096 | Graph API: people, unions, children, events, places, ancestors/descendants | E0 | P1 | Done |
+| — | FT-097 | Sources create/list | E0 | P1 | Done |
+| — | FT-098 | Initial audit logging and redacted person views | E0 | P1 | Done |
+| — | FT-099 | Local dev environment | E0 | P1 | Done |
+| — | FT-100 | Repair the desktop/shared starter build | E0 | P2 | Done |
+| 1 | FT-063 | Restore PostgreSQL integration tests on Docker | E7 | P1 | To do |
+| 2 | FT-065 | Enforce tenant isolation in graph routes and PostgreSQL | E7 | P1 | To do |
+| 3 | FT-068 | Require active membership and authorize writes separately | E7 | P1 | To do |
+| 4 | FT-066 | Apply living-person privacy across API responses | E7 | P1 | To do |
+| 5 | FT-067 | Require API audience on Keycloak access tokens | E7 | P1 | To do |
+| 6 | FT-003 | Bind local accounts to OIDC issuer and subject | E1 | P1 | To do |
+| 7 | FT-072 | Require authenticated PostgreSQL regression tests in CI | E7 | P1 | To do |
+| 8 | FT-060 | Keep private data out of routine server logs | E7 | P2 | To do |
+| 9 | FT-069 | Complete transactional audit coverage | E7 | P2 | To do |
+| 10 | FT-070 | Return structured client errors for invalid inputs and duplicate links | E7 | P2 | To do |
+| 11 | FT-071 | Correct uncertain and inverted date bounds | E7 | P2 | To do |
+| 12 | FT-004 | "Whole tree" bundle endpoint | E1 | P1 | To do |
+| 13 | FT-005 | Authenticated owner workflow and web tree views | E1 | P1 | To do |
+| 14 | FT-006 | Person page UI | E1 | P1 | To do |
+| 15 | FT-001 | Update & delete endpoints | E1 | P1 | To do |
+| 16 | FT-002 | Citation routes | E1 | P1 | To do |
+| 17 | FT-007 | Duplicate-merge workflow | E1 | P1 | To do |
+| 18 | FT-008 | Photo upload (S3 presigned URLs) | E1 | P1 | Blocked |
+| 19 | FT-064 | Make compose host ports configurable | E7 | P2 | To do |
+| 20 | FT-010 | `Grant` + `GrantScope` tables, branch resolution | E2 | P1 | To do |
+| 21 | FT-011 | Invitations + account-to-person linking | E2 | P1 | To do |
+| 22 | FT-012 | Grant-based authorization | E2 | P1 | To do |
+| 23 | FT-013 | Grant-based living-person redaction | E2 | P1 | To do |
+| 24 | FT-014 | `ChangeProposal` workflow | E2 | P1 | To do |
+| 25 | FT-015 | Maternal/paternal "side" views | E2 | P1 | To do |
+| 26 | FT-016 | Activity feed UI + revert | E2 | P1 | To do |
+| 27 | FT-062 | Decide which citation source types come first | E7 | P2 | To do |
+| 28 | FT-020 | Android Compose screens | E3 | P3 | To do |
+| 29 | FT-021 | iOS Compose screens | E3 | P3 | To do |
+| 30 | FT-022 | Offline cache (SQLDelight) | E3 | P3 | To do |
+| 31 | FT-023 | Camera upload | E3 | P3 | To do |
+| 32 | FT-030 | Stripe plans + usage limits | E4 | P3 | To do |
+| 33 | FT-031 | GEDCOM 7 import | E4 | P3 | To do |
+| 34 | FT-032 | GEDCOM 7 / PDF export | E4 | P3 | To do |
+| 35 | FT-040 | Comments | E5 | P3 | To do |
+| 36 | FT-041 | Live presence / WebSocket updates | E5 | P3 | To do |
+| 37 | FT-050 | "How are we related?" calculator | E6 | P3 | To do |
+| 38 | FT-051 | Memory prompts | E6 | P3 | To do |
+| 39 | FT-052 | Photo face-tagging suggestions | E6 | P3 | To do |
+| 40 | FT-053 | Birthday / anniversary reminders | E6 | P3 | To do |
+| 41 | FT-054 | Fan, hourglass, timeline, map views | E6 | P3 | To do |
+| 42 | FT-055 | Print/PDF charts and photo books | E6 | P3 | To do |
+| 43 | FT-017 | Row-level security on `tree_id` | E2 | P3 | To do |
+| 44 | FT-061 | `audit_log` JSON columns `text` → `jsonb` | E7 | P3 | To do |
+
+Start with the PostgreSQL test setup and API security fixes. Complete FT-072 before
+using real family data or enabling invitations. FT-017 and FT-061 remain deferred
+until their stories identify a concrete need.
+
+### Epics
+
+| Epic | Theme | Depends on | Status |
+| --- | --- | --- | --- |
+| **E0** | Phase 1 server foundation | — | Done (2026-11-13) |
+| **E1** | Close out Phase 1 — Foundations | E0 | To do |
+| **E2** | Phase 2 — Branches and sharing | E1 | To do |
+| **E3** | Phase 3 — Mobile | E2 (a real multi-user mobile app needs grants first) | To do |
+| **E4** | Phase 4 — Billing and import | E2 | To do |
+| **E5** | Phase 5 — Collaboration depth | E2 | To do |
+| **E6** | Phase 6 — Delight | mostly E1; a few touch E2 | To do |
+| **E7** | Hardening & housekeeping | Core security stories gate real data and sharing | To do |
+
+### E0 — Phase 1 server foundation (Done)
+
+The 2026-11-13 entry records the server foundation. FT-100 records the subsequent
+desktop/shared build repair.
+
+- **FT-090 Resolve auth provider + persistence library.** `Done · P1` — Keycloak and
+  Exposed + Flyway, recorded in `concept-architecture.md`.
+- **FT-091 `:core` domain model with typed ids.** `Done · P1`
+- **FT-092 `:core` shared logic.** `Done · P1` — `GedcomDateParser`,
+  `PersonNameFormatter`, `DuplicatePersonScorer` (accent-insensitive), `Validation`;
+  24 core tests at the 2026-11-14 review.
+- **FT-093 `:core` API DTOs.** `Done · P1`
+- **FT-094 Server scaffold.** `Done · P1` — HikariCP + Flyway `V1__init.sql`, Exposed
+  tables, Keycloak JWT auth via JWKS, `StatusPagesConfig` error mapping.
+- **FT-095 Accounts, trees, memberships.** `Done · P1` — just-in-time account
+  provisioning (`GET /me`), tree create/list/get, owner membership seeded on creation.
+- **FT-096 Graph API.** `Done · P1` — people (with duplicate check), unions, union
+  children, events, places, recursive-CTE ancestors/descendants.
+- **FT-097 Sources create/list.** `Done · P1`
+- **FT-098 Initial audit logging and redacted person views.** `Done · P1` — audit
+  snapshots are written with tree, person, union, child link, event, and source
+  creation. Person list/detail and branch results redact names, bio, and profile media
+  for non-owners. Remaining coverage is tracked in FT-066 and FT-069.
+- **FT-099 Local dev environment.** `Done · P1` — `docker-compose.yml` (Postgres 16 +
+  Keycloak 26), seeded realm, dev database on the shared Postgres instance.
+- **FT-100 Repair the desktop/shared starter build.** `Done · P2` — updated
+  `Greeting.kt` after removal of `sayHello()` (`44d6653`).
 
 ### E1 — Close out Phase 1 (Foundations)
 
-- **FT-001 Update & delete endpoints.** Person/Union/UnionChild/Event/Place/Source
-  only support create + read today. Every one of those rows already carries a
-  `version` column for exactly this — a stale write should return `409`, not silently
-  overwrite.
-- **FT-002 Citation routes.** The `citation` table and `:core`'s `CitationTarget`
-  (person/event/union) already exist; there's no `service`/`routes` layer over it yet.
-- **FT-003 Stable OIDC-subject column on `account`.** Today's `AccountRepository`
-  looks accounts up by email (flagged in its own code comment) — fragile, since a
-  person's email can change but their OIDC `sub` claim can't. Add the column, backfill,
-  switch the lookup, before this matters in production.
-- **FT-004 "Whole tree" bundle endpoint.** One call returning every person + union for
-  a tree, for a client's first paint, instead of composing it from two separate list
-  calls. `Branch.direction = WHOLE_TREE` already exists in `:core`, unused.
-- **FT-005 Web tree-view UI** (Compose for Web) — the first real client. Full-tree,
-  ancestor, descendant views per `docs/mockups/tree-view.dc.html`, calling routes that
-  already exist.
-- **FT-006 Person page UI** (Compose for Web) — story, timeline, photos, sources, per
-  `docs/mockups/person-page.dc.html`.
-- **FT-007 Duplicate-merge workflow.** `DuplicatePersonScorer` only returns a warning
-  score today (`CreatePersonResponse.possibleDuplicates`); there's no UI or API path to
-  actually merge two person records into one yet.
-- **FT-008 Photo upload** (S3 presigned URLs + a `media` table). Blocked on an AWS
-  bucket/credentials decision — not something to guess at. `person.profile_media_id`
-  and `citation.media_id` are already typed `uuid` and FK-less, so the table can land
-  later without a breaking migration.
+- **FT-001 Update & delete endpoints.** `To do · P1 · #15` — Person, Union, UnionChild,
+  Event, Place, and Source currently support create/read. Reuse tree-scoped lookups,
+  owner write checks, and transactional audits (FT-065, FT-068, FT-069). Use existing
+  version columns for optimistic concurrency and define a version strategy for Place
+  and UnionChild, which lack one. A stale mutation returns `409` with no changes
+  to the domain record or audit log.
+- **FT-002 Citation routes.** `To do · P1 · #16` — use the current `citation` table
+  and `:core`'s `CitationTarget` (person/event/union). Resolve both the source and
+  the polymorphic target within the authorized tree, audit writes in the same
+  transaction, and enforce the target's visibility policy (FT-065, FT-066).
+- **FT-003 Bind local accounts to OIDC issuer and subject.** `To do · P1 · #6`.
+  Update `AuthConfig`, `CurrentAccount`, `AccountRoutes`, and
+  `AccountService`/`AccountRepository`. Pass the verified `iss` and `sub` to
+  a transactional get-or-create. Add a unique constraint on the pair through Flyway.
+  Treat email as profile data and reconcile the existing unique email constraint
+  with email reuse by different identities.
+
+  Preserve existing account IDs, tree ownership, and memberships when backfilling.
+  Bind legacy rows only from an authoritative identity mapping. Surface unresolved
+  rows for explicit resolution before access is restored to them. A matching email
+  claim alone must never link an account.
+
+  **Acceptance:** parallel first requests create one account, an email change preserves
+  the account ID and tree access, a different subject with the former email cannot
+  inherit membership, and verified backfills preserve existing foreign keys.
+- **FT-004 "Whole tree" bundle endpoint.** `To do · P1 · #12` — one call returning every
+  person + union for a tree, for a client's first paint, instead of composing it from
+  two separate list calls. `Branch.direction = WHOLE_TREE` already exists in `:core`,
+  unused. Build the bundle from the tree-scoped, viewer-safe projections established
+  in FT-065 and FT-066.
+- **FT-005 Authenticated owner workflow and web tree views.** `To do · P1 · #13`.
+  Build the first workflow in Compose for Web using the tree mockup
+  ([layout reference](mockups/tree-view.dc.html)). Keep the API client, DTO usage,
+  view models, and layout in `app/shared`, and keep platform entry points thin.
+  Connect browser sign-in against Keycloak using authorization code with PKCE
+  and the API audience in FT-067. Use the existing create/read endpoints and the
+  whole-tree bundle from FT-004. Localize controls and errors in English and Spanish
+  and format names through `:core`.
+
+  **Acceptance:** in the browser, sign in, create a tree, create people, and link a
+  child through a union. Reload and confirm the saved relationship appears in the
+  full-tree, ancestor, and descendant views. Select a person and open their page
+  (FT-006). Cover empty states, loading, request failures, and session expiry.
+- **FT-006 Person page UI** (Compose for Web). `To do · P1 · #14` — first render
+  the selected person's profile, story, family links, and permitted timeline from the
+  existing API. Show the localized private placeholder for redacted records. Verify
+  navigation from the tree and back, plus reload of the selected person. Add source
+  citations and photos when FT-002 and FT-008 provide the underlying APIs. Use
+  [the person page mockup](mockups/person-page.dc.html) as the layout reference.
+- **FT-007 Duplicate-merge workflow.** `To do · P1 · #17` — `DuplicatePersonScorer` only
+  returns a warning score today (`CreatePersonResponse.possibleDuplicates`); there's no
+  UI or API path to actually merge two person records into one yet.
+- **FT-008 Photo upload** (S3 presigned URLs + a `media` table). `Blocked · P1 · #18` —
+  waiting on an AWS bucket/credentials decision; not something to guess at.
+  `person.profile_media_id` and `citation.media_id` are already typed `uuid` and
+  FK-less, so the table can land later without a breaking migration.
 
 ### E2 — Phase 2: Branches and sharing
 
-- **FT-010 `Grant` + `GrantScope` tables and branch resolution.** The recursive CTE
-  that turns an anchor + direction + depth + include-partners into a resolved
-  person-id set (cached, rebuilt when the graph changes) — `Branch` already exists in
-  `:core` as the shared definition; nothing resolves it against real data yet.
-- **FT-011 Invitations** (email or link) **and account-to-person linking**, which
-  derives each member's home branch automatically once linked.
-- **FT-012 Real grant-based authorization**, replacing today's binary "is there a
-  membership row at all" check with resolution against `GrantScope` — same
-  `ForbiddenException` vocabulary already in place, just a different source of truth.
-- **FT-013 Real living-person redaction.** Replace today's hardcoded "only the tree
-  owner sees living people" (the conservative stand-in described above) with "redacted
-  unless a grant covers that person."
-- **FT-014 `ChangeProposal` workflow.** Out-of-branch edits become a proposal with a
-  before/after diff, approved per field by the branch owner or the tree owner.
-- **FT-015 Maternal/paternal "side" views** (`Branch.direction = SIDE`) — ancestors of
-  an anchor plus all of their descendants, nothing on the other side.
-- **FT-016 Activity feed UI + revert**, reading `audit_log` — it already carries
-  `before_json`/`after_json` for exactly this, nothing reads them yet.
-- **FT-017 Row-level security on `tree_id`**, the defense-in-depth backstop
-  `ARCHITECTURE.md` describes, once there's a performance/operational reason to add it
-  (not required for Phase 1/2 correctness — the service layer already enforces it).
+- **FT-010 `Grant` + `GrantScope` tables and branch resolution.** `To do · P1 · #20` —
+  the recursive CTE that turns an anchor + direction + depth + include-partners into a
+  resolved person-id set (cached, rebuilt when the graph changes). `Branch` already
+  exists in `:core` as the shared definition; nothing resolves it against real data yet.
+- **FT-011 Invitations** (email or link) **and account-to-person linking.**
+  `To do · P1 · #21` — derives each member's home branch automatically once linked.
+  Enable invitations for users after FT-072 passes and FT-012 through FT-014 cover
+  shared-tree authorization and proposals.
+- **FT-012 Real grant-based authorization.** `To do · P1 · #22` — replaces today's
+  Phase 1 owner-only write policy from FT-068 with resolution against `GrantScope`.
+  Keep the active membership requirement and pair grant checks with FT-014.
+- **FT-013 Grant-based living-person redaction.** `To do · P1 · #23` — extend the
+  response policy from FT-066 to allow visibility when a grant covers the person.
+- **FT-014 `ChangeProposal` workflow.** `To do · P1 · #24` — out-of-branch edits become
+  a proposal with a before/after diff, approved per field by the branch owner or the
+  tree owner.
+- **FT-015 Maternal/paternal "side" views** (`Branch.direction = SIDE`).
+  `To do · P1 · #25` — ancestors of an anchor plus all of their descendants, nothing on
+  the other side.
+- **FT-016 Activity feed UI + revert.** `To do · P1 · #26` — reads `audit_log`, which
+  already carries `before_json`/`after_json` for exactly this; nothing reads them yet.
+- **FT-017 Row-level security on `tree_id`.** `To do · P3 · #43` — the defense-in-depth
+  backstop `ARCHITECTURE.md` describes, once there's a performance/operational reason to
+  add it. FT-065 covers tenant isolation in the current API and foreign keys.
 
 ### E3 — Phase 3: Mobile
 
-- **FT-020 Android Compose screens.**
-- **FT-021 iOS Compose screens.**
-- **FT-022 Offline cache** (SQLDelight) on mobile.
+- **FT-020 Android Compose screens.** `To do · P3 · #28`
+- **FT-021 iOS Compose screens.** `To do · P3 · #29`
+- **FT-022 Offline cache** (SQLDelight) on mobile. `To do · P3 · #30`
 - **FT-023 Camera upload**, straight into the presigned-URL flow from FT-008.
+  `To do · P3 · #31`
 
 ### E4 — Phase 4: Billing and import
 
 - **FT-030 Stripe plans + usage limits**, opening the product to the public.
-- **FT-031 GEDCOM 7 import.**
-- **FT-032 GEDCOM 7 / PDF export.**
+  `To do · P3 · #32`
+- **FT-031 GEDCOM 7 import.** `To do · P3 · #33`
+- **FT-032 GEDCOM 7 / PDF export.** `To do · P3 · #34`
 
 ### E5 — Phase 5: Collaboration depth
 
-- **FT-040 Comments** on a person, event, or photo.
+- **FT-040 Comments** on a person, event, or photo. `To do · P3 · #35`
 - **FT-041 Live presence / WebSocket-pushed updates**, so collaborators see each
-  other's edits without refreshing.
+  other's edits without refreshing. `To do · P3 · #36`
 
 ### E6 — Phase 6: Delight
 
-- **FT-050 "How are we related?" relationship calculator.**
+- **FT-050 "How are we related?" relationship calculator.** `To do · P3 · #37`
 - **FT-051 Memory prompts** — text and voice answers added to a person's bio.
-- **FT-052 Photo face-tagging suggestions.**
-- **FT-053 Birthday / anniversary reminders.**
-- **FT-054 Fan chart, hourglass chart, timeline, and map views.**
-- **FT-055 Print/PDF charts and photo books.**
+  `To do · P3 · #38`
+- **FT-052 Photo face-tagging suggestions.** `To do · P3 · #39`
+- **FT-053 Birthday / anniversary reminders.** `To do · P3 · #40`
+- **FT-054 Fan chart, hourglass chart, timeline, and map views.** `To do · P3 · #41`
+- **FT-055 Print/PDF charts and photo books.** `To do · P3 · #42`
 
 ### E7 — Hardening & housekeeping
 
-Found while building Phase 1; not gated on any epic above, can be picked up anytime.
+- **FT-060 Keep private data out of routine server logs.** `To do · P2 · #8`.
+  Set the root level in `server/src/main/resources/logback.xml` to `INFO`. Keep
+  verbose tracing opt-in for local debugging. Check application, JDBC/Exposed,
+  and request logging during a person or event write. Logs should show operational
+  status without bearer tokens, request bodies, or SQL bind values containing
+  names, dates, locations, or notes.
+- **FT-061 Migrate `audit_log.before_json`/`after_json` from `text` to `jsonb`.**
+  `To do · P3 · #44` — once something actually needs to query into them (deferred
+  deliberately, see "Deliberate omissions" below).
+- **FT-062 Decide which citation source types to prioritize.** `To do · P2 · #27` —
+  beyond the 7 already modeled (vital records, census, church records, newspapers,
+  family bibles, oral history, other); the one remaining "Still open" item in
+  `concept-architecture.md`. Your decision, not an engineering task.
+- **FT-063 Restore PostgreSQL integration tests on Docker.** `To do · P1 · #1`.
+  Reproduce the Testcontainers Docker discovery failure and select a compatible
+  dependency version in `gradle/libs.versions.toml` or document a supported
+  Docker configuration. Keep PostgreSQL 16 and run Flyway against a fresh test
+  database. Close the test datasource at teardown.
 
-- **FT-060 Quiet the default log level.** `logback.xml` currently defaults to `TRACE`
-  (every SQL statement, full HTTP wire traces) — fine for debugging one request, noisy
-  for everyday dev. Default to `INFO`; keep `TRACE` available as an opt-in.
-- **FT-061 Migrate `audit_log.before_json`/`after_json` from `text` to `jsonb`** once
-  something actually needs to query into them (deferred deliberately, not an oversight
-  — see "Deliberate omissions" above).
-- **FT-062 Decide which citation source types to prioritize** beyond the 7 already
-  modeled (vital records, census, church records, newspapers, family bibles, oral
-  history, other) — the one remaining "Still open" item in `concept-architecture.md`.
-- **FT-063 `GraphIntegrationTest` can't run on a Docker Desktop newer than
-  Testcontainers 1.21.0 expects** (confirmed environment/tooling gap, not a code bug —
-  see the 2026-11-13 session entry above). Bump Testcontainers once a compatible
-  release exists, or find a probe-level workaround.
-- **FT-064 This dev machine runs Postgres (5432) and Keycloak (8081) for another
-  project on the same host ports `docker-compose.yml` claims here.** Today that's
-  worked around manually (session entry 7); parameterizing the compose file's host
-  ports (or documenting a per-developer override file) would make two projects'
+  **Acceptance:** `gradlew.bat :server:test --tests "*GraphIntegrationTest"`
+  provisions Postgres and executes the existing ancestor and descendant assertions.
+  Record the tested Docker/Testcontainers combination and the equivalent Linux
+  command, `bash ./gradlew :server:test --tests "*GraphIntegrationTest"`. Docker
+  discovery failure must fail the run.
+- **FT-064 Make compose host ports configurable.** `To do · P2 · #19` — this dev
+  machine runs Postgres (5432) and Keycloak (8081) for another project on the same host
+  ports `docker-compose.yml` claims. Worked around manually today (session entry 7);
+  parameterizing the ports (or a per-developer override file) would let both projects'
   stacks coexist without a manual `CREATE ROLE`/`CREATE DATABASE` each time.
+- **FT-065 Enforce tenant isolation in graph routes and PostgreSQL.**
+  `To do · P1 · #2`. In `server/graph`, require the authorized tree ID for
+  resource lookups and constrain each anchor, join, and recursive step in the
+  ancestor/descendant queries. Scope person event reads and embedded places. For
+  event creation, resolve the event's person or union and optional place in that
+  tree. For union creation, scope both partners. For child links, scope the union
+  and child, including the union returned in the response and audit snapshot.
+
+  Add a new Flyway migration for composite same-tree foreign keys on union partners,
+  child links, event subjects and places, and membership's linked person. Add
+  `tree_id` to `union_child` and `citation`, backfill from the parent union or source,
+  and constrain citation's source in the database. Resolve the polymorphic citation
+  target in FT-002. Preflight existing references, including citation targets, and
+  stop with actionable diagnostics if any are inconsistent. Resolve such data
+  explicitly before enabling the constraints. Update Exposed mappings and the
+  database reference with the migration.
+
+  **Acceptance:** using tree A and IDs from B yields the same `404` as a missing
+  resource within A, with no data from B or mutation/audit in either tree. Direct
+  inserts with cross-tree references fail database constraints. Test malformed
+  historical links in the migration preflight and normal same-tree graph traversal.
+- **FT-066 Apply living-person privacy across API responses.** `To do · P1 · #4`.
+  After FT-065 and FT-068, reuse one visibility policy for current routes. Owners
+  can see full details in their own tree. For other active members, project hidden
+  living people as a private placeholder, omit their events, and suppress union
+  dates when a participant is hidden. Keep safe graph links needed to render the
+  tree. Exclude hidden people before duplicate scoring, including matches that
+  would reveal an identity through a score. Use the same projections for FT-004
+  and extend the policy for grants in FT-013.
+
+  **Acceptance:** owner responses retain the expected details. An active non-owner
+  sees placeholders in person and branch views, no private event dates, places or
+  notes, and no private union dates. Test the duplicate response with a known
+  hidden name at the policy boundary as well as the route, since FT-068 denies
+  non-owner create requests in Phase 1.
+- **FT-067 Require API audience on Keycloak access tokens.** `To do · P1 · #5`.
+  Configure the resource-server audience in `AuthConfig.kt` and make it configurable
+  for deployment. Configure the Keycloak realm/client mapper so the browser client's
+  access tokens include that audience. Validate audience and that the credential is an
+  access token in addition to existing signature, issuer, and time checks. Update
+  the realm setup instructions for existing local installations.
+
+  **Acceptance:** a correctly signed, current access token intended for the API
+  succeeds. Signed tokens with a missing or wrong audience, ID tokens, and expired
+  tokens return `401`. Verify the browser client's Keycloak token against a real
+  API request.
+- **FT-068 Require active membership and authorize writes separately.**
+  `To do · P1 · #3`. In `TreeRepository` and `TreeService`, query active
+  memberships for both tree lists and tree-specific access. Introduce a distinct
+  check for writes to an existing tree and require the active caller to be the
+  owner during Phase 1. Apply it to people, unions, child links, events, places,
+  and sources. Use the same policy for later mutations until FT-012 and FT-014
+  supply grant and proposal handling. Tree creation still creates the caller's
+  active owner membership in the creation transaction.
+
+  **Acceptance:** an invited account cannot list, read, or change that tree.
+  An active non-owner can read viewer-safe data and receives `403` for every
+  current mutation under that tree. An active owner can complete existing create
+  and read flows.
+- **FT-069 Complete transactional audit coverage.** `To do · P2 · #9`.
+  Wrap `PlaceService.createPlace` in one Exposed transaction with its
+  `AuditLogRepository.append`. Record the tree, actor, place ID, `CREATE`, a null
+  before snapshot, and the serialized created place as the after snapshot.
+  Check that existing tenant creation paths preserve their audit coverage.
+
+  **Acceptance:** a successful place create has exactly one matching audit entry.
+  A failed audit write rolls back place creation, and a rejected request adds
+  neither a place nor an audit record.
+- **FT-070 Return structured client errors for invalid inputs and duplicate links.**
+  `To do · P2 · #10`. Parse path and request body UUIDs through field-aware
+  validation. Map invalid enum values such as `CreatePersonRequest.sex`, and
+  malformed JSON, to structured `400` responses through `StatusPagesConfig`.
+  Compare parsed UUIDs when checking whether union partners are the same. Map the
+  specific duplicate union-child key conflict to `409`, including concurrent
+  requests. Avoid exposing database exception text.
+
+  **Acceptance:** table-driven route cases cover malformed IDs and enums,
+  invalid JSON, an unknown valid ID (`404`), and a repeated link (`409`).
+  A concurrent duplicate attempt leaves one link and one audit record.
+- **FT-071 Correct uncertain and inverted date bounds.** `To do · P2 · #11`.
+  In `:core`, change `Validation.validateDateOrder` to reject a range only when
+  the earliest possible start is later than the latest possible end. In
+  `GedcomDateParser`, preserve the display text and omit bounds for a reversed
+  `BET … AND …` expression or an unsupported calendar year. Avoid throwing on
+  out-of-range numeric input and guard approximate-year arithmetic.
+
+  **Acceptance:** unit tests cover two same-year dates, overlapping bounds,
+  clearly reversed bounds, a reversed `BET` expression, and out-of-range years.
+  Existing English and Spanish date parsing continues to pass.
+- **FT-072 Require authenticated PostgreSQL regression tests in CI.**
+  `To do · P1 · #7`. Use the test environment from FT-063 and add Ktor
+  `testApplication` route tests backed by a clean PostgreSQL 16 Testcontainer
+  with Flyway migrations. Authenticate through the production verifier using
+  test-signed JWTs and a controlled JWKS. Seed two trees, separate owners,
+  an active non-owner, and an invited account. Exercise the acceptance cases
+  from FT-003 and FT-065 through FT-068, plus the existing graph integration test.
+  Add the core and server test tasks to pull request CI and make the job a
+  merge gate. Extend coverage with tests from FT-069 through FT-071 as they land.
+
+  **Acceptance:** CI executes the tests against real PostgreSQL, fails on a
+  deliberate cross-tree regression, and passes with the fixes. The test run
+  uses disposable data and test keys.
 
 ---
 
 ## Database design
 
-PostgreSQL 16. One schema, `tree_id` on every tenant-owned table
-(`AGENTS.md`: *"every table has `tree_id`; every query filters by it"*).
+PostgreSQL 16. One schema. Most tenant-owned tables carry `tree_id`. FT-065
+adds it to `union_child` and `citation` and covers tenant-scoped references and queries.
 Relationships go through `union_record` / `union_child`, never direct parent/child
 columns on `person` (`AGENTS.md`: *"Union model"*). Source of truth:
 [`server/src/main/resources/db/migration/V1__init.sql`](../server/src/main/resources/db/migration/V1__init.sql).
@@ -493,10 +759,10 @@ GEDCOM-style event kinds. Same three-column date encoding as `union_record`.
 census, church record, newspaper, family bible, oral history, other — the "still open"
 list in `concept-architecture.md`).
 
-**`citation`** — ties one fact to one `source`. Polymorphic target: `target_type`
-(`PERSON`/`EVENT`/`UNION`) + `target_id` (no FK, since it can point at three different
-tables — enforced only in application code, matching `CitationTarget` in `:core`).
-`confidence` is `0`–`3` (unreliable → primary evidence).
+**`citation`** — ties one fact to one `source`. The polymorphic target is
+`target_type` (`PERSON`/`EVENT`/`UNION`) plus `target_id`. The current schema has no
+target FK. FT-002 adds application-level validation using `CitationTarget` in
+`:core`. `confidence` ranges from `0` to `3` (unreliable → primary evidence).
 
 **`membership`** — links an `account` to a `tree` and, once set, to that member's own
 `person` (drives the Phase 2 home-branch calculation). Composite PK
@@ -511,9 +777,9 @@ migration if that changes.
 
 ### Deliberate omissions (for now)
 
-- **No row-level security yet.** Every table-scoping check happens in the service
-  layer (`TreeService.getTreeForMember`); RLS as a defense-in-depth backstop is a
-  Phase-2-or-later hardening pass, not required to ship Phase 1 correctly.
+- **No row-level security yet.** `TreeService.getTreeForMember` checks membership
+  for the requested tree. FT-065 covers remaining lookup and referential integrity
+  gaps. FT-017 tracks RLS as a later defense-in-depth measure.
 - **No `grant` / `change_proposal` tables yet.** Those belong to Phase 2
   (branches and sharing) per the roadmap in `concept-architecture.md`, and adding them
   speculatively now would mean designing branch-scope resolution before any UI or API
