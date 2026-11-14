@@ -70,6 +70,16 @@ Run the relevant tests before saying a change is done.
 - **Migrations**: schema changes only through new Flyway migration files; never edit an applied migration.
 - No secrets in the repo; use env vars / AWS Secrets Manager. `local.properties` is git-ignored.
 
+## Story review workflow
+
+- Start each story on a dedicated branch based on `main`. Include the story ID in
+  the branch name and pull request title when one exists.
+- Commit the implementation, tests, and affected documentation on the story branch.
+  Run the relevant checks, push the branch, and open one pull request per completed
+  story targeting `main`. Include what changed, why, and how it was verified.
+- Share the pull request link and leave it open for review. Merge into `main` only
+  after review and explicit authorization.
+
 ## Conventions
 
 - Kotlin official code style (`kotlin.code.style=official`).
