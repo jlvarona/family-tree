@@ -142,12 +142,12 @@ Every request passes through the Permissions module; photos upload straight from
 | Layer | Choice | Why |
 | --- | --- | --- |
 | API server | Kotlin + Ktor, REST + OpenAPI, coroutines | Lightweight, shares kotlinx.serialization DTOs with the clients |
-| Persistence | PostgreSQL 16 on RDS, Exposed or jOOQ, Flyway | Recursive CTEs for branch queries; row-level tree_id isolation |
+| Persistence | PostgreSQL 16, Exposed, Flyway. RDS for deployment | Recursive CTEs for branch queries. Row-level security is planned |
 | Search | Postgres full-text + pg_trgm | Fuzzy name search and duplicate check without another system |
 | Media | Amazon S3 + CloudFront, presigned uploads, thumbnail worker | Photos never pass through the API server |
 | Background jobs | Amazon SQS (or a Postgres job table) + worker | Grant-scope rebuilds, thumbnails, emails |
 | Real-time | WebSocket or SSE per tree | Collaborators see edits live |
-| Auth | OIDC: email/password + Google + Apple; JWT | Cognito or Keycloak — open question |
+| Auth | Keycloak OIDC with JWTs. Google and Apple sign-in are planned | Self-hosted provider for local development and production |
 | Email | Amazon SES | Invites, notifications |
 | Hosting | AWS: ECS Fargate, RDS PostgreSQL, S3 + CloudFront, Terraform | Simple to start, scales horizontally |
 | Billing (later) | Stripe Checkout + webhooks | Per-tree subscription or paid storage |

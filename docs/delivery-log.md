@@ -25,6 +25,9 @@ the ancestor/descendant assertions ran, and the connection pool shut down.
 The local Gradle run used a shorter JVM socket temp path and an offline repository
 with Maven Central artifacts to work around environment-specific Gradle errors.
 The README records the standard Windows and Linux commands.
+The repository guidance now asks agents to review affected documentation before
+committing changes. The architecture docs reflect the selected server stack and
+link to the test instructions.
 
 ## 2026-11-14 — Review of the Phase 1 foundation
 

@@ -22,7 +22,7 @@ flowchart TB
   B --> C
   B --> PG[(PostgreSQL / RDS)]
   B --> S3[S3 + CloudFront]
-  B --> AU["Auth: OIDC (Cognito or Keycloak, TBD)"]
+  B --> AU["Auth: Keycloak OIDC"]
   B --> SES[Amazon SES]
   Clients -. presigned photo upload .-> S3
 ```
@@ -61,7 +61,8 @@ Feature packages under `com.moxietech.family_tree.server.<feature>`, each with `
 (grant resolution, scope cache, proposal routing), `media`, `sources`, `collaboration` (proposals, audit, activity),
 `notifications`. Later: `importexport` (GEDCOM), `billing` (Stripe).
 
-- Persistence: PostgreSQL 16, Flyway migrations, Exposed or jOOQ (TBD). Branch queries via recursive CTEs over `union`/`union_child`. `GrantScope` cache of resolved person IDs per grant, rebuilt by a background job when the graph changes. Row-level security on `tree_id` as a backstop.
+- Persistence uses PostgreSQL 16, Flyway migrations, and Exposed. Ancestor and descendant queries use recursive CTEs over `union_record` and `union_child`. The planned `GrantScope` cache will store resolved person IDs per grant and rebuild when the graph changes. Row-level security is tracked as a future backstop.
+- Repository integration tests start a disposable PostgreSQL 16 container and apply Flyway migrations. See the [README test commands](README.md#running-tests).
 - Every request: authenticate (JWT) → load membership → resolve scope → check with `:core` permission rules → execute → audit.
 - Media: presigned S3 uploads/downloads, thumbnails in a worker, EXIF GPS stripped.
 - Jobs: SQS (or Postgres job table) + worker in the same codebase.
@@ -83,6 +84,4 @@ invitation-only; billing (per-tree subscription or paid storage) comes later.
 
 ## Open decisions
 
-- Auth provider: Cognito vs Keycloak.
-- Persistence library: Exposed vs jOOQ.
 - Which citation source types to support first.

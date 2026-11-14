@@ -9,10 +9,15 @@ Instructions for AI coding agents (Claude Code, Codex, Junie, etc.) working in t
 3. [docs/mockups/](docs/mockups/) — desktop tree view and person page (layout reference; they render only on the design canvas).
 4. [docs/delivery-log.md](docs/delivery-log.md) — what's actually been built so far, session by session, and the current DB design. Add an entry here at the end of a session that changes what's built; don't let it drift from the code.
 
+Before committing a change, review all affected documentation. Update the README for setup, commands, or
+test requirements, the architecture and decisions docs for design changes, and the delivery log for
+shipped work, verification, schema changes, or backlog status. Include the relevant documentation
+updates in the commit that changes the behavior.
+
 ## Project status
 
-Fresh Kotlin Multiplatform template (wizard-generated). Business code has not been written yet; `Greeting*`,
-`Platform*` and `GreetingUtil` are template placeholders and can be replaced. Not yet a git repository.
+The Phase 1 server foundation and shared domain model are implemented. The Compose clients still use
+the starter UI. See [the delivery log](docs/delivery-log.md) for the current backlog and verification.
 
 Current roadmap phase: **1. Foundations** — accounts, trees, people, unions, events, sources; full-tree and
 ancestor/descendant views on web; photo upload.
@@ -20,7 +25,8 @@ ancestor/descendant views on web; photo upload.
 ## Stack
 
 - Kotlin 2.4, Gradle (Kotlin DSL) with version catalog `gradle/libs.versions.toml`. Add every dependency there, never inline versions.
-- Server: Ktor 3 (Netty), logback. Planned: kotlinx.serialization, Flyway, PostgreSQL driver, Exposed or jOOQ, Testcontainers, AWS SDK (S3, SES, SQS).
+- Server: Ktor 3 (Netty), logback, kotlinx.serialization, PostgreSQL, Exposed, Flyway, and Keycloak OIDC.
+  Integration tests use Testcontainers. AWS SDK integrations are planned for S3, SES, and SQS.
 - Clients: Compose Multiplatform 1.12, Material 3, lifecycle view models. Planned: Ktor client, kotlinx.serialization, SQLDelight (mobile cache), Coil (images).
 - Targets: Android, iOS (arm64 + simulator), JVM desktop, JS + Wasm web, JVM server.
 
