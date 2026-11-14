@@ -24,7 +24,7 @@ exposed = "1.0.0"
 flyway = "11.9.1"
 postgresql = "42.7.5"
 hikaricp = "6.3.0"
-testcontainers = "1.21.0"
+testcontainers = "1.21.4"
 
 [libraries]
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }

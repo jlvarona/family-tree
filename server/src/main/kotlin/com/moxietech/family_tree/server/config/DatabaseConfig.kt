@@ -31,7 +31,7 @@ val DatabaseDispatcher = Executors.newFixedThreadPool(
 
 object DatabaseConfig {
 
-    fun createDataSource(settings: DatabaseSettings = DatabaseSettings()): DataSource {
+    fun createDataSource(settings: DatabaseSettings = DatabaseSettings()): HikariDataSource {
         val hikariConfig = HikariConfig().apply {
             jdbcUrl = settings.jdbcUrl
             username = settings.user

@@ -6,8 +6,10 @@ import com.moxietech.family_tree.domain.Sex
 import com.moxietech.family_tree.domain.UnionType
 import com.moxietech.family_tree.server.config.AppDatabase
 import com.moxietech.family_tree.server.config.DatabaseConfig
+import com.moxietech.family_tree.server.config.DatabaseSettings
 import com.moxietech.family_tree.server.identity.AccountRepository
 import com.moxietech.family_tree.server.trees.TreeRepository
+import com.zaxxer.hikari.HikariDataSource
 import org.junit.AfterClass
 import org.junit.BeforeClass
 import org.junit.ClassRule
@@ -31,11 +33,13 @@ class GraphIntegrationTest {
         @ClassRule
         val postgres: PostgreSQLContainer<*> = PostgreSQLContainer("postgres:16")
 
+        private lateinit var dataSource: HikariDataSource
+
         @JvmStatic
         @BeforeClass
         fun setUpDatabase() {
-            val dataSource = DatabaseConfig.createDataSource(
-                com.moxietech.family_tree.server.config.DatabaseSettings(
+            dataSource = DatabaseConfig.createDataSource(
+                DatabaseSettings(
                     jdbcUrl = postgres.jdbcUrl,
                     user = postgres.username,
                     password = postgres.password,
@@ -49,7 +53,7 @@ class GraphIntegrationTest {
         @JvmStatic
         @AfterClass
         fun tearDownDatabase() {
-            postgres.stop()
+            if (::dataSource.isInitialized) dataSource.close()
         }
     }
 

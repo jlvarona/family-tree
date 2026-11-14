@@ -171,9 +171,20 @@ Or use the run configurations in your IDE's toolbar instead of the CLI for any o
 ./gradlew check                                 # everything above, the intended full gate (slow; prefer the targeted commands while iterating)
 ```
 
-`:server:test` needs Docker running (it spins up its own throwaway Postgres container
-via Testcontainers, separate from the `docker-compose` one above — no need to
-`docker compose up` first just to run tests).
+`:server:test` needs a running Docker engine. Testcontainers starts a disposable
+`postgres:16` container and applies the Flyway migrations. A Docker discovery
+failure fails the test. The graph integration test was verified on Windows with
+Docker Desktop (Engine 29.7.2) and Testcontainers 1.21.4.
+
+Run the graph integration test on its own:
+
+```powershell
+.\gradlew.bat :server:test --tests "*GraphIntegrationTest"
+```
+
+```bash
+bash ./gradlew :server:test --tests "*GraphIntegrationTest"
+```
 
 Per-module HTML test reports: `<module>/build/reports/tests/test/index.html`. Raw JUnit
 XML: `<module>/build/test-results/test/*.xml`.
