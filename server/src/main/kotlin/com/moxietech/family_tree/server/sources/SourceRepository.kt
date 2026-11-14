@@ -9,6 +9,7 @@ import com.moxietech.family_tree.server.db.SourceTable
 import kotlinx.datetime.toJavaLocalDate
 import kotlinx.datetime.toKotlinLocalDate
 import org.jetbrains.exposed.v1.core.ResultRow
+import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
@@ -17,8 +18,9 @@ import kotlin.uuid.Uuid
 
 object SourceRepository {
 
-    fun findById(id: Uuid): Source? = transaction {
-        SourceTable.selectAll().where { SourceTable.id eq id }.firstOrNull()?.toSource()
+    /** Null when [id] doesn't exist or belongs to another tree; callers treat both as not found. */
+    fun findById(treeId: Uuid, id: Uuid): Source? = transaction {
+        SourceTable.selectAll().where { (SourceTable.id eq id) and (SourceTable.treeId eq treeId) }.firstOrNull()?.toSource()
     }
 
     fun listByTree(treeId: Uuid): List<Source> = transaction {
@@ -50,7 +52,7 @@ object SourceRepository {
             it[SourceTable.dateLatest] = date?.latest?.toJavaLocalDate()
             it[SourceTable.version] = 1
         }
-        findById(id) ?: error("Source $id was just inserted but cannot be read back")
+        findById(treeId, id) ?: error("Source $id was just inserted but cannot be read back")
     }
 
     private fun ResultRow.toSource() = Source(

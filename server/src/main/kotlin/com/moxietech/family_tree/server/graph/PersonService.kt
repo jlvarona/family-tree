@@ -14,7 +14,6 @@ import com.moxietech.family_tree.format.DuplicatePersonScorer
 import com.moxietech.family_tree.server.collaboration.AuditJson
 import com.moxietech.family_tree.server.collaboration.AuditLogRepository
 import com.moxietech.family_tree.server.config.DatabaseDispatcher
-import com.moxietech.family_tree.server.errors.NotFoundException
 import com.moxietech.family_tree.server.errors.requireValid
 import com.moxietech.family_tree.server.trees.TreeService
 import com.moxietech.family_tree.validation.Validation
@@ -93,23 +92,30 @@ object PersonService {
     suspend fun getPerson(treeId: TreeId, personId: PersonId, callerAccountId: AccountId): PersonDto {
         val tree = TreeService.getTreeForMember(treeId, callerAccountId)
         val person = withContext(DatabaseDispatcher) {
-            PersonRepository.findById(Uuid.parse(personId.value))
-        } ?: throw NotFoundException("No person with id ${personId.value}")
-        require(person.treeId == treeId) { "Person ${personId.value} does not belong to tree ${treeId.value}" }
+            TreeScopedLookups.requirePerson(Uuid.parse(treeId.value), Uuid.parse(personId.value))
+        }
         return person.toViewerDto(tree, callerAccountId)
     }
 
+    /** 404 when the anchor isn't in [treeId], rather than an empty list that hides the mistake. */
     suspend fun ancestorsOf(treeId: TreeId, personId: PersonId, callerAccountId: AccountId): List<PersonDto> {
         val tree = TreeService.getTreeForMember(treeId, callerAccountId)
+        val treeUuid = Uuid.parse(treeId.value)
+        val personUuid = Uuid.parse(personId.value)
         return withContext(DatabaseDispatcher) {
-            PersonRepository.ancestorsOf(Uuid.parse(personId.value), Uuid.parse(treeId.value))
+            TreeScopedLookups.requirePerson(treeUuid, personUuid)
+            PersonRepository.ancestorsOf(personUuid, treeUuid)
         }.map { it.toViewerDto(tree, callerAccountId) }
     }
 
+    /** 404 when the anchor isn't in [treeId], rather than an empty list that hides the mistake. */
     suspend fun descendantsOf(treeId: TreeId, personId: PersonId, callerAccountId: AccountId): List<PersonDto> {
         val tree = TreeService.getTreeForMember(treeId, callerAccountId)
+        val treeUuid = Uuid.parse(treeId.value)
+        val personUuid = Uuid.parse(personId.value)
         return withContext(DatabaseDispatcher) {
-            PersonRepository.descendantsOf(Uuid.parse(personId.value), Uuid.parse(treeId.value))
+            TreeScopedLookups.requirePerson(treeUuid, personUuid)
+            PersonRepository.descendantsOf(personUuid, treeUuid)
         }.map { it.toViewerDto(tree, callerAccountId) }
     }
 

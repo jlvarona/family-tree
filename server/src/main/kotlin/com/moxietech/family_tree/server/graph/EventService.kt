@@ -32,17 +32,19 @@ object EventService {
 
         return withContext(DatabaseDispatcher) {
             transaction {
-                val placeUuid = request.placeId?.let { Uuid.parse(it) }
+                val treeUuid = Uuid.parse(treeId.value)
+                val person = request.personId?.let { TreeScopedLookups.requirePerson(treeUuid, Uuid.parse(it)) }
+                val union = request.unionId?.let { TreeScopedLookups.requireUnion(treeUuid, Uuid.parse(it)) }
+                val place = request.placeId?.let { TreeScopedLookups.requirePlace(treeUuid, Uuid.parse(it)) }
                 val event = EventRepository.insert(
-                    treeId = Uuid.parse(treeId.value),
-                    personId = request.personId?.let { Uuid.parse(it) },
-                    unionId = request.unionId?.let { Uuid.parse(it) },
+                    treeId = treeUuid,
+                    personId = person?.let { Uuid.parse(it.id.value) },
+                    unionId = union?.let { Uuid.parse(it.id.value) },
                     type = type,
                     date = date,
-                    placeId = placeUuid,
+                    placeId = place?.let { Uuid.parse(it.id.value) },
                     notes = request.notes,
                 )
-                val place = placeUuid?.let { PlaceRepository.findById(it) }
                 val dto = event.toDto(place)
                 AuditLogRepository.append(
                     treeId = Uuid.parse(treeId.value),
@@ -62,8 +64,10 @@ object EventService {
         TreeService.getTreeForMember(treeId, callerAccountId)
         return withContext(DatabaseDispatcher) {
             transaction {
-                EventRepository.listByPerson(Uuid.parse(personId.value)).map { event ->
-                    val place = event.placeId?.let { PlaceRepository.findById(Uuid.parse(it.value)) }
+                val treeUuid = Uuid.parse(treeId.value)
+                val person = TreeScopedLookups.requirePerson(treeUuid, Uuid.parse(personId.value))
+                EventRepository.listByPerson(treeUuid, Uuid.parse(person.id.value)).map { event ->
+                    val place = event.placeId?.let { PlaceRepository.findById(treeUuid, Uuid.parse(it.value)) }
                     event.toDto(place)
                 }
             }

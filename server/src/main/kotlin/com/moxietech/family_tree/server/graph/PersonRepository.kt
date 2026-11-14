@@ -9,6 +9,7 @@ import com.moxietech.family_tree.domain.TreeId
 import com.moxietech.family_tree.server.config.AppDatabase
 import com.moxietech.family_tree.server.db.PersonTable
 import org.jetbrains.exposed.v1.core.ResultRow
+import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
@@ -21,8 +22,9 @@ import kotlin.uuid.toJavaUuid
 
 object PersonRepository {
 
-    fun findById(id: Uuid): Person? = transaction {
-        PersonTable.selectAll().where { PersonTable.id eq id }.firstOrNull()?.toPerson()
+    /** Null when [id] doesn't exist or belongs to another tree; callers treat both as not found. */
+    fun findById(treeId: Uuid, id: Uuid): Person? = transaction {
+        PersonTable.selectAll().where { (PersonTable.id eq id) and (PersonTable.treeId eq treeId) }.firstOrNull()?.toPerson()
     }
 
     fun listByTree(treeId: Uuid): List<Person> = transaction {
@@ -55,7 +57,7 @@ object PersonRepository {
             it[PersonTable.createdAt] = now
             it[PersonTable.updatedAt] = now
         }
-        findById(id) ?: error("Person $id was just inserted but cannot be read back")
+        findById(treeId, id) ?: error("Person $id was just inserted but cannot be read back")
     }
 
     /**
@@ -63,6 +65,11 @@ object PersonRepository {
      * CTE over union_record/union_child (ARCHITECTURE.md). Raw SQL: Exposed's
      * DSL does not model recursive CTEs cleanly, and this is exactly the
      * Postgres-specific, perf-critical case raw SQL is allowed for.
+     *
+     * Tenant isolation (FT-065): the anchor, every join and every recursive
+     * step are constrained to [treeId], not just the final select, so a
+     * cross-tree link can never be traversed even if one existed. V2's
+     * same-tree foreign keys make such links impossible to insert anyway.
      */
     fun ancestorsOf(personId: Uuid, treeId: Uuid): List<Person> = rawQuery(
         sql = """
@@ -73,20 +80,20 @@ object PersonRepository {
                 -- separately self-referencing subqueries.
                 select parent.id
                 from union_child uc
-                join union_record ur on ur.id = uc.union_id
+                join union_record ur on ur.id = uc.union_id and ur.tree_id = uc.tree_id
                 cross join lateral (values (ur.partner1_id), (ur.partner2_id)) as parent(id)
-                where uc.child_id = ? and parent.id is not null
+                where uc.child_id = ? and uc.tree_id = ? and parent.id is not null
                 union
                 select parent.id
                 from ancestors a
-                join union_child uc on uc.child_id = a.id
-                join union_record ur on ur.id = uc.union_id
+                join union_child uc on uc.child_id = a.id and uc.tree_id = ?
+                join union_record ur on ur.id = uc.union_id and ur.tree_id = uc.tree_id
                 cross join lateral (values (ur.partner1_id), (ur.partner2_id)) as parent(id)
                 where parent.id is not null
             )
             select p.* from person p join ancestors a on a.id = p.id where p.tree_id = ?
         """.trimIndent(),
-        params = listOf(personId, treeId),
+        params = listOf(personId, treeId, treeId, treeId),
     )
 
     /** Descendants of [personId] (children, grandchildren, ...), via the mirror-image recursive CTE. */
@@ -94,17 +101,18 @@ object PersonRepository {
         sql = """
             with recursive descendants(id) as (
                 select uc.child_id as id
-                from union_record ur join union_child uc on uc.union_id = ur.id
-                where ur.partner1_id = ? or ur.partner2_id = ?
+                from union_record ur
+                join union_child uc on uc.union_id = ur.id and uc.tree_id = ur.tree_id
+                where (ur.partner1_id = ? or ur.partner2_id = ?) and ur.tree_id = ?
                 union
                 select uc.child_id
                 from descendants d
-                join union_record ur on ur.partner1_id = d.id or ur.partner2_id = d.id
-                join union_child uc on uc.union_id = ur.id
+                join union_record ur on (ur.partner1_id = d.id or ur.partner2_id = d.id) and ur.tree_id = ?
+                join union_child uc on uc.union_id = ur.id and uc.tree_id = ur.tree_id
             )
             select p.* from person p join descendants d on d.id = p.id where p.tree_id = ?
         """.trimIndent(),
-        params = listOf(personId, personId, treeId),
+        params = listOf(personId, personId, treeId, treeId, treeId),
     )
 
     private fun rawQuery(sql: String, params: List<Uuid>): List<Person> {

@@ -102,7 +102,7 @@ class GraphIntegrationTest {
             startDate = null,
             endDate = null,
         )
-        UnionRepository.addChild(Uuid.parse(union.id.value), Uuid.parse(child.id.value), ChildRelation.BIRTH)
+        UnionRepository.addChild(treeUuid, Uuid.parse(union.id.value), Uuid.parse(child.id.value), ChildRelation.BIRTH)
 
         val ancestorsOfChild = PersonRepository.ancestorsOf(Uuid.parse(child.id.value), treeUuid)
         assertEquals(setOf(father.id, mother.id), ancestorsOfChild.map { it.id }.toSet())

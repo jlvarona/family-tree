@@ -13,7 +13,6 @@ import com.moxietech.family_tree.format.GedcomDateParser
 import com.moxietech.family_tree.server.collaboration.AuditJson
 import com.moxietech.family_tree.server.collaboration.AuditLogRepository
 import com.moxietech.family_tree.server.config.DatabaseDispatcher
-import com.moxietech.family_tree.server.errors.NotFoundException
 import com.moxietech.family_tree.server.errors.ValidationException
 import com.moxietech.family_tree.server.errors.requireValid
 import com.moxietech.family_tree.server.trees.TreeService
@@ -39,10 +38,13 @@ object UnionService {
 
         return withContext(DatabaseDispatcher) {
             transaction {
+                val treeUuid = Uuid.parse(treeId.value)
+                val partner1 = TreeScopedLookups.requirePerson(treeUuid, Uuid.parse(request.partner1Id))
+                val partner2 = request.partner2Id?.let { TreeScopedLookups.requirePerson(treeUuid, Uuid.parse(it)) }
                 val union = UnionRepository.insert(
-                    treeId = Uuid.parse(treeId.value),
-                    partner1Id = Uuid.parse(request.partner1Id),
-                    partner2Id = request.partner2Id?.let { Uuid.parse(it) },
+                    treeId = treeUuid,
+                    partner1Id = Uuid.parse(partner1.id.value),
+                    partner2Id = partner2?.let { Uuid.parse(it.id.value) },
                     type = type,
                     startDate = startDate,
                     endDate = endDate,
@@ -74,14 +76,16 @@ object UnionService {
         }
         return withContext(DatabaseDispatcher) {
             transaction {
-                val union = UnionRepository.findById(Uuid.parse(unionId.value))
-                    ?: throw NotFoundException("No union with id ${unionId.value}")
+                val treeUuid = Uuid.parse(treeId.value)
+                val union = TreeScopedLookups.requireUnion(treeUuid, Uuid.parse(unionId.value))
+                val child = TreeScopedLookups.requirePerson(treeUuid, Uuid.parse(request.childId))
                 UnionRepository.addChild(
-                    unionId = Uuid.parse(unionId.value),
-                    childId = Uuid.parse(request.childId),
+                    treeId = treeUuid,
+                    unionId = Uuid.parse(union.id.value),
+                    childId = Uuid.parse(child.id.value),
                     relation = relation,
                 )
-                val children = UnionRepository.childrenOf(Uuid.parse(unionId.value))
+                val children = UnionRepository.childrenOf(treeUuid, Uuid.parse(union.id.value))
                 val dto = union.toDto(children)
                 AuditLogRepository.append(
                     treeId = Uuid.parse(treeId.value),
@@ -102,7 +106,7 @@ object UnionService {
         return withContext(DatabaseDispatcher) {
             transaction {
                 UnionRepository.listByTree(Uuid.parse(treeId.value)).map { union ->
-                    union.toDto(UnionRepository.childrenOf(Uuid.parse(union.id.value)))
+                    union.toDto(UnionRepository.childrenOf(Uuid.parse(treeId.value), Uuid.parse(union.id.value)))
                 }
             }
         }

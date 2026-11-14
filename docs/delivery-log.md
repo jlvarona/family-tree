@@ -254,7 +254,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 
 ### Status board
 
-**Done (12)** · **In progress (0)** · **To do (42)** · **Blocked (1)**
+**Done (12)** · **In progress (1)** · **To do (41)** · **Blocked (1)**
 
 | Order | ID | Story | Epic | Priority | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -270,7 +270,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 | — | FT-099 | Local dev environment | E0 | P1 | Done |
 | — | FT-100 | Repair the desktop/shared starter build | E0 | P2 | Done |
 | — | FT-063 | Restore PostgreSQL integration tests on Docker | E7 | P1 | Done |
-| 1 | FT-065 | Enforce tenant isolation in graph routes and PostgreSQL | E7 | P1 | To do |
+| 1 | FT-065 | Enforce tenant isolation in graph routes and PostgreSQL | E7 | P1 | In progress |
 | 2 | FT-068 | Require active membership and authorize writes separately | E7 | P1 | To do |
 | 3 | FT-066 | Apply living-person privacy across API responses | E7 | P1 | To do |
 | 4 | FT-067 | Require API audience on Keycloak access tokens | E7 | P1 | To do |
@@ -502,7 +502,7 @@ desktop/shared build repair.
   parameterizing the ports (or a per-developer override file) would let both projects'
   stacks coexist without a manual `CREATE ROLE`/`CREATE DATABASE` each time.
 - **FT-065 Enforce tenant isolation in graph routes and PostgreSQL.**
-  `To do · P1 · #1`. In `server/graph`, require the authorized tree ID for
+  `In progress · P1 · #1`. In `server/graph`, require the authorized tree ID for
   resource lookups and constrain each anchor, join, and recursive step in the
   ancestor/descendant queries. Scope person event reads and embedded places. For
   event creation, resolve the event's person or union and optional place in that
