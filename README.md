@@ -189,6 +189,12 @@ bash ./gradlew :server:test --tests "*GraphIntegrationTest"
 Per-module HTML test reports: `<module>/build/reports/tests/test/index.html`. Raw JUnit
 XML: `<module>/build/test-results/test/*.xml`.
 
+## Contributing
+
+Open a separate pull request into `main` for each completed story. Include relevant
+documentation updates and test results, and leave the PR open for review before
+merging. See the [story review workflow](AGENTS.md#story-review-workflow).
+
 ## Logs
 
 - **Server logs** go to stdout of whatever shell ran `./gradlew :server:run` — there's
