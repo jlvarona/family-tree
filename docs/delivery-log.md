@@ -33,16 +33,17 @@ composite same-tree foreign keys on every reference listed above. The polymorphi
 citation target still has no foreign key; FT-002 validates it in the application.
 Exposed mappings gained the two new columns.
 
-**Verification.** `gradlew.bat :server:test` passed 12 tests on Windows, Docker
+**Verification.** `gradlew.bat :server:test` passed 13 tests on Windows, Docker
 Engine 29.7.2, PostgreSQL 16:
-- `TenantIsolationTest` (7): cross-tree reads and writes return `404` with the same
+- `TenantIsolationTest` (8): cross-tree reads and writes return `404` with the same
   message as a missing ID; rejected writes leave per-tree row counts of every graph
   table and `audit_log` unchanged; tree-wide lists contain only the caller's tree;
   same-tree unions, child links, events with places and ancestor/descendant queries
   still work. One direct cross-tree insert per same-tree foreign key (all nine,
   including the second partner and a foreign child in a same-tree union) fails with
   SQLSTATE `23503`, and the test asserts the name of the constraint that rejected it.
-  Removing the partner-2 and child constraints from V2 makes that test fail.
+  Removing the partner-2 and child constraints from V2 makes that test fail. A child
+  link to a missing union stays a `404` even when the child ID is malformed.
 - `TreeScopedMigrationTest` (2): migrates fresh databases to V1, plants historical
   rows, then runs V2. Bad rows stop the migration with each offending ID named and no
   V2 column created; consistent rows are backfilled.
@@ -662,7 +663,10 @@ desktop/shared build repair.
 PostgreSQL 16. One schema. Every tenant-owned table carries `tree_id` (`union_child`
 and `citation` since V2), and every reference between tenant-owned rows is a
 composite `(id, tree_id)` foreign key, so a row can only point at rows in its own
-tree. Relationships go through `union_record` / `union_child`, never direct parent/child
+tree. **One exception:** the polymorphic citation target (`target_type` +
+`target_id`) has no foreign key. V2's preflight checked existing targets once, during
+the migration; ongoing target validation is deferred to the application in FT-002.
+Relationships go through `union_record` / `union_child`, never direct parent/child
 columns on `person` (`AGENTS.md`: *"Union model"*). Source of truth, in order:
 [`V1__init.sql`](../server/src/main/resources/db/migration/V1__init.sql),
 [`V2__tree_scoped_references.sql`](../server/src/main/resources/db/migration/V2__tree_scoped_references.sql).

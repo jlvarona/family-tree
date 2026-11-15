@@ -80,8 +80,10 @@ object UnionService {
             transaction {
                 val treeUuid = Uuid.parse(treeId.value)
                 val unionUuid = Uuid.parse(unionId.value)
-                val childUuid = Uuid.parse(request.childId)
+                // Resolve the union before touching the body: a missing union stays a 404
+                // even when childId is malformed (malformed-ID 400s are FT-070's scope).
                 val union = TreeScopedLookups.requireUnion(treeUuid, unionUuid)
+                val childUuid = Uuid.parse(request.childId)
                 TreeScopedLookups.requirePerson(treeUuid, childUuid)
                 UnionRepository.addChild(
                     treeId = treeUuid,

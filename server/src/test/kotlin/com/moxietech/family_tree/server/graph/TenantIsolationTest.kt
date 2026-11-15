@@ -185,6 +185,16 @@ class TenantIsolationTest {
     }
 
     @Test
+    fun `a child link to a missing union is a 404 even when the child id is malformed`() {
+        val missingUnion = UUID.randomUUID().toString()
+        assertNotFound {
+            UnionService.addChild(
+                treeA.id, UnionId(missingUnion), ownerA.id, AddUnionChildRequest(childId = "not-a-uuid", relation = "BIRTH"),
+            )
+        }
+    }
+
+    @Test
     fun `same-tree graph traversal and writes still work`() = runBlocking {
         val father = person(treeA, ownerA, "Carlos")
         val mother = person(treeA, ownerA, "Elena")
