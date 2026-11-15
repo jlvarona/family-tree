@@ -302,6 +302,7 @@ Docker Desktop (Engine 29.7.2) and Testcontainers 1.21.4. The Postgres-backed su
 are `GraphIntegrationTest`, `TenantIsolationTest` (cross-tree access, FT-065),
 `MembershipAccessTest` (active membership and owner-only writes, FT-068),
 `LivingPrivacyTest` (living-person privacy across responses, FT-066),
+`PlaceAuditTest` (place creation and its audit entry commit or roll back together, FT-069),
 `OidcAccessTokenTest` (token audience, type and expiry through the production
 verifier with a test JWKS, FT-067), `AccountIdentityTest` (accounts keyed by issuer and
 subject: parallel first logins, email changes and reused emails, FT-003),
