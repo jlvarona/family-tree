@@ -2,11 +2,13 @@ package com.moxietech.family_tree.server.graph
 
 import com.moxietech.family_tree.api.CreatePersonRequest
 import com.moxietech.family_tree.api.CreatePersonResponse
+import com.moxietech.family_tree.domain.AccountId
 import com.moxietech.family_tree.domain.PersonId
 import com.moxietech.family_tree.domain.TreeId
 import com.moxietech.family_tree.server.config.OIDC_AUTH_NAME
 import com.moxietech.family_tree.server.errors.NotFoundException
 import com.moxietech.family_tree.server.identity.currentAccount
+import com.moxietech.family_tree.server.trees.TreeService
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
 import io.ktor.server.auth.authenticate
@@ -23,6 +25,7 @@ fun Route.personRoutes() {
             post {
                 val account = call.currentAccount()
                 val treeId = call.requireTreeId()
+                requireTreeWriter(treeId, account.id)
                 val request = call.receive<CreatePersonRequest>()
                 val (person, duplicates) = PersonService.createPerson(treeId, account.id, request)
                 call.respond(HttpStatusCode.Created, CreatePersonResponse(person.toDto(), duplicates))
@@ -59,3 +62,12 @@ internal fun io.ktor.server.application.ApplicationCall.requireTreeId(): TreeId 
 
 internal fun io.ktor.server.application.ApplicationCall.requirePathParam(name: String): String =
     parameters[name] ?: throw NotFoundException("Missing path parameter '$name'")
+
+/**
+ * Write check for a POST under a tree, run before the body is decoded so a
+ * caller who may not write gets 403 even for malformed JSON (FT-068). The
+ * service repeats the check, which keeps direct service callers covered.
+ */
+internal suspend fun requireTreeWriter(treeId: TreeId, accountId: AccountId) {
+    TreeService.getTreeForWriter(treeId, accountId)
+}

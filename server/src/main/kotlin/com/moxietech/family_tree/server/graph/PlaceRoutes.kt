@@ -19,6 +19,7 @@ fun Route.placeRoutes() {
             post {
                 val account = call.currentAccount()
                 val treeId = call.requireTreeId()
+                requireTreeWriter(treeId, account.id)
                 val request = call.receive<CreatePlaceRequest>()
                 call.respond(HttpStatusCode.Created, PlaceService.createPlace(treeId, account.id, request))
             }

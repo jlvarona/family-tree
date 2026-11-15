@@ -21,7 +21,7 @@ import kotlin.uuid.Uuid
 object EventService {
 
     suspend fun createEvent(treeId: TreeId, callerAccountId: AccountId, request: CreateEventRequest): EventDto {
-        TreeService.getTreeForMember(treeId, callerAccountId)
+        TreeService.getTreeForWriter(treeId, callerAccountId)
         if ((request.personId == null) == (request.unionId == null)) {
             throw ValidationException(listOf("An event must belong to exactly one of personId or unionId"))
         }
@@ -64,7 +64,7 @@ object EventService {
     }
 
     suspend fun listEventsForPerson(treeId: TreeId, personId: PersonId, callerAccountId: AccountId): List<EventDto> {
-        TreeService.getTreeForMember(treeId, callerAccountId)
+        TreeService.getTreeForReader(treeId, callerAccountId)
         return withContext(DatabaseDispatcher) {
             transaction {
                 val treeUuid = Uuid.parse(treeId.value)

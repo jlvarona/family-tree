@@ -29,7 +29,7 @@ object PersonService {
         callerAccountId: AccountId,
         request: CreatePersonRequest,
     ): Pair<Person, List<DuplicateCandidateDto>> {
-        val tree = TreeService.getTreeForMember(treeId, callerAccountId)
+        val tree = TreeService.getTreeForWriter(treeId, callerAccountId)
         Validation.validatePersonName(request.givenNames).requireValid()
         val sex = runCatching { Sex.valueOf(request.sex) }.getOrElse {
             throw IllegalArgumentException("Unknown sex '${request.sex}'")
@@ -83,14 +83,14 @@ object PersonService {
     }
 
     suspend fun listPeople(treeId: TreeId, callerAccountId: AccountId): List<PersonDto> {
-        val tree = TreeService.getTreeForMember(treeId, callerAccountId)
+        val tree = TreeService.getTreeForReader(treeId, callerAccountId)
         return withContext(DatabaseDispatcher) {
             PersonRepository.listByTree(Uuid.parse(treeId.value)).map { it.toViewerDto(tree, callerAccountId) }
         }
     }
 
     suspend fun getPerson(treeId: TreeId, personId: PersonId, callerAccountId: AccountId): PersonDto {
-        val tree = TreeService.getTreeForMember(treeId, callerAccountId)
+        val tree = TreeService.getTreeForReader(treeId, callerAccountId)
         val person = withContext(DatabaseDispatcher) {
             TreeScopedLookups.requirePerson(Uuid.parse(treeId.value), Uuid.parse(personId.value))
         }
@@ -99,7 +99,7 @@ object PersonService {
 
     /** 404 when the anchor isn't in [treeId], rather than an empty list that hides the mistake. */
     suspend fun ancestorsOf(treeId: TreeId, personId: PersonId, callerAccountId: AccountId): List<PersonDto> {
-        val tree = TreeService.getTreeForMember(treeId, callerAccountId)
+        val tree = TreeService.getTreeForReader(treeId, callerAccountId)
         val treeUuid = Uuid.parse(treeId.value)
         val personUuid = Uuid.parse(personId.value)
         return withContext(DatabaseDispatcher) {
@@ -110,7 +110,7 @@ object PersonService {
 
     /** 404 when the anchor isn't in [treeId], rather than an empty list that hides the mistake. */
     suspend fun descendantsOf(treeId: TreeId, personId: PersonId, callerAccountId: AccountId): List<PersonDto> {
-        val tree = TreeService.getTreeForMember(treeId, callerAccountId)
+        val tree = TreeService.getTreeForReader(treeId, callerAccountId)
         val treeUuid = Uuid.parse(treeId.value)
         val personUuid = Uuid.parse(personId.value)
         return withContext(DatabaseDispatcher) {

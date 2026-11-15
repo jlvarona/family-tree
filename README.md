@@ -175,7 +175,8 @@ Or use the run configurations in your IDE's toolbar instead of the CLI for any o
 `postgres:16` container and applies the Flyway migrations. A Docker discovery
 failure fails the test. The graph integration test was verified on Windows with
 Docker Desktop (Engine 29.7.2) and Testcontainers 1.21.4. The Postgres-backed suites
-are `GraphIntegrationTest`, `TenantIsolationTest` (cross-tree access, FT-065) and
+are `GraphIntegrationTest`, `TenantIsolationTest` (cross-tree access, FT-065),
+`MembershipAccessTest` (active membership and owner-only writes, FT-068) and
 `TreeScopedMigrationTest` (V2 migration preflight and backfill).
 
 **Gradle fails with `PKIX path building failed` or can't resolve plugins?** HTTPS

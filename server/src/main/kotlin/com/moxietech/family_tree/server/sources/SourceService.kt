@@ -22,7 +22,7 @@ import kotlin.uuid.Uuid
 object SourceService {
 
     suspend fun createSource(treeId: TreeId, callerAccountId: AccountId, request: CreateSourceRequest): SourceDto {
-        TreeService.getTreeForMember(treeId, callerAccountId)
+        TreeService.getTreeForWriter(treeId, callerAccountId)
         Validation.validateNotBlank("Source title", request.title).requireValid()
         val type = runCatching { SourceType.valueOf(request.type) }.getOrElse {
             throw ValidationException(listOf("Unknown source type '${request.type}'"))
@@ -57,7 +57,7 @@ object SourceService {
     }
 
     suspend fun listSources(treeId: TreeId, callerAccountId: AccountId): List<SourceDto> {
-        TreeService.getTreeForMember(treeId, callerAccountId)
+        TreeService.getTreeForReader(treeId, callerAccountId)
         return withContext(DatabaseDispatcher) {
             SourceRepository.listByTree(Uuid.parse(treeId.value))
         }.map { it.toDto() }
