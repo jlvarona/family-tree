@@ -8,9 +8,7 @@ import com.moxietech.family_tree.domain.AuditAction
 import com.moxietech.family_tree.domain.Person
 import com.moxietech.family_tree.domain.PersonId
 import com.moxietech.family_tree.domain.Sex
-import com.moxietech.family_tree.domain.Tree
 import com.moxietech.family_tree.domain.TreeId
-import com.moxietech.family_tree.format.DuplicatePersonScorer
 import com.moxietech.family_tree.server.collaboration.AuditJson
 import com.moxietech.family_tree.server.collaboration.AuditLogRepository
 import com.moxietech.family_tree.server.config.DatabaseDispatcher
@@ -38,23 +36,12 @@ object PersonService {
         return withContext(DatabaseDispatcher) {
             transaction {
                 val existing = PersonRepository.listByTree(Uuid.parse(treeId.value))
-                val duplicates = existing.mapNotNull { candidate ->
-                    val score = DuplicatePersonScorer.score(
-                        candidateGivenNames = request.givenNames,
-                        candidateSurnamePaternal = request.surnamePaternal,
-                        candidateSurnameMaternal = request.surnameMaternal,
-                        candidateBirthDate = null,
-                        candidateParentIds = emptySet(),
-                        existing = candidate,
-                        existingBirthDate = null,
-                        existingParentIds = emptySet(),
-                    )
-                    if (score >= DuplicatePersonScorer.WARNING_THRESHOLD) {
-                        DuplicateCandidateDto(person = candidate.toDto(), score = score)
-                    } else {
-                        null
-                    }
-                }
+                val duplicates = ViewerPolicy(tree, callerAccountId).duplicateCandidates(
+                    givenNames = request.givenNames,
+                    surnamePaternal = request.surnamePaternal,
+                    surnameMaternal = request.surnameMaternal,
+                    existing = existing,
+                )
 
                 val person = PersonRepository.insert(
                     treeId = Uuid.parse(treeId.value),
@@ -85,7 +72,7 @@ object PersonService {
     suspend fun listPeople(treeId: TreeId, callerAccountId: AccountId): List<PersonDto> {
         val tree = TreeService.getTreeForReader(treeId, callerAccountId)
         return withContext(DatabaseDispatcher) {
-            PersonRepository.listByTree(Uuid.parse(treeId.value)).map { it.toViewerDto(tree, callerAccountId) }
+            PersonRepository.listByTree(Uuid.parse(treeId.value)).map(ViewerPolicy(tree, callerAccountId)::project)
         }
     }
 
@@ -94,7 +81,7 @@ object PersonService {
         val person = withContext(DatabaseDispatcher) {
             TreeScopedLookups.requirePerson(Uuid.parse(treeId.value), Uuid.parse(personId.value))
         }
-        return person.toViewerDto(tree, callerAccountId)
+        return ViewerPolicy(tree, callerAccountId).project(person)
     }
 
     /** 404 when the anchor isn't in [treeId], rather than an empty list that hides the mistake. */
@@ -105,7 +92,7 @@ object PersonService {
         return withContext(DatabaseDispatcher) {
             TreeScopedLookups.requirePerson(treeUuid, personUuid)
             PersonRepository.ancestorsOf(personUuid, treeUuid)
-        }.map { it.toViewerDto(tree, callerAccountId) }
+        }.map(ViewerPolicy(tree, callerAccountId)::project)
     }
 
     /** 404 when the anchor isn't in [treeId], rather than an empty list that hides the mistake. */
@@ -116,12 +103,6 @@ object PersonService {
         return withContext(DatabaseDispatcher) {
             TreeScopedLookups.requirePerson(treeUuid, personUuid)
             PersonRepository.descendantsOf(personUuid, treeUuid)
-        }.map { it.toViewerDto(tree, callerAccountId) }
-    }
-
-    private fun Person.toViewerDto(tree: Tree, callerAccountId: AccountId): PersonDto {
-        val dto = toDto()
-        val canSeeLivingPeople = tree.ownerAccountId == callerAccountId
-        return if (isLiving && !canSeeLivingPeople) dto.redacted() else dto
+        }.map(ViewerPolicy(tree, callerAccountId)::project)
     }
 }

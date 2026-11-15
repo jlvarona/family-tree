@@ -108,12 +108,14 @@ object UnionService {
     }
 
     suspend fun listUnions(treeId: TreeId, callerAccountId: AccountId): List<UnionDto> {
-        TreeService.getTreeForReader(treeId, callerAccountId)
+        val tree = TreeService.getTreeForReader(treeId, callerAccountId)
+        val policy = ViewerPolicy(tree, callerAccountId)
         return withContext(DatabaseDispatcher) {
             transaction {
                 val treeUuid = Uuid.parse(treeId.value)
+                val hidden = policy.hiddenIds(PersonRepository.listByTree(treeUuid))
                 UnionRepository.listByTree(treeUuid).map { union ->
-                    union.toDto(UnionRepository.childrenOf(treeUuid, Uuid.parse(union.id.value)))
+                    policy.project(union, UnionRepository.childrenOf(treeUuid, Uuid.parse(union.id.value)), hidden)
                 }
             }
         }
