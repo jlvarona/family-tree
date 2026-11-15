@@ -8,14 +8,12 @@ import kotlinx.coroutines.withContext
 object AccountService {
 
     /**
-     * First call for a given email creates the account (just-in-time
-     * provisioning from the OIDC token); every later call returns the same
-     * row. Keyed on email for now — see AccountRepository note on adding a
-     * stable OIDC-subject column before launch, since email can change.
+     * Resolves the account bound to the verified [identity], provisioning it on
+     * first login (FT-003). [email] is the token's current address and is
+     * stored as profile data; it never selects, links or transfers an account.
      */
-    suspend fun getOrCreateForLogin(email: String, displayName: String): Account =
+    suspend fun getOrCreateForLogin(identity: OidcIdentity, email: String, displayName: String): Account =
         withContext(DatabaseDispatcher) {
-            AccountRepository.findByEmail(email)
-                ?: AccountRepository.insert(email, displayName, Locale.EN)
+            AccountRepository.getOrCreateByIdentity(identity, email, displayName, Locale.EN)
         }
 }

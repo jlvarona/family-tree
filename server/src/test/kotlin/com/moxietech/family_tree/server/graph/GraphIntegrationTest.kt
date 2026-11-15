@@ -8,6 +8,7 @@ import com.moxietech.family_tree.server.config.AppDatabase
 import com.moxietech.family_tree.server.config.DatabaseConfig
 import com.moxietech.family_tree.server.config.DatabaseSettings
 import com.moxietech.family_tree.server.identity.AccountRepository
+import com.moxietech.family_tree.server.identity.OidcIdentity
 import com.moxietech.family_tree.server.trees.TreeRepository
 import com.zaxxer.hikari.HikariDataSource
 import org.junit.AfterClass
@@ -59,7 +60,9 @@ class GraphIntegrationTest {
 
     @Test
     fun `ancestors and descendants resolve across a union and its child`() {
-        val account = AccountRepository.insert("tester@example.com", "Tester", Locale.EN)
+        val account = AccountRepository.getOrCreateByIdentity(
+            OidcIdentity("https://issuer.test", "tester"), "tester@example.com", "Tester", Locale.EN,
+        )
         val tree = TreeRepository.insert("Test Family", account.id)
         val treeUuid = Uuid.parse(tree.id.value)
 
