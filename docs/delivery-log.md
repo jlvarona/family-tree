@@ -39,8 +39,10 @@ Engine 29.7.2, PostgreSQL 16:
   message as a missing ID; rejected writes leave per-tree row counts of every graph
   table and `audit_log` unchanged; tree-wide lists contain only the caller's tree;
   same-tree unions, child links, events with places and ancestor/descendant queries
-  still work; direct cross-tree inserts fail with SQLSTATE `23503` for all six
-  references.
+  still work. One direct cross-tree insert per same-tree foreign key (all nine,
+  including the second partner and a foreign child in a same-tree union) fails with
+  SQLSTATE `23503`, and the test asserts the name of the constraint that rejected it.
+  Removing the partner-2 and child constraints from V2 makes that test fail.
 - `TreeScopedMigrationTest` (2): migrates fresh databases to V1, plants historical
   rows, then runs V2. Bad rows stop the migration with each offending ID named and no
   V2 column created; consistent rows are backfilled.

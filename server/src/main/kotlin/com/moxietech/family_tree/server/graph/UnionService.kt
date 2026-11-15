@@ -39,19 +39,21 @@ object UnionService {
         return withContext(DatabaseDispatcher) {
             transaction {
                 val treeUuid = Uuid.parse(treeId.value)
-                val partner1 = TreeScopedLookups.requirePerson(treeUuid, Uuid.parse(request.partner1Id))
-                val partner2 = request.partner2Id?.let { TreeScopedLookups.requirePerson(treeUuid, Uuid.parse(it)) }
+                val partner1Uuid = Uuid.parse(request.partner1Id)
+                val partner2Uuid = request.partner2Id?.let { Uuid.parse(it) }
+                TreeScopedLookups.requirePerson(treeUuid, partner1Uuid)
+                partner2Uuid?.let { TreeScopedLookups.requirePerson(treeUuid, it) }
                 val union = UnionRepository.insert(
                     treeId = treeUuid,
-                    partner1Id = Uuid.parse(partner1.id.value),
-                    partner2Id = partner2?.let { Uuid.parse(it.id.value) },
+                    partner1Id = partner1Uuid,
+                    partner2Id = partner2Uuid,
                     type = type,
                     startDate = startDate,
                     endDate = endDate,
                 )
                 val dto = union.toDto(children = emptyList())
                 AuditLogRepository.append(
-                    treeId = Uuid.parse(treeId.value),
+                    treeId = treeUuid,
                     actorAccountId = Uuid.parse(callerAccountId.value),
                     entityType = "Union",
                     entityId = union.id.value,
@@ -77,21 +79,23 @@ object UnionService {
         return withContext(DatabaseDispatcher) {
             transaction {
                 val treeUuid = Uuid.parse(treeId.value)
-                val union = TreeScopedLookups.requireUnion(treeUuid, Uuid.parse(unionId.value))
-                val child = TreeScopedLookups.requirePerson(treeUuid, Uuid.parse(request.childId))
+                val unionUuid = Uuid.parse(unionId.value)
+                val childUuid = Uuid.parse(request.childId)
+                val union = TreeScopedLookups.requireUnion(treeUuid, unionUuid)
+                TreeScopedLookups.requirePerson(treeUuid, childUuid)
                 UnionRepository.addChild(
                     treeId = treeUuid,
-                    unionId = Uuid.parse(union.id.value),
-                    childId = Uuid.parse(child.id.value),
+                    unionId = unionUuid,
+                    childId = childUuid,
                     relation = relation,
                 )
-                val children = UnionRepository.childrenOf(treeUuid, Uuid.parse(union.id.value))
+                val children = UnionRepository.childrenOf(treeUuid, unionUuid)
                 val dto = union.toDto(children)
                 AuditLogRepository.append(
-                    treeId = Uuid.parse(treeId.value),
+                    treeId = treeUuid,
                     actorAccountId = Uuid.parse(callerAccountId.value),
                     entityType = "UnionChild",
-                    entityId = "${unionId.value}:${request.childId}",
+                    entityId = "$unionUuid:$childUuid",
                     action = AuditAction.CREATE,
                     beforeJson = null,
                     afterJson = AuditJson.encodeToString(dto),
@@ -105,8 +109,9 @@ object UnionService {
         TreeService.getTreeForMember(treeId, callerAccountId)
         return withContext(DatabaseDispatcher) {
             transaction {
-                UnionRepository.listByTree(Uuid.parse(treeId.value)).map { union ->
-                    union.toDto(UnionRepository.childrenOf(Uuid.parse(treeId.value), Uuid.parse(union.id.value)))
+                val treeUuid = Uuid.parse(treeId.value)
+                UnionRepository.listByTree(treeUuid).map { union ->
+                    union.toDto(UnionRepository.childrenOf(treeUuid, Uuid.parse(union.id.value)))
                 }
             }
         }

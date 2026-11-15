@@ -56,6 +56,7 @@ class TenantIsolationTest {
         private lateinit var parentA2: String
         private lateinit var childA: String
         private lateinit var placeA: String
+        private lateinit var unionA: String
 
         private lateinit var treeB: Tree
         private lateinit var personB1: String
@@ -84,6 +85,9 @@ class TenantIsolationTest {
                 parentA2 = person(treeA, ownerA, "Maria")
                 childA = person(treeA, ownerA, "Ana")
                 placeA = PlaceService.createPlace(treeA.id, ownerA.id, CreatePlaceRequest("Sevilla")).id
+                unionA = UnionService.createUnion(
+                    treeA.id, ownerA.id, CreateUnionRequest(partner1Id = parentA1, partner2Id = parentA2, type = "MARRIED"),
+                ).id
 
                 personB1 = person(treeB, ownerB, "Pedro")
                 personB2 = person(treeB, ownerB, "Lucia")
@@ -205,29 +209,59 @@ class TenantIsolationTest {
 
     // --- Database constraints (V2) ---------------------------------------------
 
+    /**
+     * One case per same-tree foreign key. Each statement changes exactly one
+     * reference to point at tree B and keeps every other reference in tree A,
+     * so the only constraint that can reject it is the one named in the case.
+     */
     @Test
-    fun `direct inserts with cross-tree references violate the same-tree foreign keys`() {
+    fun `direct inserts with cross-tree references violate the specific same-tree foreign key`() {
         val a = treeA.id.value
-        val cases = mapOf(
-            "union partner from another tree" to
+        data class Case(val name: String, val constraint: String, val sql: String)
+        val cases = listOf(
+            Case(
+                "first partner from another tree", "union_record_partner1_same_tree_fkey",
                 "insert into union_record (tree_id, partner1_id, type) values ('$a', '$personB1', 'UNKNOWN')",
-            "union child from another tree" to
+            ),
+            Case(
+                "second partner from another tree", "union_record_partner2_same_tree_fkey",
+                "insert into union_record (tree_id, partner1_id, partner2_id, type) " +
+                    "values ('$a', '$parentA1', '$personB1', 'MARRIED')",
+            ),
+            Case(
+                "child link to another tree's union", "union_child_union_same_tree_fkey",
                 "insert into union_child (tree_id, union_id, child_id, relation) values ('$a', '$unionB', '$childA', 'BIRTH')",
-            "event subject from another tree" to
+            ),
+            Case(
+                "child from another tree in a same-tree union", "union_child_child_same_tree_fkey",
+                "insert into union_child (tree_id, union_id, child_id, relation) values ('$a', '$unionA', '$personB1', 'BIRTH')",
+            ),
+            Case(
+                "event subject from another tree", "event_person_same_tree_fkey",
                 "insert into event (tree_id, person_id, type) values ('$a', '$personB1', 'BIRTH')",
-            "event union from another tree" to
+            ),
+            Case(
+                "event union from another tree", "event_union_same_tree_fkey",
                 "insert into event (tree_id, union_id, type) values ('$a', '$unionB', 'MARRIAGE')",
-            "event place from another tree" to
+            ),
+            Case(
+                "event place from another tree", "event_place_same_tree_fkey",
                 "insert into event (tree_id, person_id, place_id, type) values ('$a', '$parentA1', '$placeB', 'BIRTH')",
-            "membership linked to another tree's person" to
+            ),
+            Case(
+                "membership linked to another tree's person", "membership_person_same_tree_fkey",
                 "update membership set person_id = '$personB1' where tree_id = '$a'",
-            "citation of another tree's source" to
+            ),
+            Case(
+                "citation of another tree's source", "citation_source_same_tree_fkey",
                 "insert into citation (tree_id, source_id, target_type, target_id, confidence) " +
-                "values ('$a', '$sourceB', 'PERSON', '$parentA1', 2)",
+                    "values ('$a', '$sourceB', 'PERSON', '$parentA1', 2)",
+            ),
         )
-        cases.forEach { (case, sql) ->
-            val error = assertFailsWith<PSQLException>(case) { execute(sql) }
-            assertEquals("23503", error.sqlState, "$case: expected a foreign key violation, got ${error.message}")
+        cases.forEach { case ->
+            val error = assertFailsWith<PSQLException>(case.name) { execute(case.sql) }
+            assertEquals("23503", error.sqlState, "${case.name}: expected a foreign key violation, got ${error.message}")
+            assertEquals(case.constraint, error.serverErrorMessage?.constraint, "${case.name}: rejected by the wrong constraint")
         }
     }
 
