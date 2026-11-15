@@ -40,7 +40,7 @@ import kotlin.test.assertTrue
  * that V2's same-tree foreign keys reject cross-tree rows inserted directly.
  *
  * Runs the services against real Postgres. The same flows over HTTP with
- * test-signed JWTs are FT-072's scope.
+ * test-signed JWTs are in `AuthenticatedAccessTest` (FT-072).
  */
 class TenantIsolationTest {
 

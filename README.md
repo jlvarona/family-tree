@@ -306,7 +306,10 @@ are `GraphIntegrationTest`, `TenantIsolationTest` (cross-tree access, FT-065),
 verifier with a test JWKS, FT-067), `AccountIdentityTest` (accounts keyed by issuer and
 subject: parallel first logins, email changes and reused emails, FT-003),
 `LegacyAccountBackfillTest` (V3 on pre-FT-003 data, listing and resolving legacy
-accounts, FT-003) and `TreeScopedMigrationTest` (V2 migration preflight and backfill).
+accounts, FT-003), `TreeScopedMigrationTest` (V2 migration preflight and backfill) and
+`AuthenticatedAccessTest` (FT-072: tenant isolation, living-person privacy, membership
+and owner-only writes over HTTP, through the production module and verifier with
+test-signed access tokens for two owners, an active non-owner and an invitee).
 
 `KeycloakBrowserTokenTest` is opt-in. It starts a disposable Keycloak 26 and Postgres
 on random ports (nothing already running is touched), imports
@@ -344,6 +347,26 @@ bash ./gradlew :server:test --tests "*GraphIntegrationTest"
 
 Per-module HTML test reports: `<module>/build/reports/tests/test/index.html`. Raw JUnit
 XML: `<module>/build/test-results/test/*.xml`.
+
+### Continuous integration
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every pull request
+targeting `main`, with no path filters. Its single job, the **`Core and server tests`**
+check, runs on `ubuntu-24.04` (Docker Engine for Testcontainers) with Azul JDK 21, the
+daemon JVM in `gradle/gradle-daemon-jvm.properties`:
+
+```bash
+bash ./gradlew --no-daemon --stacktrace :core:jvmTest :server:test
+```
+
+The workflow's token is read-only (`contents: read`), checkout doesn't keep
+credentials, and the actions are GitHub's own (`actions/checkout`,
+`actions/setup-java`) pinned to full commit SHAs. The live Keycloak test stays opt-in
+and is skipped in CI. Every database is a disposable PostgreSQL 16 container and every
+token is signed by a key generated for that test run.
+
+To make the check a merge gate, add **`Core and server tests`** as a required status
+check in the `main` branch protection rule (or ruleset) after it has run once.
 
 ## Contributing
 

@@ -9,6 +9,73 @@ up to date in place, not logged chronologically.
 
 ---
 
+## 2026-11-15 — FT-072 (in progress) authenticated HTTP regressions and a pull request CI check
+
+**Status: in progress.** The tests and workflow are written. The story stays
+`In progress` until the check has passed on a pull request and is a required status
+check on `main`.
+
+**`AuthenticatedAccessTest` (14, `:server`).** It runs the production `module` and
+verifier against a disposable PostgreSQL 16 container migrated by Flyway. Every request
+carries an RS256 access token signed by a run-only key that `TestJwks` serves over
+loopback, so the verifier fetches keys from a JWKS endpoint as it would from Keycloak.
+Each actor has a fixed issuer and a stable subject, so it resolves to the same account
+on every request (FT-003). Both trees are seeded through the API by their owners:
+owner A's three-generation family with two living people, and owner B's tree. An active
+non-owner (`relative`) and an `INVITED` account are added to tree A directly, since
+there is no invitation route yet.
+- **FT-065 tenant isolation.**
+  - Owner A reading a tree-B person (detail, ancestors, descendants, events) gets the
+    same `404` body as for a missing ID, with no tree-B data.
+  - Owner A's people, union, place, source and event lists contain only tree A.
+  - Tree B's routes are `403` "Not a member" for owner A. A missing tree is `404`.
+  - Owner A's writes into tree B are `403`, and nothing changes.
+  - Owner A's writes in tree A that reference a tree-B row return the same `404` body
+    as a missing ID, with no rows or audit entries added in either tree. Covered:
+    either union partner, the union or child of a child link, and an event's person,
+    union or place.
+- **FT-066 living-person privacy.**
+  - The owner sees living people, their event date, place and notes, and union dates.
+  - The member sees placeholders in the list, detail, ancestor and descendant views,
+    with deceased people in full.
+  - The member gets an empty event list for a living person, and still gets a deceased
+    person's events.
+  - On a union with a living partner, the member sees the type (`MARRIED`), both
+    partner links and the child, without start or end dates. The deceased
+    grandparents' union keeps its date.
+  - A member's create with a known hidden name is `403` and writes nothing. The owner
+    gets the real duplicate match.
+  - Leak checks mask UUIDs before searching response bodies for names, years and
+    notes, so a year can't match inside a random ID.
+- **FT-068 membership and owner-only writes.**
+  - The invitee doesn't see tree A and gets `403` "Not a member" for every read and
+    write route.
+  - The active non-owner lists tree A, and every read route returns `200`.
+  - Every write by the non-owner is `403` "Only the tree owner…", for valid and
+    malformed bodies alike, and nothing changes.
+  - The owner's write succeeds with exactly one audit entry in tree A and nothing in
+    tree B.
+
+The KDoc in `TenantIsolationTest` and `MembershipAccessTest` now points to this suite
+instead of saying the HTTP cases are FT-072's scope.
+
+**CI.** `.github/workflows/ci.yml` runs on every pull request to `main`, with no path
+filters or job conditions. Its job is named `Core and server tests`. It runs
+`bash ./gradlew --no-daemon --stacktrace :core:jvmTest :server:test` on `ubuntu-24.04`
+(Docker Engine for Testcontainers) with Azul JDK 21, which matches
+`gradle/gradle-daemon-jvm.properties`. The token is `contents: read`, checkout doesn't
+keep credentials, and `actions/checkout` and `actions/setup-java` are pinned to commit
+SHAs. `KeycloakBrowserTokenTest` stays opt-in (`-PkeycloakIt=true`), so CI skips it.
+The FT-003, FT-067, graph and service-level suites run unchanged in the same job.
+
+**Verification: pending.** No Gradle, Docker or GitHub command was run while these
+changes were written. Still to do:
+- run the suites locally;
+- confirm the pinned SHAs;
+- see `Core and server tests` pass on the pull request, and fail on a deliberate
+  cross-tree regression;
+- make it a required check on `main`.
+
 ## 2026-11-15 — FT-003 bound accounts to the OIDC issuer and subject
 
 **Lookup.** `configureOidc` now also requires a non-blank `iss` and `sub`.
@@ -516,7 +583,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 
 ### Status board
 
-**Done (17)** · **In progress (0)** · **To do (37)** · **Blocked (1)**
+**Done (17)** · **In progress (1)** · **To do (36)** · **Blocked (1)**
 
 | Order | ID | Story | Epic | Priority | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -537,7 +604,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 | — | FT-066 | Apply living-person privacy across API responses | E7 | P1 | Done |
 | — | FT-067 | Require API audience on Keycloak access tokens | E7 | P1 | Done |
 | — | FT-003 | Bind local accounts to OIDC issuer and subject | E1 | P1 | Done |
-| 1 | FT-072 | Require authenticated PostgreSQL regression tests in CI | E7 | P1 | To do |
+| 1 | FT-072 | Require authenticated PostgreSQL regression tests in CI | E7 | P1 | In progress |
 | 2 | FT-060 | Keep private data out of routine server logs | E7 | P2 | To do |
 | 3 | FT-069 | Complete transactional audit coverage | E7 | P2 | To do |
 | 4 | FT-070 | Return structured client errors for invalid inputs and duplicate links | E7 | P2 | To do |
@@ -853,7 +920,7 @@ desktop/shared build repair.
   clearly reversed bounds, a reversed `BET` expression, and out-of-range years.
   Existing English and Spanish date parsing continues to pass.
 - **FT-072 Require authenticated PostgreSQL regression tests in CI.**
-  `To do · P1 · #1`. Use the test environment from FT-063 and add Ktor
+  `In progress · P1 · #1`. Use the test environment from FT-063 and add Ktor
   `testApplication` route tests backed by a clean PostgreSQL 16 Testcontainer
   with Flyway migrations. Authenticate through the production verifier using
   test-signed JWTs and a controlled JWKS. Seed two trees, separate owners,

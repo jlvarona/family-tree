@@ -68,7 +68,7 @@ import kotlin.test.assertTrue
  * current mutation, with nothing written or audited.
  *
  * Runs the services against real Postgres. The same flows over HTTP with
- * test-signed JWTs are FT-072's scope.
+ * test-signed JWTs are in `AuthenticatedAccessTest` (FT-072).
  */
 class MembershipAccessTest {
 
@@ -223,8 +223,8 @@ class MembershipAccessTest {
      * Route order, over HTTP: the write check runs before the body is decoded,
      * so a non-owner gets 403 even for malformed JSON, while the owner gets
      * 400 for the same body. Authentication here is a test-only HMAC provider
-     * registered under the production provider name; verifying real
-     * Keycloak-shaped tokens through the production verifier is FT-072.
+     * registered under the production provider name. `AuthenticatedAccessTest`
+     * (FT-072) repeats this through the production verifier.
      */
     @Test
     fun `over HTTP a non-owner gets 403 before the body is decoded`() = testApplication {
