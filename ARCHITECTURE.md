@@ -64,6 +64,7 @@ Feature packages under `com.moxietech.family_tree.server.<feature>`, each with `
 - Persistence uses PostgreSQL 16, Flyway migrations, and Exposed. Ancestor and descendant queries use recursive CTEs over `union_record` and `union_child`. The planned `GrantScope` cache will store resolved person IDs per grant and rebuild when the graph changes. Row-level security is tracked as a future backstop.
 - Repository integration tests start a disposable PostgreSQL 16 container and apply Flyway migrations. See the [README test commands](README.md#running-tests).
 - Every request: authenticate (a Keycloak access token whose `aud` names the API, `OIDC_AUDIENCE`) → resolve the account by the token's verified issuer + subject, never by email → load membership → resolve scope → check with `:core` permission rules → execute → audit.
+- Errors are `ApiErrorResponse` JSON mapped in `StatusPagesConfig`: malformed IDs (parsed with the field-aware `parseUuidField` where a path or body ID is first converted, in the tree lookup or the service), unknown enum values and undecodable bodies → `400`; forbidden → `403`; missing or foreign IDs → the same generic `404`; a duplicate child link → `409`. Responses never include exception or database text.
 - Media: presigned S3 uploads/downloads, thumbnails in a worker, EXIF GPS stripped.
 - Jobs: SQS (or Postgres job table) + worker in the same codebase.
 - Real-time: WebSocket/SSE per tree for live edits.

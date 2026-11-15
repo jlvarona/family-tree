@@ -12,6 +12,8 @@ import com.moxietech.family_tree.domain.TreeId
 import com.moxietech.family_tree.server.collaboration.AuditJson
 import com.moxietech.family_tree.server.collaboration.AuditLogRepository
 import com.moxietech.family_tree.server.config.DatabaseDispatcher
+import com.moxietech.family_tree.server.errors.ValidationException
+import com.moxietech.family_tree.server.errors.parseUuidField
 import com.moxietech.family_tree.server.errors.requireValid
 import com.moxietech.family_tree.server.trees.TreeService
 import com.moxietech.family_tree.validation.Validation
@@ -30,7 +32,7 @@ object PersonService {
         val tree = TreeService.getTreeForWriter(treeId, callerAccountId)
         Validation.validatePersonName(request.givenNames).requireValid()
         val sex = runCatching { Sex.valueOf(request.sex) }.getOrElse {
-            throw IllegalArgumentException("Unknown sex '${request.sex}'")
+            throw ValidationException(listOf("Unknown sex '${request.sex}'"))
         }
 
         return withContext(DatabaseDispatcher) {
@@ -79,7 +81,7 @@ object PersonService {
     suspend fun getPerson(treeId: TreeId, personId: PersonId, callerAccountId: AccountId): PersonDto {
         val tree = TreeService.getTreeForReader(treeId, callerAccountId)
         val person = withContext(DatabaseDispatcher) {
-            TreeScopedLookups.requirePerson(Uuid.parse(treeId.value), Uuid.parse(personId.value))
+            TreeScopedLookups.requirePerson(Uuid.parse(treeId.value), parseUuidField("personId", personId.value))
         }
         return ViewerPolicy(tree, callerAccountId).project(person)
     }
@@ -88,7 +90,7 @@ object PersonService {
     suspend fun ancestorsOf(treeId: TreeId, personId: PersonId, callerAccountId: AccountId): List<PersonDto> {
         val tree = TreeService.getTreeForReader(treeId, callerAccountId)
         val treeUuid = Uuid.parse(treeId.value)
-        val personUuid = Uuid.parse(personId.value)
+        val personUuid = parseUuidField("personId", personId.value)
         return withContext(DatabaseDispatcher) {
             TreeScopedLookups.requirePerson(treeUuid, personUuid)
             PersonRepository.ancestorsOf(personUuid, treeUuid)
@@ -99,7 +101,7 @@ object PersonService {
     suspend fun descendantsOf(treeId: TreeId, personId: PersonId, callerAccountId: AccountId): List<PersonDto> {
         val tree = TreeService.getTreeForReader(treeId, callerAccountId)
         val treeUuid = Uuid.parse(treeId.value)
-        val personUuid = Uuid.parse(personId.value)
+        val personUuid = parseUuidField("personId", personId.value)
         return withContext(DatabaseDispatcher) {
             TreeScopedLookups.requirePerson(treeUuid, personUuid)
             PersonRepository.descendantsOf(personUuid, treeUuid)

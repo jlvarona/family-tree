@@ -21,12 +21,15 @@ import com.moxietech.family_tree.server.config.AppDatabase
 import com.moxietech.family_tree.server.config.DEFAULT_API_AUDIENCE
 import com.moxietech.family_tree.server.config.DatabaseConfig
 import com.moxietech.family_tree.server.config.DatabaseSettings
+import com.moxietech.family_tree.server.config.MALFORMED_BODY_MESSAGE
 import com.moxietech.family_tree.server.config.OidcSettings
 import com.moxietech.family_tree.server.config.TestJwks
 import com.moxietech.family_tree.server.identity.IdentityTestApi.bodyWithStatus
 import com.moxietech.family_tree.server.identity.IdentityTestApi.createTree
 import com.moxietech.family_tree.server.identity.IdentityTestApi.me
+import com.moxietech.family_tree.server.identity.IdentityTestApi.query
 import com.moxietech.family_tree.server.identity.IdentityTestApi.treeIds
+import com.moxietech.family_tree.server.identity.IdentityTestApi.uuid
 import com.moxietech.family_tree.server.trees.MembershipRepository
 import com.zaxxer.hikari.HikariDataSource
 import io.ktor.client.HttpClient
@@ -41,6 +44,9 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.junit.AfterClass
@@ -542,5 +548,216 @@ class AuthenticatedAccessTest {
         assertEquals(before.getValue("source/A") + 1, after.getValue("source/A"))
         assertEquals(before.getValue("audit_log/A") + 1, after.getValue("audit_log/A"))
         assertEquals(before.filterKeys { it.endsWith("/B") }, after.filterKeys { it.endsWith("/B") })
+    }
+
+    // --- FT-070 structured client errors -------------------------------------------------
+
+    /**
+     * A fresh tree owned by owner B with two partners, their union and an unlinked
+     * child, so these tests never change the rows the other tests assert on.
+     */
+    private data class Family(val tree: String, val father: String, val mother: String, val child: String, val union: String)
+
+    private suspend fun ApplicationTestBuilder.newFamily(): Family {
+        val tree = client.createTree(token(Actor.OWNER_B), "FT-070 family").id
+        val t = path(tree)
+        suspend fun person(given: String) =
+            client.write("$t/people", Actor.OWNER_B, encode(CreatePersonRequest(givenNames = given, sex = "UNKNOWN", isLiving = false)))
+                .decoded<CreatePersonResponse>(HttpStatusCode.Created).person.id
+        val father = person("Mateo")
+        val mother = person("Julia")
+        val child = person("Ines")
+        val union = client.write("$t/unions", Actor.OWNER_B, encode(CreateUnionRequest(father, mother, type = "MARRIED")))
+            .decoded<UnionDto>(HttpStatusCode.Created).id
+        return Family(tree, father, mother, child, union)
+    }
+
+    /** Row counts of every tenant table and the audit log for one tree. */
+    private fun countsFor(treeId: String): Map<String, Long> =
+        tables.associateWith { table -> dataSource.query("select count(*) from $table where tree_id = ?", uuid(treeId))!!.toLong() }
+
+    private fun childLinks(family: Family): Long =
+        dataSource.query(
+            "select count(*) from union_child where union_id = ? and child_id = ?", uuid(family.union), uuid(family.child),
+        )!!.toLong()
+
+    private fun childLinkAudits(family: Family): Long =
+        dataSource.query(
+            "select count(*) from audit_log where tree_id = ? and entity_type = 'UnionChild' and entity_id = ?",
+            uuid(family.tree), "${family.union}:${family.child}",
+        )!!.toLong()
+
+    private suspend fun assertStructured400(response: HttpResponse, message: String, context: String, raw: String? = null) {
+        val body = response.bodyAsText()
+        assertEquals(HttpStatusCode.BadRequest, response.status, "$context: $body")
+        val error = json.decodeFromString<ApiErrorResponse>(body)
+        assertEquals(message, error.message, context)
+        assertFalse("Exception" in body, "$context exposed exception text: $body")
+        raw?.let { assertFalse(it in body, "$context echoed the malformed value: $body") }
+    }
+
+    @Test
+    fun `malformed IDs, unknown enum values and invalid JSON are structured 400s that change nothing`() = api {
+        val f = newFamily()
+        val t = path(f.tree)
+        val bad = "not-a-uuid"
+        data class Case(val name: String, val path: String, val body: String?, val message: String, val raw: String? = null)
+        fun id(field: String) = "$field must be a UUID"
+        val cases = listOf(
+            // Path IDs.
+            Case("tree", path(bad), null, id("treeId"), bad),
+            Case("tree of a list", "${path(bad)}/people", null, id("treeId"), bad),
+            Case("tree of a write", "${path(bad)}/places", encode(CreatePlaceRequest("Cusco")), id("treeId"), bad),
+            Case("person", "$t/people/$bad", null, id("personId"), bad),
+            Case("ancestors anchor", "$t/people/$bad/ancestors", null, id("personId"), bad),
+            Case("descendants anchor", "$t/people/$bad/descendants", null, id("personId"), bad),
+            Case("events subject", "$t/people/$bad/events", null, id("personId"), bad),
+            Case("union of a child link", "$t/unions/$bad/children", encode(AddUnionChildRequest(f.child, "BIRTH")), id("unionId"), bad),
+            // Body IDs.
+            Case("first partner", "$t/unions", encode(CreateUnionRequest(bad, type = "MARRIED")), id("partner1Id"), bad),
+            Case("second partner", "$t/unions", encode(CreateUnionRequest(f.father, bad, type = "MARRIED")), id("partner2Id"), bad),
+            Case("child", "$t/unions/${f.union}/children", encode(AddUnionChildRequest(bad, "BIRTH")), id("childId"), bad),
+            Case("event person", "$t/events", encode(CreateEventRequest(personId = bad, type = "BIRTH")), id("personId"), bad),
+            Case("event union", "$t/events", encode(CreateEventRequest(unionId = bad, type = "MARRIAGE")), id("unionId"), bad),
+            Case(
+                "event place", "$t/events", encode(CreateEventRequest(personId = f.father, type = "BIRTH", placeId = bad)),
+                id("placeId"), bad,
+            ),
+            // Enum values.
+            Case(
+                "sex", "$t/people", encode(CreatePersonRequest(givenNames = "Pablo", sex = "ROBOT", isLiving = false)),
+                "Unknown sex 'ROBOT'",
+            ),
+            Case("union type", "$t/unions", encode(CreateUnionRequest(f.father, f.mother, type = "ROBOT")), "Unknown union type 'ROBOT'"),
+            Case(
+                "child relation", "$t/unions/${f.union}/children", encode(AddUnionChildRequest(f.child, "ROBOT")),
+                "Unknown child relation 'ROBOT'",
+            ),
+            Case("event type", "$t/events", encode(CreateEventRequest(personId = f.father, type = "ROBOT")), "Unknown event type 'ROBOT'"),
+            Case("source type", "$t/sources", encode(CreateSourceRequest(title = "Census", type = "ROBOT")), "Unknown source type 'ROBOT'"),
+            // Bodies that can't be decoded: syntax, a missing required field, a wrong JSON type.
+            Case("people syntax", "$t/people", "{ \"givenNames\": \"secret-body\"", MALFORMED_BODY_MESSAGE, "secret-body"),
+            Case("unions syntax", "$t/unions", "{ not json", MALFORMED_BODY_MESSAGE),
+            Case("child link syntax", "$t/unions/${f.union}/children", "{ not json", MALFORMED_BODY_MESSAGE),
+            Case("events syntax", "$t/events", "[", MALFORMED_BODY_MESSAGE),
+            Case("places syntax", "$t/places", "{\"name\":", MALFORMED_BODY_MESSAGE),
+            Case("sources syntax", "$t/sources", "{ not json", MALFORMED_BODY_MESSAGE),
+            Case("trees syntax", "/api/v1/trees", "{ not json", MALFORMED_BODY_MESSAGE),
+            Case("missing field", "$t/people", "{\"givenNames\":\"Pablo\"}", MALFORMED_BODY_MESSAGE),
+            Case("wrong type", "$t/people", "{\"givenNames\":\"Pablo\",\"sex\":\"MALE\",\"isLiving\":\"secret-flag\"}", MALFORMED_BODY_MESSAGE, "secret-flag"),
+        )
+        val before = countsFor(f.tree)
+        for (case in cases) {
+            val response = if (case.body == null) client.read(case.path, Actor.OWNER_B) else client.write(case.path, Actor.OWNER_B, case.body)
+            assertStructured400(response, case.message, case.name, case.raw)
+        }
+        assertEquals(before, countsFor(f.tree))
+    }
+
+    @Test
+    fun `an unsupported content type stays a 415`() = api {
+        val f = newFamily()
+        val response = client.request("${path(f.tree)}/places") {
+            method = HttpMethod.Post
+            bearerAuth(token(Actor.OWNER_B))
+            contentType(ContentType.Text.Plain)
+            setBody("Cusco")
+        }
+        assertEquals(HttpStatusCode.UnsupportedMediaType, response.status, response.bodyAsText())
+    }
+
+    @Test
+    fun `well-formed IDs that don't exist stay generic 404s`() = api {
+        val f = newFamily()
+        val t = path(f.tree)
+        val missing = randomId()
+        val before = countsFor(f.tree)
+        assertError(client.read("$t/people/$missing", Actor.OWNER_B), HttpStatusCode.NotFound, "No person with id $missing", "person")
+        assertError(
+            client.write("$t/unions/$missing/children", Actor.OWNER_B, encode(AddUnionChildRequest(f.child, "BIRTH"))),
+            HttpStatusCode.NotFound, "No union with id $missing", "union",
+        )
+        // PR #3: the union is resolved before the body's child ID is parsed.
+        assertError(
+            client.write("$t/unions/$missing/children", Actor.OWNER_B, encode(AddUnionChildRequest("not-a-uuid", "BIRTH"))),
+            HttpStatusCode.NotFound, "No union with id $missing", "missing union, malformed child",
+        )
+        assertError(
+            client.write("$t/unions/${f.union}/children", Actor.OWNER_B, encode(AddUnionChildRequest(missing, "BIRTH"))),
+            HttpStatusCode.NotFound, "No person with id $missing", "child",
+        )
+        assertError(
+            client.write("$t/events", Actor.OWNER_B, encode(CreateEventRequest(personId = f.father, type = "BIRTH", placeId = missing))),
+            HttpStatusCode.NotFound, "No place with id $missing", "event place",
+        )
+        assertEquals(before, countsFor(f.tree))
+    }
+
+    @Test
+    fun `a non-owner gets 403 before any ID or body validation`() = api {
+        val a = path(treeA.id)
+        val ownerOnly = "Only the tree owner can make changes to tree ${treeA.id}"
+        val before = rowCounts()
+        assertError(
+            client.write("$a/unions/not-a-uuid/children", Actor.RELATIVE, encode(AddUnionChildRequest(antonio, "BIRTH"))),
+            HttpStatusCode.Forbidden, ownerOnly, "malformed union",
+        )
+        assertError(
+            client.write("$a/unions", Actor.RELATIVE, encode(CreateUnionRequest("not-a-uuid", type = "ROBOT"))),
+            HttpStatusCode.Forbidden, ownerOnly, "malformed partner and type",
+        )
+        assertEquals(before, rowCounts())
+    }
+
+    @Test
+    fun `two spellings of one partner ID are the same person`() = api {
+        val f = newFamily()
+        val before = countsFor(f.tree)
+        val response = client.write(
+            "${path(f.tree)}/unions", Actor.OWNER_B, encode(CreateUnionRequest(f.father, f.father.uppercase(), type = "MARRIED")),
+        )
+        assertStructured400(response, "A union's two partners must be different people", "same partner")
+        assertEquals(before, countsFor(f.tree))
+    }
+
+    @Test
+    fun `repeating a child link is a 409 whatever the ID spelling, leaving one link and one audit row`() = api {
+        val f = newFamily()
+        val t = path(f.tree)
+        client.write("$t/unions/${f.union}/children", Actor.OWNER_B, encode(AddUnionChildRequest(f.child, "BIRTH")))
+            .decoded<UnionDto>(HttpStatusCode.Created)
+        val before = countsFor(f.tree)
+        val conflict = "This person is already a child of union ${f.union}"
+        val repeats = listOf(
+            "same spelling" to ("$t/unions/${f.union}/children" to AddUnionChildRequest(f.child, "BIRTH")),
+            "other relation" to ("$t/unions/${f.union}/children" to AddUnionChildRequest(f.child, "ADOPTED")),
+            "upper-case child" to ("$t/unions/${f.union}/children" to AddUnionChildRequest(f.child.uppercase(), "BIRTH")),
+            "upper-case union" to ("$t/unions/${f.union.uppercase()}/children" to AddUnionChildRequest(f.child, "BIRTH")),
+        )
+        for ((name, request) in repeats) {
+            val response = client.write(request.first, Actor.OWNER_B, encode(request.second))
+            assertError(response, HttpStatusCode.Conflict, conflict, name)
+            assertAbsent(response.bodyAsText(), listOf("union_child_pkey", "duplicate key", "Exception", "SQL"), name)
+        }
+        assertEquals(before, countsFor(f.tree))
+        assertEquals(1, childLinks(f))
+        assertEquals(1, childLinkAudits(f))
+    }
+
+    @Test
+    fun `concurrent duplicate child links create one link and one audit row`() = api {
+        val f = newFamily()
+        val linkPath = "${path(f.tree)}/unions/${f.union}/children"
+        val body = encode(AddUnionChildRequest(f.child, "BIRTH"))
+        val responses = coroutineScope {
+            List(8) { async { client.write(linkPath, Actor.OWNER_B, body) } }.awaitAll()
+        }
+        val statuses = responses.map { it.status }
+        assertEquals(1, statuses.count { it == HttpStatusCode.Created }, "statuses: $statuses")
+        for (response in responses.filter { it.status != HttpStatusCode.Created }) {
+            assertError(response, HttpStatusCode.Conflict, "This person is already a child of union ${f.union}", "concurrent")
+        }
+        assertEquals(1, childLinks(f))
+        assertEquals(1, childLinkAudits(f))
     }
 }

@@ -13,6 +13,7 @@ import com.moxietech.family_tree.server.collaboration.AuditLogRepository
 import com.moxietech.family_tree.server.config.DatabaseDispatcher
 import com.moxietech.family_tree.server.errors.ForbiddenException
 import com.moxietech.family_tree.server.errors.NotFoundException
+import com.moxietech.family_tree.server.errors.parseUuidField
 import com.moxietech.family_tree.server.errors.requireValid
 import com.moxietech.family_tree.validation.Validation
 import kotlinx.coroutines.withContext
@@ -87,7 +88,8 @@ object TreeService {
     }
 
     private fun loadTreeAndMembership(treeId: TreeId, callerAccountId: AccountId): Pair<Tree, Membership?> {
-        val treeUuid = Uuid.parse(treeId.value)
+        // First conversion of a caller-supplied tree ID: malformed is a 400 (FT-070).
+        val treeUuid = parseUuidField("treeId", treeId.value)
         val tree = TreeRepository.findById(treeUuid)
             ?: throw NotFoundException("No tree with id ${treeId.value}")
         return tree to MembershipRepository.find(treeUuid, Uuid.parse(callerAccountId.value))
