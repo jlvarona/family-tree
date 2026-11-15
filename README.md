@@ -365,8 +365,8 @@ credentials, and the actions are GitHub's own (`actions/checkout`,
 and is skipped in CI. Every database is a disposable PostgreSQL 16 container and every
 token is signed by a key generated for that test run.
 
-To make the check a merge gate, add **`Core and server tests`** as a required status
-check in the `main` branch protection rule (or ruleset) after it has run once.
+The [main ruleset](https://github.com/jlvarona/family-tree/rules/27332094) requires
+**`Core and server tests`** from GitHub Actions before merging.
 
 ## Contributing
 
