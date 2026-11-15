@@ -5,7 +5,7 @@ import org.jetbrains.exposed.v1.javatime.date
 import org.jetbrains.exposed.v1.javatime.timestamp
 
 /**
- * Exposed table definitions mirroring db/migration/V1__init.sql exactly.
+ * Exposed table definitions mirroring the Flyway migrations in db/migration exactly.
  * Schema changes only through a new Flyway migration (AGENTS.md) — these
  * objects describe the existing schema to Exposed, they never create it.
  */
@@ -72,6 +72,7 @@ object UnionTable : Table("union_record") {
 }
 
 object UnionChildTable : Table("union_child") {
+    val treeId = uuid("tree_id") references TreeTable.id
     val unionId = uuid("union_id") references UnionTable.id
     val childId = uuid("child_id") references PersonTable.id
     val relation = text("relation")
@@ -111,6 +112,7 @@ object SourceTable : Table("source") {
 
 object CitationTable : Table("citation") {
     val id = uuid("id")
+    val treeId = uuid("tree_id") references TreeTable.id
     val sourceId = uuid("source_id") references SourceTable.id
     val targetType = text("target_type")
     val targetId = uuid("target_id")

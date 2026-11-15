@@ -12,6 +12,7 @@ import com.moxietech.family_tree.server.db.EventTable
 import kotlinx.datetime.toJavaLocalDate
 import kotlinx.datetime.toKotlinLocalDate
 import org.jetbrains.exposed.v1.core.ResultRow
+import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
@@ -20,16 +21,19 @@ import kotlin.uuid.Uuid
 
 object EventRepository {
 
-    fun findById(id: Uuid): Event? = transaction {
-        EventTable.selectAll().where { EventTable.id eq id }.firstOrNull()?.toEvent()
+    /** Null when [id] doesn't exist or belongs to another tree; callers treat both as not found. */
+    fun findById(treeId: Uuid, id: Uuid): Event? = transaction {
+        EventTable.selectAll().where { (EventTable.id eq id) and (EventTable.treeId eq treeId) }.firstOrNull()?.toEvent()
     }
 
-    fun listByPerson(personId: Uuid): List<Event> = transaction {
-        EventTable.selectAll().where { EventTable.personId eq personId }.map { it.toEvent() }
+    fun listByPerson(treeId: Uuid, personId: Uuid): List<Event> = transaction {
+        EventTable.selectAll().where { (EventTable.personId eq personId) and (EventTable.treeId eq treeId) }
+            .map { it.toEvent() }
     }
 
-    fun listByUnion(unionId: Uuid): List<Event> = transaction {
-        EventTable.selectAll().where { EventTable.unionId eq unionId }.map { it.toEvent() }
+    fun listByUnion(treeId: Uuid, unionId: Uuid): List<Event> = transaction {
+        EventTable.selectAll().where { (EventTable.unionId eq unionId) and (EventTable.treeId eq treeId) }
+            .map { it.toEvent() }
     }
 
     fun insert(
@@ -55,7 +59,7 @@ object EventRepository {
             it[EventTable.notes] = notes
             it[EventTable.version] = 1
         }
-        findById(id) ?: error("Event $id was just inserted but cannot be read back")
+        findById(treeId, id) ?: error("Event $id was just inserted but cannot be read back")
     }
 
     private fun ResultRow.toEvent() = Event(

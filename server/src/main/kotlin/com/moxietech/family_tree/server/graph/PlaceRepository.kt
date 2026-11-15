@@ -5,6 +5,7 @@ import com.moxietech.family_tree.domain.PlaceId
 import com.moxietech.family_tree.domain.TreeId
 import com.moxietech.family_tree.server.db.PlaceTable
 import org.jetbrains.exposed.v1.core.ResultRow
+import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
@@ -13,8 +14,9 @@ import kotlin.uuid.Uuid
 
 object PlaceRepository {
 
-    fun findById(id: Uuid): Place? = transaction {
-        PlaceTable.selectAll().where { PlaceTable.id eq id }.firstOrNull()?.toPlace()
+    /** Null when [id] doesn't exist or belongs to another tree; callers treat both as not found. */
+    fun findById(treeId: Uuid, id: Uuid): Place? = transaction {
+        PlaceTable.selectAll().where { (PlaceTable.id eq id) and (PlaceTable.treeId eq treeId) }.firstOrNull()?.toPlace()
     }
 
     fun listByTree(treeId: Uuid): List<Place> = transaction {
@@ -32,7 +34,7 @@ object PlaceRepository {
                 it[PlaceTable.latitude] = latitude
                 it[PlaceTable.longitude] = longitude
             }
-            findById(id) ?: error("Place $id was just inserted but cannot be read back")
+            findById(treeId, id) ?: error("Place $id was just inserted but cannot be read back")
         }
 
     private fun ResultRow.toPlace() = Place(

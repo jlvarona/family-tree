@@ -174,7 +174,23 @@ Or use the run configurations in your IDE's toolbar instead of the CLI for any o
 `:server:test` needs a running Docker engine. Testcontainers starts a disposable
 `postgres:16` container and applies the Flyway migrations. A Docker discovery
 failure fails the test. The graph integration test was verified on Windows with
-Docker Desktop (Engine 29.7.2) and Testcontainers 1.21.4.
+Docker Desktop (Engine 29.7.2) and Testcontainers 1.21.4. The Postgres-backed suites
+are `GraphIntegrationTest`, `TenantIsolationTest` (cross-tree access, FT-065) and
+`TreeScopedMigrationTest` (V2 migration preflight and backfill).
+
+**Gradle fails with `PKIX path building failed` or can't resolve plugins?** HTTPS
+scanning in some antivirus products (AVG, Avast and others) re-signs TLS traffic with
+a root certificate that Windows trusts but Java doesn't. Tell Java to use the Windows
+certificate store, then refresh dependencies once to clear the failed downloads:
+
+```powershell
+$env:JAVA_TOOL_OPTIONS = "-Djavax.net.ssl.trustStoreType=Windows-ROOT"
+.\gradlew.bat --stop
+.\gradlew.bat :server:test --refresh-dependencies
+```
+
+Set `JAVA_TOOL_OPTIONS` permanently in your user environment variables if you don't
+want to set it in each shell.
 
 Run the graph integration test on its own:
 

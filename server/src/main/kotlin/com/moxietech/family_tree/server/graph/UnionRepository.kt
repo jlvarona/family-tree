@@ -13,6 +13,7 @@ import com.moxietech.family_tree.server.db.UnionTable
 import kotlinx.datetime.toJavaLocalDate
 import kotlinx.datetime.toKotlinLocalDate
 import org.jetbrains.exposed.v1.core.ResultRow
+import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
@@ -21,16 +22,19 @@ import kotlin.uuid.Uuid
 
 object UnionRepository {
 
-    fun findById(id: Uuid): Union? = transaction {
-        UnionTable.selectAll().where { UnionTable.id eq id }.firstOrNull()?.toUnion()
+    /** Null when [id] doesn't exist or belongs to another tree; callers treat both as not found. */
+    fun findById(treeId: Uuid, id: Uuid): Union? = transaction {
+        UnionTable.selectAll().where { (UnionTable.id eq id) and (UnionTable.treeId eq treeId) }.firstOrNull()?.toUnion()
     }
 
     fun listByTree(treeId: Uuid): List<Union> = transaction {
         UnionTable.selectAll().where { UnionTable.treeId eq treeId }.map { it.toUnion() }
     }
 
-    fun childrenOf(unionId: Uuid): List<UnionChild> = transaction {
-        UnionChildTable.selectAll().where { UnionChildTable.unionId eq unionId }.map {
+    fun childrenOf(treeId: Uuid, unionId: Uuid): List<UnionChild> = transaction {
+        UnionChildTable.selectAll().where {
+            (UnionChildTable.unionId eq unionId) and (UnionChildTable.treeId eq treeId)
+        }.map {
             UnionChild(
                 unionId = UnionId(it[UnionChildTable.unionId].toString()),
                 childId = PersonId(it[UnionChildTable.childId].toString()),
@@ -62,11 +66,12 @@ object UnionRepository {
             it[UnionTable.endDateLatest] = endDate?.latest?.toJavaLocalDate()
             it[UnionTable.version] = 1
         }
-        findById(id) ?: error("Union $id was just inserted but cannot be read back")
+        findById(treeId, id) ?: error("Union $id was just inserted but cannot be read back")
     }
 
-    fun addChild(unionId: Uuid, childId: Uuid, relation: ChildRelation) = transaction {
+    fun addChild(treeId: Uuid, unionId: Uuid, childId: Uuid, relation: ChildRelation) = transaction {
         UnionChildTable.insert {
+            it[UnionChildTable.treeId] = treeId
             it[UnionChildTable.unionId] = unionId
             it[UnionChildTable.childId] = childId
             it[UnionChildTable.relation] = relation.name
