@@ -907,9 +907,11 @@ migration if that changes.
 
 ### Deliberate omissions (for now)
 
-- **No row-level security yet.** `TreeService.getTreeForMember` checks membership
-  for the requested tree, repositories filter every lookup by `tree_id`, and V2's
-  same-tree foreign keys enforce referential isolation in the database (FT-065). FT-017 tracks RLS as a later defense-in-depth measure.
+- **No row-level security yet.** `TreeService.getTreeForReader` requires an active
+  membership in the requested tree, and `TreeService.getTreeForWriter` also requires
+  the caller to be the tree owner (FT-068). Repositories filter every lookup by
+  `tree_id`, and V2's same-tree foreign keys enforce referential isolation in the
+  database (FT-065). FT-017 tracks RLS as a later defense-in-depth measure.
 - **No `grant` / `change_proposal` tables yet.** Those belong to Phase 2
   (branches and sharing) per the roadmap in `concept-architecture.md`, and adding them
   speculatively now would mean designing branch-scope resolution before any UI or API
