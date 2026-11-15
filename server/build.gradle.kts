@@ -17,6 +17,12 @@ kotlin {
     }
 }
 
+tasks.test {
+    // Opt-in live check against a disposable Keycloak container (KeycloakBrowserTokenTest):
+    // ./gradlew :server:test --tests "*KeycloakBrowserTokenTest" -PkeycloakIt=true
+    systemProperty("family_tree.keycloakIt", providers.gradleProperty("keycloakIt").getOrElse("false"))
+}
+
 dependencies {
     api(project(":core"))
     implementation(libs.logback)

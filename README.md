@@ -105,9 +105,58 @@ Keycloak comes up with a seeded `family-tree` realm
 ([`ops/keycloak/realm-export.json`](./ops/keycloak/realm-export.json)):
 
 - Admin console: http://localhost:8081 (`admin` / `admin`)
-- A public client `family-tree-web` (what the server's `OIDC_ISSUER` points at) and a
-  confidential resource-server client `family-tree-server`
+- A public client `family-tree-web` for the browser, desktop and mobile apps, and a
+  bearer-only resource-server client `family-tree-server` that stands for the API
+- An audience mapper on `family-tree-web` (`family-tree-api-audience`) that adds
+  `family-tree-server` to the `aud` of its access tokens (not its ID tokens)
 - A seeded dev user: `dev@example.com` / `devpassword`
+
+The server accepts only access tokens whose `aud` contains `OIDC_AUDIENCE` (default
+`family-tree-server`), signed by a key from `OIDC_JWKS_URI`, issued by `OIDC_ISSUER`,
+and not expired. ID tokens, refresh tokens, tokens without the API audience and tokens
+without an expiry get `401`.
+
+### Updating an existing local realm (FT-067)
+
+`--import-realm` skips a realm that already exists, so a Keycloak started before
+FT-067 doesn't have the audience mapper, and the API rejects its tokens with `401`.
+Either recreate the container, or add the mapper in place.
+
+- **Recreate** (the bundled `family-tree-keycloak` container keeps its data inside the
+  container, so this drops any users or changes made in the admin console):
+
+  ```bash
+  docker compose up -d --force-recreate keycloak
+  ```
+
+- **Add the mapper in place** with the admin CLI inside the Keycloak container
+  (replace `family-tree-keycloak` if your container has another name; in Git Bash on
+  Windows, run `export MSYS_NO_PATHCONV=1` first so `/opt/...` isn't rewritten):
+
+  ```bash
+  KC=family-tree-keycloak
+  docker exec $KC /opt/keycloak/bin/kcadm.sh config credentials \
+    --server http://localhost:8080 --realm master --user admin --password admin
+  WEB_ID=$(docker exec $KC /opt/keycloak/bin/kcadm.sh get clients -r family-tree \
+    -q clientId=family-tree-web --fields id --format csv --noquotes)
+  docker exec $KC /opt/keycloak/bin/kcadm.sh create clients/$WEB_ID/protocol-mappers/models \
+    -r family-tree -s name=family-tree-api-audience -s protocol=openid-connect \
+    -s protocolMapper=oidc-audience-mapper \
+    -s 'config."included.client.audience"=family-tree-server' \
+    -s 'config."access.token.claim"=true' -s 'config."id.token.claim"=false' \
+    -s 'config."introspection.token.claim"=true'
+  ```
+
+  In the admin console the same change is: realm `family-tree` → Clients →
+  `family-tree-web` → Client scopes → `family-tree-web-dedicated` → Add mapper → By
+  configuration → Audience; name `family-tree-api-audience`, included client audience
+  `family-tree-server`, "Add to access token" on, "Add to ID token" off.
+
+Sign in again afterwards (tokens issued before the change don't carry the audience) and
+check the new access token's `aud` includes `family-tree-server`.
+
+Other Keycloak installations need the same mapper on whichever client the apps sign in
+with; if the API's client ID there isn't `family-tree-server`, set `OIDC_AUDIENCE` to it.
 
 Server configuration is all environment variables, defaulting to the values above —
 nothing to set for local dev, only for pointing at something else:
@@ -119,6 +168,7 @@ nothing to set for local dev, only for pointing at something else:
 | `DB_PASSWORD` | `family_tree` |
 | `OIDC_ISSUER` | `http://localhost:8081/realms/family-tree` |
 | `OIDC_JWKS_URI` | `${OIDC_ISSUER}/protocol/openid-connect/certs` |
+| `OIDC_AUDIENCE` | `family-tree-server` (the value an access token's `aud` must contain) |
 
 ## Running a local copy end to end
 
@@ -177,8 +227,20 @@ failure fails the test. The graph integration test was verified on Windows with
 Docker Desktop (Engine 29.7.2) and Testcontainers 1.21.4. The Postgres-backed suites
 are `GraphIntegrationTest`, `TenantIsolationTest` (cross-tree access, FT-065),
 `MembershipAccessTest` (active membership and owner-only writes, FT-068),
-`LivingPrivacyTest` (living-person privacy across responses, FT-066) and
-`TreeScopedMigrationTest` (V2 migration preflight and backfill).
+`LivingPrivacyTest` (living-person privacy across responses, FT-066),
+`OidcAccessTokenTest` (token audience, type and expiry through the production
+verifier with a test JWKS, FT-067) and `TreeScopedMigrationTest` (V2 migration
+preflight and backfill).
+
+`KeycloakBrowserTokenTest` is opt-in. It starts a disposable Keycloak 26 and Postgres
+on random ports (nothing already running is touched), imports
+`ops/keycloak/realm-export.json`, signs the dev user in to `family-tree-web` with
+authorization code + PKCE, and sends the tokens to the API: the access token gets
+`200`, the ID token and an `admin-cli` token without the API audience get `401`.
+
+```bash
+./gradlew :server:test --tests "*KeycloakBrowserTokenTest" -PkeycloakIt=true
+```
 
 **Gradle fails with `PKIX path building failed` or can't resolve plugins?** HTTPS
 scanning in some antivirus products (AVG, Avast and others) re-signs TLS traffic with

@@ -207,6 +207,7 @@ Launch is free and invitation-only; trees are private, with no linking between f
 | Sources and citations | Supported in the MVP |
 | Cloud | AWS |
 | Auth provider | Keycloak, self-hosted, run via docker-compose for local dev and deployed alongside the server in production; OIDC discovery keeps the integration provider-agnostic if this changes later |
+| API tokens (FT-067) | The API accepts only access tokens (`typ` = `Bearer`) whose `aud` contains the resource-server client ID (`family-tree-server`, set with `OIDC_AUDIENCE`), with a signature from the issuer's JWKS, the configured issuer and an `exp` that hasn't passed. Keycloak adds the audience to the browser client's access tokens through an audience mapper; ID and refresh tokens are rejected |
 | Persistence library | Exposed (JetBrains' Kotlin SQL library); Flyway for migrations |
 
 ## Still open
