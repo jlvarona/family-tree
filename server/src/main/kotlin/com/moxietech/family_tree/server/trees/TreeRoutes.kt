@@ -34,7 +34,7 @@ fun Route.treeRoutes() {
                 val treeId = TreeId(
                     call.parameters["treeId"] ?: throw NotFoundException("Missing treeId"),
                 )
-                val tree = TreeService.getTreeForMember(treeId, account.id)
+                val tree = TreeService.getTreeForReader(treeId, account.id)
                 call.respond(tree.toDto())
             }
         }

@@ -25,7 +25,7 @@ import kotlin.uuid.Uuid
 object UnionService {
 
     suspend fun createUnion(treeId: TreeId, callerAccountId: AccountId, request: CreateUnionRequest): UnionDto {
-        TreeService.getTreeForMember(treeId, callerAccountId)
+        TreeService.getTreeForWriter(treeId, callerAccountId)
         if (request.partner2Id != null && request.partner1Id == request.partner2Id) {
             throw ValidationException(listOf("A union's two partners must be different people"))
         }
@@ -72,7 +72,7 @@ object UnionService {
         callerAccountId: AccountId,
         request: AddUnionChildRequest,
     ): UnionDto {
-        TreeService.getTreeForMember(treeId, callerAccountId)
+        TreeService.getTreeForWriter(treeId, callerAccountId)
         val relation = runCatching { ChildRelation.valueOf(request.relation) }.getOrElse {
             throw ValidationException(listOf("Unknown child relation '${request.relation}'"))
         }
@@ -108,7 +108,7 @@ object UnionService {
     }
 
     suspend fun listUnions(treeId: TreeId, callerAccountId: AccountId): List<UnionDto> {
-        TreeService.getTreeForMember(treeId, callerAccountId)
+        TreeService.getTreeForReader(treeId, callerAccountId)
         return withContext(DatabaseDispatcher) {
             transaction {
                 val treeUuid = Uuid.parse(treeId.value)

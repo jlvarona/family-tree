@@ -3,9 +3,11 @@ package com.moxietech.family_tree.server.trees
 import com.moxietech.family_tree.api.TreeDto
 import com.moxietech.family_tree.domain.AccountId
 import com.moxietech.family_tree.domain.AuditAction
+import com.moxietech.family_tree.domain.Membership
 import com.moxietech.family_tree.domain.MembershipStatus
 import com.moxietech.family_tree.domain.Tree
 import com.moxietech.family_tree.domain.TreeId
+import com.moxietech.family_tree.permissions.TreePermissions
 import com.moxietech.family_tree.server.collaboration.AuditJson
 import com.moxietech.family_tree.server.collaboration.AuditLogRepository
 import com.moxietech.family_tree.server.config.DatabaseDispatcher
@@ -48,14 +50,45 @@ object TreeService {
         TreeRepository.listForAccount(Uuid.parse(accountId.value))
     }
 
-    /** Throws NotFoundException if the tree doesn't exist, ForbiddenException if the caller isn't a member. */
-    suspend fun getTreeForMember(treeId: TreeId, callerAccountId: AccountId): Tree = withContext(DatabaseDispatcher) {
-        val tree = TreeRepository.findById(Uuid.parse(treeId.value))
+    /**
+     * Read access to [treeId] ([TreePermissions.canRead]): the caller needs an
+     * ACTIVE membership. Throws NotFoundException if the tree doesn't exist,
+     * ForbiddenException if the caller has no membership or only an invitation.
+     */
+    suspend fun getTreeForReader(treeId: TreeId, callerAccountId: AccountId): Tree = withContext(DatabaseDispatcher) {
+        transaction {
+            val (tree, membership) = loadTreeAndMembership(treeId, callerAccountId)
+            if (!TreePermissions.canRead(tree, callerAccountId, membership)) {
+                throw ForbiddenException("Not a member of tree ${treeId.value}")
+            }
+            tree
+        }
+    }
+
+    /**
+     * Write access to an existing tree ([TreePermissions.canWrite]): during
+     * Phase 1 only the tree's active owner may change it. Every mutation under
+     * a tree calls this before validating the request, so a non-owner gets 403
+     * whatever the body. FT-012 (grants) and FT-014 (proposals) replace it.
+     */
+    suspend fun getTreeForWriter(treeId: TreeId, callerAccountId: AccountId): Tree = withContext(DatabaseDispatcher) {
+        transaction {
+            val (tree, membership) = loadTreeAndMembership(treeId, callerAccountId)
+            if (!TreePermissions.canRead(tree, callerAccountId, membership)) {
+                throw ForbiddenException("Not a member of tree ${treeId.value}")
+            }
+            if (!TreePermissions.canWrite(tree, callerAccountId, membership)) {
+                throw ForbiddenException("Only the tree owner can make changes to tree ${treeId.value}")
+            }
+            tree
+        }
+    }
+
+    private fun loadTreeAndMembership(treeId: TreeId, callerAccountId: AccountId): Pair<Tree, Membership?> {
+        val treeUuid = Uuid.parse(treeId.value)
+        val tree = TreeRepository.findById(treeUuid)
             ?: throw NotFoundException("No tree with id ${treeId.value}")
-        val isMember = TreeRepository.listForAccount(Uuid.parse(callerAccountId.value))
-            .any { it.id == tree.id }
-        if (!isMember) throw ForbiddenException("Not a member of tree ${treeId.value}")
-        tree
+        return tree to MembershipRepository.find(treeUuid, Uuid.parse(callerAccountId.value))
     }
 }
 
