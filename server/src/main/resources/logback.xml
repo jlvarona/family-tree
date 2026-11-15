@@ -4,7 +4,9 @@
             <pattern>%d{YYYY-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
         </encoder>
     </appender>
-    <root level="trace">
+    <!-- INFO keeps request bodies, SQL bind values (Exposed logs SQL at DEBUG) and tokens out of
+         routine logs. Set FAMILY_TREE_LOG_LEVEL=DEBUG or TRACE for one local process only. -->
+    <root level="${FAMILY_TREE_LOG_LEVEL:-INFO}">
         <appender-ref ref="STDOUT"/>
     </root>
     <logger name="org.eclipse.jetty" level="INFO"/>

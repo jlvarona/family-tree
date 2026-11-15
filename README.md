@@ -379,12 +379,14 @@ merging. See the [story review workflow](AGENTS.md#story-review-workflow).
 - **Server logs** go to stdout of whatever shell ran `./gradlew :server:run` — there's
   no separate log file. Format and level are configured in
   [`server/src/main/resources/logback.xml`](./server/src/main/resources/logback.xml);
-  it currently defaults to `TRACE`, which is very verbose (every SQL statement, every
-  routing decision, full HTTP wire traces) — useful when debugging a specific request,
-  noisy otherwise. Lower `<root level="trace">` to `info` there for quieter day-to-day
-  output.
-- **Flyway migration output** (each SQL statement run, and the final "Successfully
-  applied N migrations" line) appears inline in the same server stdout, right at startup.
+  it defaults to `INFO`: startup, Flyway, and one status line per request (method, path,
+  status, duration), without bodies, tokens, or SQL. For local debugging, opt in for a
+  single process with `FAMILY_TREE_LOG_LEVEL=DEBUG` (or `TRACE`) in that shell, e.g.
+  `$env:FAMILY_TREE_LOG_LEVEL = "DEBUG"` in PowerShell. Verbose levels log SQL with bind
+  values (names, dates, places, notes) and HTTP traces, so never set them in shared or
+  deployed environments.
+- **Flyway migration output** reports applied migrations and the final status in the
+  same server stdout during startup.
 - **Postgres / Keycloak container logs:** `docker logs family-tree-postgres` /
   `docker logs family-tree-keycloak` (`-f` to follow). `docker compose logs -f` follows
   both at once.
