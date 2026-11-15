@@ -24,7 +24,7 @@ object PersonRepository {
 
     /** Null when [id] doesn't exist or belongs to another tree; callers treat both as not found. */
     fun findById(treeId: Uuid, id: Uuid): Person? = transaction {
-        PersonTable.selectAll().where { PersonTable.id eq id }.firstOrNull()?.toPerson()
+        PersonTable.selectAll().where { (PersonTable.id eq id) and (PersonTable.treeId eq treeId) }.firstOrNull()?.toPerson()
     }
 
     fun listByTree(treeId: Uuid): List<Person> = transaction {
