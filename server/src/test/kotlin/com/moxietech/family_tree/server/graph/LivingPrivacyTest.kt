@@ -17,6 +17,7 @@ import com.moxietech.family_tree.server.config.DatabaseConfig
 import com.moxietech.family_tree.server.config.DatabaseSettings
 import com.moxietech.family_tree.server.errors.ForbiddenException
 import com.moxietech.family_tree.server.identity.AccountRepository
+import com.moxietech.family_tree.server.identity.OidcIdentity
 import com.moxietech.family_tree.server.trees.MembershipRepository
 import com.moxietech.family_tree.server.trees.TreeService
 import com.zaxxer.hikari.HikariDataSource
@@ -75,8 +76,12 @@ class LivingPrivacyTest {
             AppDatabase.init(dataSource)
 
             runBlocking {
-                owner = AccountRepository.insert("owner@example.com", "Owner", Locale.EN)
-                relative = AccountRepository.insert("relative@example.com", "Relative", Locale.ES)
+                owner = AccountRepository.getOrCreateByIdentity(
+                    OidcIdentity("https://issuer.test", "owner"), "owner@example.com", "Owner", Locale.EN,
+                )
+                relative = AccountRepository.getOrCreateByIdentity(
+                    OidcIdentity("https://issuer.test", "relative"), "relative@example.com", "Relative", Locale.ES,
+                )
                 tree = TreeService.createTree(owner.id, "Familia López")
                 MembershipRepository.insert(
                     Uuid.parse(tree.id.value), Uuid.parse(relative.id.value), personId = null, status = MembershipStatus.ACTIVE,

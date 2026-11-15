@@ -30,6 +30,7 @@ import com.moxietech.family_tree.server.graph.personRoutes
 import com.moxietech.family_tree.server.graph.placeRoutes
 import com.moxietech.family_tree.server.graph.unionRoutes
 import com.moxietech.family_tree.server.identity.AccountRepository
+import com.moxietech.family_tree.server.identity.OidcIdentity
 import com.moxietech.family_tree.server.sources.SourceService
 import com.moxietech.family_tree.server.sources.sourceRoutes
 import com.zaxxer.hikari.HikariDataSource
@@ -98,9 +99,9 @@ class MembershipAccessTest {
             AppDatabase.init(dataSource)
 
             runBlocking {
-                owner = AccountRepository.insert("owner@example.com", "Owner", Locale.EN)
-                relative = AccountRepository.insert("relative@example.com", "Relative", Locale.ES)
-                invitee = AccountRepository.insert("invitee@example.com", "Invitee", Locale.EN)
+                owner = account("owner@example.com", "Owner", Locale.EN)
+                relative = account("relative@example.com", "Relative", Locale.ES)
+                invitee = account("invitee@example.com", "Invitee", Locale.EN)
                 tree = TreeService.createTree(owner.id, "Family")
 
                 val treeUuid = uuid(tree.id.value)
@@ -127,6 +128,11 @@ class MembershipAccessTest {
         }
 
         private const val TEST_SECRET = "membership-access-test-only"
+        private const val TEST_ISSUER = "https://issuer.test"
+
+        /** Accounts are bound to (TEST_ISSUER, email-as-subject), matching [token]. */
+        private fun account(email: String, displayName: String, locale: Locale) =
+            AccountRepository.getOrCreateByIdentity(OidcIdentity(TEST_ISSUER, email), email, displayName, locale)
 
         private fun uuid(id: AccountId) = kotlin.uuid.Uuid.parse(id.value)
         private fun uuid(id: String) = kotlin.uuid.Uuid.parse(id)
@@ -260,7 +266,7 @@ class MembershipAccessTest {
     }
 
     private fun token(email: String): String =
-        JWT.create().withSubject(email).withClaim("email", email).sign(Algorithm.HMAC256(TEST_SECRET))
+        JWT.create().withIssuer(TEST_ISSUER).withSubject(email).withClaim("email", email).sign(Algorithm.HMAC256(TEST_SECRET))
 
     private fun rowCounts(): Map<String, Long> {
         val tables = listOf("person", "union_record", "union_child", "event", "place", "source", "membership", "audit_log")

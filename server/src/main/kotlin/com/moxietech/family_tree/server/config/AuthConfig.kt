@@ -50,7 +50,9 @@ const val OIDC_AUTH_NAME = "oidc"
  * Accepts a request only with a Keycloak access token that is signed by a key
  * in the JWKS, issued by [OidcSettings.issuer], intended for
  * [OidcSettings.audience], has an expiry that hasn't passed (beyond the leeway),
- * and carries a subject and email. Anything else is a `401`.
+ * and carries a non-blank subject and an email. Anything else is a `401`.
+ * The issuer + subject pair is what resolves the caller's account
+ * (`identity.currentAccount`).
  */
 fun AuthenticationConfig.configureOidc(settings: OidcSettings = OidcSettings()) {
     val jwkProvider: JwkProvider = JwkProviderBuilder(URI(settings.jwksUri).toURL())
@@ -68,10 +70,13 @@ fun AuthenticationConfig.configureOidc(settings: OidcSettings = OidcSettings()) 
             acceptLeeway(settings.leewaySeconds)
         }
         validate { credential ->
+            // The verified issuer + subject identify the local account (FT-003); email is profile data.
+            val issuer = credential.payload.issuer
             val subject = credential.payload.subject
             val email = credential.payload.getClaim("email")?.asString()
             val expiresAt = credential.payload.expiresAtAsInstant
-            if (subject != null && email != null && expiresAt != null) JWTPrincipal(credential.payload) else null
+            val complete = !issuer.isNullOrBlank() && !subject.isNullOrBlank() && email != null && expiresAt != null
+            if (complete) JWTPrincipal(credential.payload) else null
         }
     }
 }

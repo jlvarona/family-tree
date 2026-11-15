@@ -17,6 +17,7 @@ import com.moxietech.family_tree.server.config.DatabaseConfig
 import com.moxietech.family_tree.server.config.DatabaseSettings
 import com.moxietech.family_tree.server.errors.NotFoundException
 import com.moxietech.family_tree.server.identity.AccountRepository
+import com.moxietech.family_tree.server.identity.OidcIdentity
 import com.moxietech.family_tree.server.sources.SourceService
 import com.moxietech.family_tree.server.trees.TreeService
 import com.zaxxer.hikari.HikariDataSource
@@ -76,8 +77,12 @@ class TenantIsolationTest {
             AppDatabase.init(dataSource)
 
             runBlocking {
-                ownerA = AccountRepository.insert("owner-a@example.com", "Owner A", Locale.EN)
-                val ownerB = AccountRepository.insert("owner-b@example.com", "Owner B", Locale.EN)
+                ownerA = AccountRepository.getOrCreateByIdentity(
+                    OidcIdentity("https://issuer.test", "owner-a"), "owner-a@example.com", "Owner A", Locale.EN,
+                )
+                val ownerB = AccountRepository.getOrCreateByIdentity(
+                    OidcIdentity("https://issuer.test", "owner-b"), "owner-b@example.com", "Owner B", Locale.EN,
+                )
                 treeA = TreeService.createTree(ownerA.id, "Family A")
                 treeB = TreeService.createTree(ownerB.id, "Family B")
 

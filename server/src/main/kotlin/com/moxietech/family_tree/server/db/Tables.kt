@@ -12,6 +12,10 @@ import org.jetbrains.exposed.v1.javatime.timestamp
 
 object AccountTable : Table("account") {
     val id = uuid("id")
+    /** Verified OIDC `iss` + `sub` (V3); null only on legacy accounts awaiting resolution. */
+    val oidcIssuer = text("oidc_issuer").nullable()
+    val oidcSubject = text("oidc_subject").nullable()
+    /** Profile data from the latest login; not unique and never used to find an account. */
     val email = text("email")
     val displayName = text("display_name")
     val locale = text("locale")

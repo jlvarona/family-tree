@@ -158,6 +158,80 @@ check the new access token's `aud` includes `family-tree-server`.
 Other Keycloak installations need the same mapper on whichever client the apps sign in
 with; if the API's client ID there isn't `family-tree-server`, set `OIDC_AUDIENCE` to it.
 
+### Accounts and identities (FT-003)
+
+The server finds the caller's account by the access token's verified issuer (`iss`)
+and subject (`sub`); Keycloak's subject is the user's ID. The first request from a
+new identity creates its account. The email claim is stored as profile data and
+refreshed when the provider reports a new address. It is not unique and never selects
+or links an account, so a new identity using an old or current address gets a new,
+empty account. Changing `OIDC_ISSUER` (for example a new realm URL) means every user
+is a new identity, so treat it as a migration.
+
+### Resolving legacy accounts
+
+Accounts created before migration `V3__account_oidc_identity.sql` were keyed by email.
+V3 keeps their IDs, trees, memberships, people and audit entries, but leaves them
+**unbound**: no token reaches them, and signing in with the same email creates a
+separate, empty account. An operator binds each one from an authoritative mapping.
+
+1. **List them.** Connect with `psql` as the schema owner (the role Flyway migrates
+   with, `family_tree` locally) and run:
+
+   ```sql
+   select * from unbound_legacy_account order by created_at;
+   ```
+
+   Each row shows the account ID, its legacy email and display name, and how many
+   trees it owns, memberships it has, people it created and audit entries it wrote.
+   Rows with no trees and no memberships can stay unbound.
+
+2. **Build the mapping.** For each account to restore, find the provider user who
+   held it and take that user's ID (Keycloak admin console → realm → Users → user →
+   ID, or `kcadm.sh get users -r family-tree -q username=...`). The issuer is the
+   exact `OIDC_ISSUER` value. **A matching email alone is not evidence**: the
+   address may have been reassigned. Confirm the link with the account holder
+   through a channel you already trust (for example the tree owner vouching for a
+   relative, or the person confirming the trees they own), and record where the
+   confirmation came from.
+
+3. **Apply it in one transaction**, one call per account:
+
+   ```sql
+   begin;
+   select resolve_legacy_account(
+       '<account id>'::uuid,
+       'http://localhost:8081/realms/family-tree',   -- OIDC_ISSUER
+       '<keycloak user id>',                         -- sub
+       'Confirmed by <who>, <how>, <date>; ticket <id>'
+   );
+   -- ...more calls...
+   commit;
+   ```
+
+   Any failed call aborts the transaction and nothing is bound. The function
+   refuses, without changes, when the account doesn't exist, is already bound to a
+   different identity, or the identity already belongs to another account. Calling
+   it again with the same account and identity is a no-op, so a mapping script can be
+   re-run. Each binding is recorded in `account_identity_resolution` (identity,
+   evidence, database user, time). A binding can't be changed afterwards; a trigger
+   rejects direct updates to `oidc_issuer`/`oidc_subject`.
+
+4. **If the person already signed in after the upgrade**, step 3 fails because their
+   identity already has a new account. If that account is empty (owns no tree, has no
+   membership, created no person, wrote no audit entry), add
+   `p_replace_unused_account => true` as a fifth argument. The function deletes the
+   empty account and binds the legacy one in the same transaction, recording the
+   deleted ID as `replaced_account_id`. If the new account isn't empty, it still
+   fails. Decide case by case which data to keep; the function never merges
+   accounts.
+
+5. **Check** that the account no longer appears in `unbound_legacy_account`, and
+   that the person sees their trees after signing in again.
+
+The server never calls `resolve_legacy_account`. Execute rights are revoked from
+`public`, so only the schema owner, or a role it grants execute to, can run it.
+
 Server configuration is all environment variables, defaulting to the values above —
 nothing to set for local dev, only for pointing at something else:
 
@@ -229,8 +303,10 @@ are `GraphIntegrationTest`, `TenantIsolationTest` (cross-tree access, FT-065),
 `MembershipAccessTest` (active membership and owner-only writes, FT-068),
 `LivingPrivacyTest` (living-person privacy across responses, FT-066),
 `OidcAccessTokenTest` (token audience, type and expiry through the production
-verifier with a test JWKS, FT-067) and `TreeScopedMigrationTest` (V2 migration
-preflight and backfill).
+verifier with a test JWKS, FT-067), `AccountIdentityTest` (accounts keyed by issuer and
+subject: parallel first logins, email changes and reused emails, FT-003),
+`LegacyAccountBackfillTest` (V3 on pre-FT-003 data, listing and resolving legacy
+accounts, FT-003) and `TreeScopedMigrationTest` (V2 migration preflight and backfill).
 
 `KeycloakBrowserTokenTest` is opt-in. It starts a disposable Keycloak 26 and Postgres
 on random ports (nothing already running is touched), imports

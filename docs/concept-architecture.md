@@ -90,7 +90,7 @@ Families are modelled the way GEDCOM does: people connect through **Union** reco
 
 | Entity | Key fields | Notes |
 | --- | --- | --- |
-| Account | id, email, name, auth provider, locale | A login; can belong to many trees |
+| Account | id, oidc_issuer + oidc_subject, email, name, locale | A login; can belong to many trees. Found by the verified issuer + subject; email is profile data |
 | Tree | id, name, owner_account_id, settings | Tenant boundary; every row below carries tree_id |
 | Membership | tree_id, account_id, person_id, status | person_id = the member's own person (drives home branch) |
 | Grant | membership_id, role, anchor_person_id, direction, depth, include_partners | Branch-scoped permission |
@@ -208,6 +208,7 @@ Launch is free and invitation-only; trees are private, with no linking between f
 | Cloud | AWS |
 | Auth provider | Keycloak, self-hosted, run via docker-compose for local dev and deployed alongside the server in production; OIDC discovery keeps the integration provider-agnostic if this changes later |
 | API tokens (FT-067) | The API accepts only access tokens (`typ` = `Bearer`) whose `aud` contains the resource-server client ID (`family-tree-server`, set with `OIDC_AUDIENCE`), with a signature from the issuer's JWKS, the configured issuer and an `exp` that hasn't passed. Keycloak adds the audience to the browser client's access tokens through an audience mapper; ID and refresh tokens are rejected |
+| Account identity (FT-003) | An account is identified by the access token's verified issuer and subject, unique as a pair and immutable once bound; the first request from a new identity creates its account atomically. Email is mutable profile data: not unique, refreshed from the token, and never used to find, link or transfer an account. Accounts created before FT-003 stay unbound until an operator binds them from an authoritative mapping (`resolve_legacy_account`, README "Resolving legacy accounts") |
 | Persistence library | Exposed (JetBrains' Kotlin SQL library); Flyway for migrations |
 
 ## Still open

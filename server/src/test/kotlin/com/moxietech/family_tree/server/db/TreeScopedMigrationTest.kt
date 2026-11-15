@@ -82,7 +82,7 @@ class TreeScopedMigrationTest {
             c.exec("update membership set person_id = '$p1' where tree_id = '$a'")
             c.exec("insert into citation (source_id, target_type, target_id, confidence) values ('$sourceA', 'UNION', '$u', 3)")
 
-            migrate(db)
+            migrate(db, target = "2")
 
             assertEquals(a, c.string("select tree_id from union_child where union_id = '$u'"))
             assertEquals(a, c.string("select tree_id from citation where source_id = '$sourceA'"))
