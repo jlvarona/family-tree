@@ -17,4 +17,3 @@ fun Person.toDto() = PersonDto(
     bio = bio,
     version = version,
 )
-

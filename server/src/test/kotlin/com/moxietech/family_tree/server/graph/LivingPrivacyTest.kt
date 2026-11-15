@@ -183,6 +183,7 @@ class LivingPrivacyTest {
         val parents = unions.getValue(parentsUnion)
         assertNull(parents.startDate)
         assertNull(parents.endDate)
+        assertEquals("MARRIED", parents.type)
         assertEquals(carmen, parents.partner1Id)
         assertEquals(luis, parents.partner2Id)
         assertEquals(listOf(sofia), parents.children.map { it.childId })
