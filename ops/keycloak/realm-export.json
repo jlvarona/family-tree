@@ -22,7 +22,21 @@
         "http://localhost:8080/*",
         "http://localhost:3000/*"
       ],
-      "webOrigins": ["+"]
+      "webOrigins": ["+"],
+      "protocolMappers": [
+        {
+          "name": "family-tree-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "family-tree-server",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
     },
     {
       "clientId": "family-tree-server",

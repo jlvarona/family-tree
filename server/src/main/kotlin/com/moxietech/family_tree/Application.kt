@@ -3,6 +3,7 @@ package com.moxietech.family_tree
 import com.moxietech.family_tree.server.config.AppDatabase
 import com.moxietech.family_tree.server.config.DatabaseConfig
 import com.moxietech.family_tree.server.config.DatabaseSettings
+import com.moxietech.family_tree.server.config.OidcSettings
 import com.moxietech.family_tree.server.config.configureErrorMapping
 import com.moxietech.family_tree.server.config.configureOidc
 import com.moxietech.family_tree.server.graph.eventRoutes
@@ -30,11 +31,11 @@ fun main() {
     DatabaseConfig.connectExposed(dataSource)
     AppDatabase.init(dataSource)
 
-    embeddedServer(Netty, port = 8080, host = "0.0.0.0", module = Application::module)
+    embeddedServer(Netty, port = 8080, host = "0.0.0.0") { module() }
         .start(wait = true)
 }
 
-fun Application.module() {
+fun Application.module(oidc: OidcSettings = OidcSettings()) {
     install(ContentNegotiation) {
         json(Json { ignoreUnknownKeys = true })
     }
@@ -43,7 +44,7 @@ fun Application.module() {
     }
     install(CallLogging)
     install(Authentication) {
-        configureOidc()
+        configureOidc(oidc)
     }
 
     routing {
