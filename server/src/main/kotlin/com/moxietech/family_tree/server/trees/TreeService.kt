@@ -68,8 +68,10 @@ object TreeService {
     /**
      * Write access to an existing tree ([TreePermissions.canWrite]): during
      * Phase 1 only the tree's active owner may change it. Every mutation under
-     * a tree calls this before validating the request, so a non-owner gets 403
-     * whatever the body. FT-012 (grants) and FT-014 (proposals) replace it.
+     * a tree calls this before validating fields, and its POST route calls it
+     * (via `requireTreeWriter`) before decoding the body, so a non-owner gets
+     * 403 whatever the body, malformed JSON included.
+     * FT-012 (grants) and FT-014 (proposals) replace it.
      */
     suspend fun getTreeForWriter(treeId: TreeId, callerAccountId: AccountId): Tree = withContext(DatabaseDispatcher) {
         transaction {

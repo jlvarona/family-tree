@@ -21,6 +21,7 @@ fun Route.unionRoutes() {
             post {
                 val account = call.currentAccount()
                 val treeId = call.requireTreeId()
+                requireTreeWriter(treeId, account.id)
                 val request = call.receive<CreateUnionRequest>()
                 call.respond(HttpStatusCode.Created, UnionService.createUnion(treeId, account.id, request))
             }
@@ -33,6 +34,7 @@ fun Route.unionRoutes() {
                 val account = call.currentAccount()
                 val treeId = call.requireTreeId()
                 val unionId = UnionId(call.requirePathParam("unionId"))
+                requireTreeWriter(treeId, account.id)
                 val request = call.receive<AddUnionChildRequest>()
                 call.respond(HttpStatusCode.Created, UnionService.addChild(treeId, unionId, account.id, request))
             }

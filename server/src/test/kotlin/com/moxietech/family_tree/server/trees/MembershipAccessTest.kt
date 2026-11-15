@@ -16,15 +16,40 @@ import com.moxietech.family_tree.domain.UnionId
 import com.moxietech.family_tree.server.config.AppDatabase
 import com.moxietech.family_tree.server.config.DatabaseConfig
 import com.moxietech.family_tree.server.config.DatabaseSettings
+import com.auth0.jwt.JWT
+import com.auth0.jwt.algorithms.Algorithm
+import com.moxietech.family_tree.server.config.OIDC_AUTH_NAME
+import com.moxietech.family_tree.server.config.configureErrorMapping
 import com.moxietech.family_tree.server.errors.ForbiddenException
 import com.moxietech.family_tree.server.graph.EventService
 import com.moxietech.family_tree.server.graph.PersonService
 import com.moxietech.family_tree.server.graph.PlaceService
 import com.moxietech.family_tree.server.graph.UnionService
+import com.moxietech.family_tree.server.graph.eventRoutes
+import com.moxietech.family_tree.server.graph.personRoutes
+import com.moxietech.family_tree.server.graph.placeRoutes
+import com.moxietech.family_tree.server.graph.unionRoutes
 import com.moxietech.family_tree.server.identity.AccountRepository
 import com.moxietech.family_tree.server.sources.SourceService
+import com.moxietech.family_tree.server.sources.sourceRoutes
 import com.zaxxer.hikari.HikariDataSource
+import io.ktor.client.request.bearerAuth
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.http.ContentType
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.contentType
+import io.ktor.serialization.kotlinx.json.json
+import io.ktor.server.application.install
+import io.ktor.server.auth.Authentication
+import io.ktor.server.auth.jwt.JWTPrincipal
+import io.ktor.server.auth.jwt.jwt
+import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.plugins.statuspages.StatusPages
+import io.ktor.server.routing.routing
+import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
 import org.junit.AfterClass
 import org.junit.BeforeClass
 import org.junit.ClassRule
@@ -100,6 +125,8 @@ class MembershipAccessTest {
         fun tearDown() {
             if (::dataSource.isInitialized) dataSource.close()
         }
+
+        private const val TEST_SECRET = "membership-access-test-only"
 
         private fun uuid(id: AccountId) = kotlin.uuid.Uuid.parse(id.value)
         private fun uuid(id: String) = kotlin.uuid.Uuid.parse(id)
@@ -185,6 +212,55 @@ class MembershipAccessTest {
         PlaceService.createPlace(tree.id, owner.id, CreatePlaceRequest("Cádiz"))
         assertEquals(before.getValue("place") + 1, rowCounts().getValue("place"))
     }
+
+    /**
+     * Route order, over HTTP: the write check runs before the body is decoded,
+     * so a non-owner gets 403 even for malformed JSON, while the owner gets
+     * 400 for the same body. Authentication here is a test-only HMAC provider
+     * registered under the production provider name; verifying real
+     * Keycloak-shaped tokens through the production verifier is FT-072.
+     */
+    @Test
+    fun `over HTTP a non-owner gets 403 before the body is decoded`() = testApplication {
+        application {
+            install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+            install(StatusPages) { configureErrorMapping() }
+            install(Authentication) {
+                jwt(OIDC_AUTH_NAME) {
+                    verifier(JWT.require(Algorithm.HMAC256(TEST_SECRET)).build())
+                    validate { JWTPrincipal(it.payload) }
+                }
+            }
+            routing {
+                personRoutes()
+                unionRoutes()
+                eventRoutes()
+                placeRoutes()
+                sourceRoutes()
+            }
+        }
+        val base = "/api/v1/trees/${tree.id.value}"
+        val paths = listOf("people", "unions", "unions/$union/children", "events", "places", "sources").map { "$base/$it" }
+        val before = rowCounts()
+        for (path in paths) {
+            val asRelative = client.post(path) {
+                bearerAuth(token("relative@example.com"))
+                contentType(ContentType.Application.Json)
+                setBody("{ not json")
+            }
+            assertEquals(HttpStatusCode.Forbidden, asRelative.status, path)
+            val asOwner = client.post(path) {
+                bearerAuth(token("owner@example.com"))
+                contentType(ContentType.Application.Json)
+                setBody("{ not json")
+            }
+            assertEquals(HttpStatusCode.BadRequest, asOwner.status, path)
+        }
+        assertEquals(before, rowCounts())
+    }
+
+    private fun token(email: String): String =
+        JWT.create().withSubject(email).withClaim("email", email).sign(Algorithm.HMAC256(TEST_SECRET))
 
     private fun rowCounts(): Map<String, Long> {
         val tables = listOf("person", "union_record", "union_child", "event", "place", "source", "membership", "audit_log")

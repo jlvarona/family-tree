@@ -24,16 +24,19 @@ missing tree is a `404`. No membership, or only an invitation, is a `403` "Not a
 member of tree …". An active non-owner attempting a write is a `403` "Only the tree
 owner can make changes to tree …". `TreeRepository.listForAccount` now lists only
 trees with an `ACTIVE` membership, so an invited account doesn't see the tree. Every
-current mutation calls `getTreeForWriter` before validating its body: create person,
-union, child link, event, place and source. All read routes, including
-`GET /trees/{treeId}`, call `getTreeForReader`. Tree creation is unchanged: it still
-inserts the caller's `ACTIVE` owner membership in the same transaction.
+current mutation (create person, union, child link, event, place and source) checks
+write access before touching the request: the POST route calls `getTreeForWriter`
+before decoding the JSON body, and the service calls it again before validating
+fields, so direct service callers are covered too. A non-owner gets `403` even for
+malformed JSON. All read routes, including `GET /trees/{treeId}`, call
+`getTreeForReader`. Tree creation is unchanged: it still inserts the caller's
+`ACTIVE` owner membership in the same transaction.
 
 **Verification.** `gradlew.bat :core:jvmTest :server:test` passed on Windows, Docker
-Engine 29.7.2, PostgreSQL 16. `:core` has 30 tests and `:server` has 18.
+Engine 29.7.2, PostgreSQL 16. `:core` has 30 tests and `:server` has 19.
 - `TreePermissionsTest` (6, `:core`): active owner, active non-owner, invited
   account, invited owner, no membership, and a membership for another tree or account.
-- `MembershipAccessTest` (5, `:server`):
+- `MembershipAccessTest` (6, `:server`):
   - An invited account doesn't see the tree in its list, and every read and every
     mutation is rejected with "Not a member".
   - An active non-owner can use every read and sees the expected people and ancestors.
@@ -41,13 +44,18 @@ Engine 29.7.2, PostgreSQL 16. `:core` has 30 tests and `:server` has 18.
     of graph tables, `membership` and `audit_log` don't change.
   - The write check runs before body validation: a blank name or an unknown source
     type still gets `403`, not `400`.
+  - Over HTTP, every POST route returns `403` to a non-owner sending malformed JSON,
+    and `400` to the owner sending the same body; nothing is written. This test uses
+    a test-only HMAC JWT provider under the production provider name.
   - The owner can still read and create.
 - `TenantIsolationTest`, `TreeScopedMigrationTest`, `GraphIntegrationTest` and
   `ApplicationTest` still pass.
 
 Dropping the owner condition from `canWrite` makes two `MembershipAccessTest` cases
+fail; removing the route-level check from the person POST makes the HTTP case
 fail. There is no invitation route yet, so the tests insert `INVITED` and `ACTIVE`
-memberships directly. The HTTP versions of these cases remain FT-072's scope.
+memberships directly. Running these cases through the production JWT verifier with
+test-signed Keycloak-shaped tokens remains FT-072's scope.
 
 ## 2026-11-14 — FT-065 enforced tenant isolation in the graph API and PostgreSQL
 

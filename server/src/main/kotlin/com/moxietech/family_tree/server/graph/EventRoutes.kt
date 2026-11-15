@@ -20,6 +20,7 @@ fun Route.eventRoutes() {
             post {
                 val account = call.currentAccount()
                 val treeId = call.requireTreeId()
+                requireTreeWriter(treeId, account.id)
                 val request = call.receive<CreateEventRequest>()
                 call.respond(HttpStatusCode.Created, EventService.createEvent(treeId, account.id, request))
             }
