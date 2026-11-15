@@ -1,0 +1,45 @@
+# Pull request gate for main (FT-072). The job name below is the status check
+# that branch protection requires: "Core and server tests". It must run on every
+# pull request to main, so there are no path filters or job conditions.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+# Read-only token: the job only checks out code and runs tests.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  core-and-server-tests:
+    name: Core and server tests
+    # Linux runner with Docker Engine for Testcontainers (PostgreSQL 16).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      # gradle/gradle-daemon-jvm.properties asks for an Azul JDK 21 daemon.
+      - name: Set up JDK 21
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+        with:
+          distribution: zulu
+          java-version: '21'
+          cache: gradle
+
+      - name: Show Docker version
+        run: docker version
+
+      # Live Keycloak stays opt-in (-PkeycloakIt=true); without it
+      # KeycloakBrowserTokenTest is skipped. gradlew isn't committed as
+      # executable, so it runs through bash.
+      - name: Run core and server tests
+        run: bash ./gradlew --no-daemon --stacktrace :core:jvmTest :server:test
