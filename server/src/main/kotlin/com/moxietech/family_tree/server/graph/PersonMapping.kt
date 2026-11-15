@@ -18,18 +18,3 @@ fun Person.toDto() = PersonDto(
     version = version,
 )
 
-/**
- * Living-person privacy (AGENTS.md "Living-person privacy"): outside a
- * grant covering them, a living person shows as "Private" with no dates,
- * photos or bio. Branch-scoped grants land in Phase 2; until then the
- * conservative, rule-correct default is "visible in full to the tree
- * owner only" rather than silently showing everyone everything.
- */
-fun PersonDto.redacted() = copy(
-    givenNames = "Private",
-    surnamePaternal = null,
-    surnameMaternal = null,
-    fullName = "Private",
-    profileMediaId = null,
-    bio = null,
-)

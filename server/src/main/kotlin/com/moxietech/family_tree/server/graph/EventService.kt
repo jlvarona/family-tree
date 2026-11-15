@@ -64,15 +64,19 @@ object EventService {
     }
 
     suspend fun listEventsForPerson(treeId: TreeId, personId: PersonId, callerAccountId: AccountId): List<EventDto> {
-        TreeService.getTreeForReader(treeId, callerAccountId)
+        val tree = TreeService.getTreeForReader(treeId, callerAccountId)
         return withContext(DatabaseDispatcher) {
             transaction {
                 val treeUuid = Uuid.parse(treeId.value)
                 val personUuid = Uuid.parse(personId.value)
-                TreeScopedLookups.requirePerson(treeUuid, personUuid)
-                EventRepository.listByPerson(treeUuid, personUuid).map { event ->
-                    val place = event.placeId?.let { PlaceRepository.findById(treeUuid, Uuid.parse(it.value)) }
-                    event.toDto(place)
+                val person = TreeScopedLookups.requirePerson(treeUuid, personUuid)
+                // A hidden living person still resolves (their placeholder is visible), but
+                // none of their events are returned: no dates, places or notes (FT-066).
+                ViewerPolicy(tree, callerAccountId).eventsOf(person) {
+                    EventRepository.listByPerson(treeUuid, personUuid).map { event ->
+                        val place = event.placeId?.let { PlaceRepository.findById(treeUuid, Uuid.parse(it.value)) }
+                        event.toDto(place)
+                    }
                 }
             }
         }
