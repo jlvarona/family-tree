@@ -33,8 +33,10 @@ fun Route.unionRoutes() {
             post("/{unionId}/children") {
                 val account = call.currentAccount()
                 val treeId = call.requireTreeId()
-                val unionId = UnionId(call.requirePathParam("unionId"))
                 requireTreeWriter(treeId, account.id)
+                // UnionService.addChild validates the ID after the write check, so a
+                // non-owner gets 403 whatever the union ID (FT-068, FT-070).
+                val unionId = UnionId(call.requirePathParam("unionId"))
                 val request = call.receive<AddUnionChildRequest>()
                 call.respond(HttpStatusCode.Created, UnionService.addChild(treeId, unionId, account.id, request))
             }

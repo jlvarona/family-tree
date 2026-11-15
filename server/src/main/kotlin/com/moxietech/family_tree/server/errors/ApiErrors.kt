@@ -7,6 +7,9 @@ class NotFoundException(message: String) : RuntimeException(message)
 /** The caller is authenticated but has no grant covering the requested tree/branch. */
 class ForbiddenException(message: String) : RuntimeException(message)
 
+/** The request conflicts with existing state, such as a link that already exists (FT-070). */
+class ConflictException(message: String) : RuntimeException(message)
+
 fun List<String>.requireValid() {
     if (isNotEmpty()) throw ValidationException(this)
 }

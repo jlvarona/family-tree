@@ -12,6 +12,8 @@ import com.moxietech.family_tree.server.collaboration.AuditJson
 import com.moxietech.family_tree.server.collaboration.AuditLogRepository
 import com.moxietech.family_tree.server.config.DatabaseDispatcher
 import com.moxietech.family_tree.server.errors.ValidationException
+import com.moxietech.family_tree.server.errors.parseOptionalUuidField
+import com.moxietech.family_tree.server.errors.parseUuidField
 import com.moxietech.family_tree.server.trees.TreeService
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
@@ -28,14 +30,14 @@ object EventService {
         val type = runCatching { EventType.valueOf(request.type) }.getOrElse {
             throw ValidationException(listOf("Unknown event type '${request.type}'"))
         }
+        val personUuid = parseOptionalUuidField("personId", request.personId)
+        val unionUuid = parseOptionalUuidField("unionId", request.unionId)
+        val placeUuid = parseOptionalUuidField("placeId", request.placeId)
         val date = request.date?.let { GedcomDateParser.parse(it) }
 
         return withContext(DatabaseDispatcher) {
             transaction {
                 val treeUuid = Uuid.parse(treeId.value)
-                val personUuid = request.personId?.let { Uuid.parse(it) }
-                val unionUuid = request.unionId?.let { Uuid.parse(it) }
-                val placeUuid = request.placeId?.let { Uuid.parse(it) }
                 personUuid?.let { TreeScopedLookups.requirePerson(treeUuid, it) }
                 unionUuid?.let { TreeScopedLookups.requireUnion(treeUuid, it) }
                 val place = placeUuid?.let { TreeScopedLookups.requirePlace(treeUuid, it) }
@@ -68,7 +70,7 @@ object EventService {
         return withContext(DatabaseDispatcher) {
             transaction {
                 val treeUuid = Uuid.parse(treeId.value)
-                val personUuid = Uuid.parse(personId.value)
+                val personUuid = parseUuidField("personId", personId.value)
                 val person = TreeScopedLookups.requirePerson(treeUuid, personUuid)
                 // A hidden living person still resolves (their placeholder is visible), but
                 // none of their events are returned: no dates, places or notes (FT-066).
