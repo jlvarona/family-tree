@@ -9,6 +9,87 @@ up to date in place, not logged chronologically.
 
 ---
 
+## 2026-11-16 — FT-002 citation routes: create and target-scoped listing (in progress)
+
+FT-002 is **In progress**: the routes, tests and docs below are written but not yet
+verified (no Gradle or Docker run in this session). It moves to **Done** once
+`:server:test` passes and the PR is reviewed. No migration; the existing `citation`
+table and `:core` DTOs (`CreateCitationRequest`, `CitationDto`) are used unchanged.
+
+**Contract.**
+
+```
+POST /api/v1/trees/{treeId}/citations                     CreateCitationRequest → 201 CitationDto
+GET  /api/v1/trees/{treeId}/people/{personId}/citations   → List<CitationDto>
+GET  /api/v1/trees/{treeId}/events/{eventId}/citations    → List<CitationDto>
+GET  /api/v1/trees/{treeId}/unions/{unionId}/citations    → List<CitationDto>
+```
+
+- **Create** is owner-only, checked before the body is decoded (`403` whatever the
+  body). Then, all `400`: an undecodable body or a missing `confidence` ("Malformed
+  request body"); `sourceId` / `targetId` not UUIDs ("… must be a UUID"); a
+  `targetType` other than exactly `PERSON`, `EVENT` or `UNION`; a `confidence` outside
+  0–3; any non-null `mediaId` (there is no media to resolve it against until FT-008).
+  Then, in one READ COMMITTED transaction: lock the source
+  `FOR KEY SHARE` by ID and `tree_id` (none → `404` "No source with id …"), lock the
+  target the same way in `person`, `event` or `union_record` (none → the same `404` as
+  `TreeScopedLookups`, e.g. "No event with id …"), insert, and append one `CREATE`
+  audit entry (entity `Citation`, before `null`, after = the returned DTO). Another
+  tree's source or target is the same `404` as a missing one. IDs are parsed once into
+  typed `Uuid`s (`CitationTargetRef`) and returned canonical.
+- **List** is for any active member (`403` otherwise). The path ID is parsed after
+  the read check (`400` "personId|eventId|unionId must be a UUID"), then resolved in
+  the URL's tree (`404` as above). Only same-tree citations on that exact target are
+  returned, ordered by ID. There is no tree-wide or per-source citation listing.
+
+**Privacy.** `ViewerPolicy.citationsOn` decides, from the people a fact is about:
+the person; a union's partners; an event's person, or its union's partners. If any of
+them is hidden from the caller (FT-066: living and not the owner), the list is empty,
+like a hidden person's events. Page, note, confidence, source ID and media ID can
+describe the people involved, so none of them is shown. FT-066's projections are
+unchanged: a union with a hidden partner still shows its type and links (dates
+hidden), and no existing event or union response gains citation data. The target, its
+subjects and its citations are read in one read-only REPEATABLE READ snapshot.
+
+**Concurrency** (FT-001 lock contract, now followed). Both locks are taken before the
+insert, in the same transaction as the insert and audit:
+- Citation first: a delete of the target or source that arrives later finds no
+  citation in its checks, its `DELETE` waits on the writer's lock, and after the
+  writer commits it sees the citation (post-DELETE check for person/union/event,
+  `citation_source_*` foreign key for a source): `409`, nothing deleted or audited.
+- Delete first: the writer's `FOR KEY SHARE` waits on the deleting transaction; once
+  it commits the lock finds no row and the create is the generic `404` with no
+  citation and no audit entry. A foreign-key violation on `citation_source_*` (not
+  reachable while the source lock is held) also maps to that `404` after rollback.
+
+**Tests** (`server/.../sources/CitationRoutesTest`, HTTP through the production
+`module` and token verifier on Testcontainers PostgreSQL 16; "nothing written" is a
+fingerprint of every tenant row):
+- The owner cites a person, union and event (including upper-case IDs); the response
+  and the listing match, with one `CREATE` audit entry whose after is the DTO.
+- A non-owner member gets the citations of a deceased person, a union of deceased
+  partners and their events, and `[]` for a living person, a union with a living
+  partner, and events of either. None of those citations' IDs, pages or notes appears
+  in any other route they can read (people, person, events, ancestors, descendants,
+  unions, graph, sources, places). FT-066 union and event projections are unchanged.
+  After the owner marks the person deceased, every citation is visible.
+- Tree B's source, person, event and union in tree A's URL give the same `404` as
+  random IDs, on create and on listing; an event ID named as a person is a `404`;
+  a tree B citation row naming a tree A person isn't listed. The other tree's owner
+  and an invitee get `403`. Nothing is written in either tree.
+- Non-owners get `403` for valid, malformed and empty bodies; every malformed field
+  and path ID is a `400` with nothing written.
+- API-created citations block deleting their person, union, event and source (`409`).
+- **Races, both orderings, for person, union, event and source.** Citation first: the
+  create is parked on its INSERT by a test-held `SHARE` lock on `citation` while the
+  delete waits on its row lock → `201` and `409`. Delete first: the delete is parked
+  on its audit INSERT by a `SHARE` lock on `audit_log` while the create waits on
+  `FOR KEY SHARE` → `204` and `404`. Waits are confirmed in `pg_stat_activity`.
+- A trigger that rejects the citation audit insert rolls the citation back (`P0001`).
+
+**Verification.** Not run in this session (no Gradle, Docker or Git). To verify:
+`./gradlew :server:test` (Docker running; README "Running tests").
+
 ## 2026-11-16 — FT-001 review fix: child-link versions are never reused
 
 **Finding (PR #17, reproduced with disposable Keycloak and PostgreSQL).** A child
@@ -1156,7 +1237,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 
 ### Status board
 
-**Done (26)** · **In progress (0)** · **To do (28)** · **Blocked (1)**
+**Done (26)** · **In progress (1)** · **To do (27)** · **Blocked (1)**
 
 | Order | ID | Story | Epic | Priority | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -1186,7 +1267,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 | — | FT-005 | Authenticated owner workflow and web tree views | E1 | P1 | Done |
 | — | FT-006 | Person page UI | E1 | P1 | Done |
 | — | FT-001 | Update & delete endpoints | E1 | P1 | Done |
-| 1 | FT-002 | Citation routes | E1 | P1 | To do |
+| 1 | FT-002 | Citation routes | E1 | P1 | In progress |
 | 2 | FT-007 | Duplicate-merge workflow | E1 | P1 | To do |
 | 3 | FT-008 | Photo upload (S3 presigned URLs) | E1 | P1 | Blocked |
 | 4 | FT-064 | Make compose host ports configurable | E7 | P2 | To do |
@@ -1274,12 +1355,15 @@ desktop/shared build repair.
   records, V4 version columns and a V5 child-link version sequence. A referenced record
   returns `409`; a successful deletion leaves a before-only audit entry. See the
   2026-11-16 FT-001 entries for the contract and verification.
-- **FT-002 Citation routes.** `To do · P1 · #1` — use the current `citation` table
+- **FT-002 Citation routes.** `In progress · P1 · #1` — use the current `citation` table
   and `:core`'s `CitationTarget` (person/event/union). Resolve both the source and
   the polymorphic target within the authorized tree, audit writes in the same
   transaction, and enforce the target's visibility policy (FT-065, FT-066). Follow
   the citation lock contract from FT-001 (decisions table): lock the target
   `FOR KEY SHARE` before inserting or retargeting a citation.
+
+  Create and target-scoped listing are implemented (2026-11-16 FT-002 entry), awaiting
+  verification and review. Citation update/delete are not in this story.
 - **FT-003 Bind local accounts to OIDC issuer and subject.** `Done · P1`.
   Update `AuthConfig`, `CurrentAccount`, `AccountRoutes`, and
   `AccountService`/`AccountRepository`. Pass the verified `iss` and `sub` to
@@ -1773,14 +1857,16 @@ census, church record, newspaper, family bible, oral history, other — the "sti
 list in `concept-architecture.md`).
 
 **`citation`** — ties one fact to one `source`. The polymorphic target is
-`target_type` (`PERSON`/`EVENT`/`UNION`) plus `target_id`. The current schema has no
-target FK. FT-002 adds application-level validation using `CitationTarget` in
-`:core`. `confidence` ranges from `0` to `3` (unreliable → primary evidence).
-`tree_id` (V2) is copied from the source, and a same-tree foreign key keeps the source
-in that tree. V2's preflight also checked existing targets; the target itself stays
-without a foreign key until FT-002. A same-tree citation blocks deleting its person,
-union or event (FT-001); citation writers must lock the target `FOR KEY SHARE` first
-(decisions table).
+`target_type` (`PERSON`/`EVENT`/`UNION`) plus `target_id`. The schema has no
+target FK; FT-002's create route validates the target in the application
+(`CitationTarget` in `:core`, `CitationTargetKind` in the server), resolving it and the
+source in the citation's tree. `confidence` ranges from `0` to `3` (unreliable →
+primary evidence). `tree_id` (V2) is set to the URL's tree, and a same-tree foreign key
+keeps the source in that tree. V2's preflight also checked existing targets. A
+same-tree citation blocks deleting its person, union or event (FT-001); the citation
+writer locks the source and the target `FOR KEY SHARE` first (decisions table).
+`media_id` stays null: FT-002 rejects a media ID until FT-008 adds media. FT-002 added
+no migration and no version column (citations have no update or delete route yet).
 
 **`membership`** — links an `account` to a `tree` and, once set, to that member's own
 `person` (drives the Phase 2 home-branch calculation). Composite PK

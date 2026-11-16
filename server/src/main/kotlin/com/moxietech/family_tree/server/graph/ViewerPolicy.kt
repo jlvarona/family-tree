@@ -1,5 +1,6 @@
 package com.moxietech.family_tree.server.graph
 
+import com.moxietech.family_tree.api.CitationDto
 import com.moxietech.family_tree.api.DuplicateCandidateDto
 import com.moxietech.family_tree.api.EventDto
 import com.moxietech.family_tree.api.PersonDto
@@ -30,6 +31,8 @@ import com.moxietech.family_tree.permissions.PersonVisibility
  *   type, but its start and end dates are removed.
  * - They are never offered as duplicate candidates, so a score can't reveal
  *   who they are.
+ * - Citations on them, on a union where they are a partner, and on events of
+ *   either are withheld (FT-002, [citationsOn]).
  */
 class ViewerPolicy(private val tree: Tree, private val callerAccountId: AccountId) {
 
@@ -49,6 +52,18 @@ class ViewerPolicy(private val tree: Tree, private val callerAccountId: AccountI
     /** The events of [person] this caller may see: all of them, or none for a hidden person. */
     fun eventsOf(person: Person, events: () -> List<EventDto>): List<EventDto> =
         if (canSee(person)) events() else emptyList()
+
+    /**
+     * The citations on one fact (FT-002) this caller may see. [subjects] are the
+     * people the fact is about: the cited person; a cited union's partners; a
+     * cited event's person, or its union's partners. A citation's page, note,
+     * confidence, source and media can describe those people, so the citations
+     * are returned only when every subject is visible, and none otherwise, the
+     * same way [eventsOf] treats a hidden person and [project] hides the dates of
+     * a union with a hidden partner. [citations] isn't read when withheld.
+     */
+    fun citationsOn(subjects: List<Person>, citations: () -> List<CitationDto>): List<CitationDto> =
+        if (subjects.all(::canSee)) citations() else emptyList()
 
     /**
      * Duplicate candidates for a new person, scored only against people this

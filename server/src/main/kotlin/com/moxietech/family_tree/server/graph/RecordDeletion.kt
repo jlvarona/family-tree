@@ -102,7 +102,7 @@ internal object RecordDeletion {
      * Whether a citation in [treeId] targets [targetId]. A citation in another
      * tree naming the same ID doesn't count (and isn't revealed).
      *
-     * Lock contract for citation writers (FT-002 must follow it): in the same
+     * Lock contract for citation writers (`CitationService` follows it): in the same
      * transaction as the insert, first lock the target row with
      * `SELECT … FROM person|union_record|event WHERE id = ? AND tree_id = ? FOR KEY SHARE`
      * and return 404 if no row comes back. A delete's DELETE statement then
@@ -122,7 +122,8 @@ internal object RecordDeletion {
 
 private const val FOREIGN_KEY_VIOLATION = "23503"
 
-private fun SQLException.isForeignKeyViolation(constraints: Set<String>): Boolean =
+/** True only for PostgreSQL's foreign-key violation (23503) on one of [constraints]. */
+internal fun SQLException.isForeignKeyViolation(constraints: Set<String>): Boolean =
     generateSequence<Throwable>(this) { it.cause }
         .filterIsInstance<PSQLException>()
         .any { it.sqlState == FOREIGN_KEY_VIOLATION && it.serverErrorMessage?.constraint in constraints }
