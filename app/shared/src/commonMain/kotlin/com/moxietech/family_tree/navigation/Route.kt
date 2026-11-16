@@ -5,6 +5,8 @@ import io.ktor.http.decodeURLPart
 import io.ktor.http.encodeURLParameter
 import io.ktor.http.formUrlEncode
 import io.ktor.http.parseQueryString
+import kotlin.uuid.ExperimentalUuidApi
+import kotlin.uuid.Uuid
 
 /** Which part of a tree the canvas shows. "Side" views come with FT-015. */
 enum class TreeViewKind(val token: String) {
@@ -24,7 +26,7 @@ enum class TreeViewKind(val token: String) {
  *
  * - `#/` — the tree list
  * - `#/trees/{treeId}?view=ancestors&root={personId}` — a tree view
- * - `#/trees/{treeId}/people/{personId}` — a person's page (FT-006 builds it out)
+ * - `#/trees/{treeId}/people/{personId}` — a person's page (FT-006)
  *
  * IDs are opaque here; the API validates them and answers `404` for anything
  * that isn't a person or tree the caller can read.
@@ -69,14 +71,26 @@ sealed interface Route {
             }
             return when {
                 segments.size == 2 && segments[0] == "trees" && segments[1].isNotBlank() -> Tree(
-                    treeId = segments[1],
+                    treeId = canonicalId(segments[1]),
                     view = TreeViewKind.fromToken(query["view"]),
-                    rootPersonId = query["root"]?.takeIf { it.isNotBlank() },
+                    rootPersonId = query["root"]?.takeIf { it.isNotBlank() }?.let(::canonicalId),
                 )
                 segments.size == 4 && segments[0] == "trees" && segments[2] == "people" &&
-                    segments[1].isNotBlank() && segments[3].isNotBlank() -> Person(segments[1], segments[3])
+                    segments[1].isNotBlank() && segments[3].isNotBlank() ->
+                    Person(canonicalId(segments[1]), canonicalId(segments[3]))
                 else -> Trees
             }
         }
+
+        /**
+         * A valid UUID in any spelling the API accepts (dashed or hex-only, any
+         * case) becomes its canonical dashed lower-case form, the one the API
+         * returns; anything else stays as typed, for the API to reject.
+         */
+        @OptIn(ExperimentalUuidApi::class)
+        fun canonicalId(raw: String): String = Uuid.parseOrNull(raw)?.toString() ?: raw
+
+        /** Whether a returned ID is the one requested: UUID identity, else the exact text. */
+        fun sameId(returned: String, requested: String): Boolean = canonicalId(returned) == canonicalId(requested)
     }
 }

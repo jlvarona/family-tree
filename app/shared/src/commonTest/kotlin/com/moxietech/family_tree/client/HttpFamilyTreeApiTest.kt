@@ -116,4 +116,21 @@ class HttpFamilyTreeApiTest {
 
         assertEquals("http://localhost:3000/api/v1/trees/t1/people/..%2Fme%3Fx/ancestors", seen.single().first)
     }
+
+    @Test
+    fun personEventsAreReadFromTheTimelineRoute() = runTest {
+        val api = api(
+            Tokens(),
+            HttpStatusCode.OK to """[{"id":"e1","treeId":"t1","personId":"p/1","unionId":null,"type":"BIRTH",
+                "date":{"displayText":"abt 1890","earliestIso":"1889-01-01","latestIso":"1891-12-31"},
+                "place":{"id":"pl","name":"Toledo","hierarchy":null,"latitude":null,"longitude":null},
+                "notes":null,"version":0,"futureField":true}]""",
+        )
+
+        val events = api.events("t1", "p/1")
+
+        assertEquals("http://localhost:3000/api/v1/trees/t1/people/p%2F1/events", seen.single().first)
+        assertEquals("abt 1890", events.single().date?.displayText)
+        assertEquals("Toledo", events.single().place?.name)
+    }
 }

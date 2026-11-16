@@ -6,6 +6,7 @@ import com.moxietech.family_tree.api.CreatePersonRequest
 import com.moxietech.family_tree.api.CreatePersonResponse
 import com.moxietech.family_tree.api.CreateTreeRequest
 import com.moxietech.family_tree.api.CreateUnionRequest
+import com.moxietech.family_tree.api.EventDto
 import com.moxietech.family_tree.api.PersonDto
 import com.moxietech.family_tree.api.TreeDto
 import com.moxietech.family_tree.api.TreeGraphDto
@@ -73,6 +74,12 @@ interface FamilyTreeApi {
 
     suspend fun descendants(treeId: String, personId: String): List<PersonDto>
 
+    /**
+     * The person's events (`GET …/people/{personId}/events`). The server returns
+     * an empty list for a living person hidden from the caller (FT-066).
+     */
+    suspend fun events(treeId: String, personId: String): List<EventDto>
+
     suspend fun createPerson(treeId: String, request: CreatePersonRequest): CreatePersonResponse
 
     suspend fun createUnion(treeId: String, request: CreateUnionRequest): UnionDto
@@ -112,6 +119,9 @@ class HttpFamilyTreeApi(
 
     override suspend fun descendants(treeId: String, personId: String): List<PersonDto> =
         get("/trees/${seg(treeId)}/people/${seg(personId)}/descendants", ListSerializer(PersonDto.serializer()))
+
+    override suspend fun events(treeId: String, personId: String): List<EventDto> =
+        get("/trees/${seg(treeId)}/people/${seg(personId)}/events", ListSerializer(EventDto.serializer()))
 
     override suspend fun createPerson(treeId: String, request: CreatePersonRequest): CreatePersonResponse =
         post("/trees/${seg(treeId)}/people", CreatePersonRequest.serializer(), request, CreatePersonResponse.serializer())

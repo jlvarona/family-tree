@@ -7,6 +7,7 @@ import com.moxietech.family_tree.api.AddUnionChildRequest
 import com.moxietech.family_tree.api.CreatePersonRequest
 import com.moxietech.family_tree.api.CreatePersonResponse
 import com.moxietech.family_tree.api.CreateUnionRequest
+import com.moxietech.family_tree.api.EventDto
 import com.moxietech.family_tree.api.PersonDto
 import com.moxietech.family_tree.api.TreeDto
 import com.moxietech.family_tree.api.TreeGraphDto
@@ -33,6 +34,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 // Aliased so FakeApi's own graph()/person() members can't capture these calls.
+import com.moxietech.family_tree.event as eventOf
 import com.moxietech.family_tree.graph as graphOf
 import com.moxietech.family_tree.person as personOf
 import com.moxietech.family_tree.union as unionOf
@@ -58,7 +60,7 @@ class FamilyTreeControllerTest {
 
     private class FakeApi : FamilyTreeApi {
         val account = AccountDto("owner", "owner@example.com", "Owner", "en")
-        val tree = TreeDto(TREE_ID, "Romero", "owner", 0)
+        var tree = TreeDto(TREE_ID, "Romero", "owner", 0)
         var graph: TreeGraphDto = graphOf(listOf("mum", "dad", "kid"), unionOf("u1", "mum", "dad"))
 
         /** Each graph call takes the next gate, if any, and waits for it. */
@@ -82,7 +84,8 @@ class FamilyTreeControllerTest {
 
         override suspend fun tree(treeId: String): TreeDto {
             calls += "tree:$treeId"
-            if (treeId != TREE_ID) throw ApiException(ApiFailure.NOT_FOUND)
+            // Like the server: any accepted spelling of the ID, answered with the canonical one.
+            if (!Route.sameId(treeId, tree.id)) throw ApiException(ApiFailure.NOT_FOUND)
             return tree
         }
 
@@ -93,9 +96,26 @@ class FamilyTreeControllerTest {
             return graph
         }
 
-        override suspend fun person(treeId: String, personId: String): PersonDto =
-            graph.people.firstOrNull { it.id == personId }?.also { calls += "person:$personId" }
-                ?: throw ApiException(ApiFailure.NOT_FOUND)
+        /** Replaces the person record returned, e.g. one from another tree. */
+        var personOverride: PersonDto? = null
+        var events: List<EventDto> = listOf(birthOf("kid"))
+
+        /** Each events call takes the next gate / failure, if any. */
+        val eventGates = ArrayDeque<CompletableDeferred<Unit>>()
+        val eventFailures = ArrayDeque<ApiFailure>()
+
+        override suspend fun person(treeId: String, personId: String): PersonDto {
+            calls += "person:$personId"
+            personOverride?.let { return it }
+            return graph.people.firstOrNull { it.id == personId } ?: throw ApiException(ApiFailure.NOT_FOUND)
+        }
+
+        override suspend fun events(treeId: String, personId: String): List<EventDto> {
+            calls += "events:$personId"
+            eventGates.removeFirstOrNull()?.await()
+            eventFailures.removeFirstOrNull()?.let { throw ApiException(it) }
+            return events.filter { it.personId == personId }
+        }
 
         override suspend fun ancestors(treeId: String, personId: String) =
             ancestorIds.map { personOf(it) }.also { calls += "ancestors:$personId" }
@@ -445,4 +465,223 @@ class FamilyTreeControllerTest {
         assertEquals(TreeViewKind.FULL, controller.state.value.treeScreen?.view)
         assertNull(controller.state.value.treeScreen?.branch)
     }
+
+    private fun TestScope.openPersonPage(personId: String = "kid"): FamilyTreeController {
+        bridge.url = "http://localhost:3000/#/trees/$TREE_ID/people/$personId"
+        return controller().also { signIn() }
+    }
+
+    @Test
+    fun personPageReloadLoadsTheProfileFamilyAndTimelineFromTheUrl() = runTest {
+        val controller = openPersonPage()
+
+        val page = controller.state.value.personScreen!!
+        assertEquals(Route.Person(TREE_ID, "kid"), controller.state.value.route)
+        assertEquals("kid", page.person.valueOrNull?.id)
+        assertEquals(TREE_ID, page.graph.valueOrNull?.treeId)
+        assertEquals(listOf("e-kid"), page.events.valueOrNull?.map { it.id })
+        assertTrue("events:kid" in api.calls)
+    }
+
+    @Test
+    fun failedTimelineKeepsTheRestAndRetryReloadsOnlyIt() = runTest {
+        api.eventFailures += ApiFailure.UNAVAILABLE
+        val controller = openPersonPage()
+
+        val failed = controller.state.value.personScreen!!
+        assertEquals(Loadable.Failed(ApiFailure.UNAVAILABLE), failed.events)
+        assertIs<Loadable.Ready<*>>(failed.person)
+        assertIs<Loadable.Ready<*>>(failed.graph)
+
+        controller.retry()
+        runCurrent()
+
+        assertEquals(listOf("e-kid"), controller.state.value.personScreen!!.events.valueOrNull?.map { it.id })
+        assertEquals(1, api.calls.count { it == "person:kid" }, "the person isn't fetched again")
+        assertEquals(1, api.calls.count { it == "graph:$TREE_ID" }, "the family isn't fetched again")
+        assertEquals(2, api.calls.count { it == "events:kid" })
+    }
+
+    @Test
+    fun failedFamilyIsLocalAndRetryReloadsOnlyIt() = runTest {
+        api.graphFailures += ApiFailure.SERVER
+        val controller = openPersonPage()
+        assertEquals(Loadable.Failed(ApiFailure.SERVER), controller.state.value.personScreen?.graph)
+        assertIs<Loadable.Ready<*>>(controller.state.value.personScreen?.events)
+
+        controller.retry()
+        runCurrent()
+
+        assertIs<Loadable.Ready<*>>(controller.state.value.personScreen?.graph)
+        assertEquals(1, api.calls.count { it == "events:kid" })
+    }
+
+    @Test
+    fun wrongTreeRouteIsNotFoundAndRequestsNothingElse() = runTest {
+        bridge.url = "http://localhost:3000/#/trees/other-tree/people/kid"
+        val controller = controller()
+        signIn()
+
+        val page = controller.state.value.personScreen!!
+        assertEquals(Loadable.Failed(ApiFailure.NOT_FOUND), page.tree)
+        assertEquals(Loadable.Failed(ApiFailure.NOT_FOUND), page.person)
+        assertEquals(Loadable.Failed(ApiFailure.NOT_FOUND), page.graph)
+        assertEquals(Loadable.Failed(ApiFailure.NOT_FOUND), page.events)
+        assertTrue(api.calls.none { it.startsWith("person:") || it.startsWith("events:") || it.startsWith("graph:") })
+    }
+
+    @Test
+    fun personRecordFromAnotherTreeOrIdIsNeverShown() = runTest {
+        api.personOverride = personOf("kid").copy(treeId = "tree-2")
+        val controller = openPersonPage()
+        assertEquals(Loadable.Failed(ApiFailure.NOT_FOUND), controller.state.value.personScreen?.person)
+        assertTrue(api.calls.none { it.startsWith("events:") })
+
+        api.personOverride = personOf("someone-else")
+        controller.retry()
+        runCurrent()
+        assertEquals(Loadable.Failed(ApiFailure.NOT_FOUND), controller.state.value.personScreen?.person)
+    }
+
+    @Test
+    fun compactUuidLinkOpensTheProfileAndCentresOnTheCanonicalId() = runTest {
+        val treeUuid = "0f8fad5b-d9cb-469f-a165-70867728950e"
+        val personUuid = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+        api.tree = TreeDto(treeUuid, "Romero", "owner", 0)
+        api.personOverride = personOf(personUuid).copy(treeId = treeUuid)
+        api.graph = api.graph.copy(treeId = treeUuid)
+        // Hex-only and upper case: a spelling the API accepts.
+        bridge.url = "http://localhost:3000/#/trees/${treeUuid.replace("-", "")}/people/${personUuid.replace("-", "").uppercase()}"
+        val controller = controller()
+        signIn()
+
+        val page = controller.state.value.personScreen!!
+        assertEquals(Route.Person(treeUuid, personUuid), controller.state.value.route)
+        assertEquals(personUuid, page.person.valueOrNull?.id)
+        assertIs<Loadable.Ready<*>>(page.graph)
+
+        controller.showInTree()
+        runCurrent()
+        assertEquals(Route.Tree(treeUuid, TreeViewKind.FULL, personUuid), controller.state.value.route)
+        assertEquals(personUuid, controller.state.value.treeScreen?.selectedPersonId)
+    }
+
+    @Test
+    fun opaqueIdsMustMatchExactly() = runTest {
+        api.personOverride = personOf("KID")
+        val controller = openPersonPage("kid")
+
+        assertEquals(Loadable.Failed(ApiFailure.NOT_FOUND), controller.state.value.personScreen?.person)
+    }
+
+    @Test
+    fun retryAfterLeavingAProfileDoesNotReloadOrUpdateIt() = runTest {
+        api.eventFailures += ApiFailure.UNAVAILABLE
+        val controller = openPersonPage()
+        assertEquals(Loadable.Failed(ApiFailure.UNAVAILABLE), controller.state.value.personScreen?.events)
+
+        controller.backToTree()
+        runCurrent()
+        controller.retry()
+        runCurrent()
+
+        assertEquals(1, api.calls.count { it == "events:kid" }, "the left profile isn't retried")
+        assertIs<Route.Tree>(controller.state.value.route)
+    }
+
+    @Test
+    fun profileResponseArrivingAfterLeavingIsDiscarded() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        api.eventGates += gate
+        val controller = openPersonPage()
+
+        controller.backToTree()
+        runCurrent()
+        gate.complete(Unit)
+        runCurrent()
+
+        assertEquals(Loadable.Loading, controller.state.value.personScreen?.events)
+        assertIs<Route.Tree>(controller.state.value.route)
+    }
+
+    @Test
+    fun openingARelativeChangesTheUrlAndTheBackButtonReturns() = runTest {
+        val controller = openPersonPage()
+
+        controller.openPerson("mum")
+        runCurrent()
+        assertEquals("/trees/$TREE_ID/people/mum", bridge.url.substringAfter('#'))
+        assertEquals("mum", controller.state.value.personScreen?.person?.valueOrNull?.id)
+
+        bridge.changeHash("/trees/$TREE_ID/people/kid")
+        runCurrent()
+        assertEquals(Route.Person(TREE_ID, "kid"), controller.state.value.route)
+        assertEquals("kid", controller.state.value.personScreen?.person?.valueOrNull?.id)
+    }
+
+    @Test
+    fun showInTreeKeepsTheViewCentresOnThePersonAndSelectsThem() = runTest {
+        bridge.url = "http://localhost:3000/#/trees/$TREE_ID?view=ancestors&root=kid"
+        api.ancestorIds = listOf("mum", "dad")
+        val controller = controller()
+        signIn()
+
+        controller.navigate(Route.Person(TREE_ID, "mum"))
+        runCurrent()
+        controller.showInTree()
+        runCurrent()
+
+        assertEquals(Route.Tree(TREE_ID, TreeViewKind.ANCESTORS, "mum"), controller.state.value.route)
+        assertEquals("/trees/$TREE_ID?view=ancestors&root=mum", bridge.url.substringAfter('#'))
+        assertEquals("mum", controller.state.value.treeScreen?.selectedPersonId)
+        assertTrue("ancestors:mum" in api.calls)
+    }
+
+    @Test
+    fun backToTreeKeepsTheEarlierViewAndRootAndSelectsThePerson() = runTest {
+        bridge.url = "http://localhost:3000/#/trees/$TREE_ID?view=ancestors&root=kid"
+        api.ancestorIds = listOf("mum", "dad")
+        val controller = controller()
+        signIn()
+
+        controller.navigate(Route.Person(TREE_ID, "mum"))
+        runCurrent()
+        controller.backToTree()
+        runCurrent()
+
+        assertEquals(Route.Tree(TREE_ID, TreeViewKind.ANCESTORS, "kid"), controller.state.value.route)
+        assertEquals("mum", controller.state.value.treeScreen?.selectedPersonId)
+    }
+
+    @Test
+    fun lateTimelineForAnEarlierPersonPageIsDiscarded() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        api.eventGates += gate
+        api.events = listOf(birthOf("kid"), birthOf("mum"))
+        val controller = openPersonPage()
+        assertEquals(Loadable.Loading, controller.state.value.personScreen?.events)
+
+        controller.openPerson("mum")
+        runCurrent()
+        gate.complete(Unit)
+        runCurrent()
+
+        val page = controller.state.value.personScreen!!
+        assertEquals("mum", page.personId)
+        assertEquals(listOf("e-mum"), page.events.valueOrNull?.map { it.id })
+    }
+
+    @Test
+    fun expiredSessionDropsThePersonPage() = runTest {
+        val controller = openPersonPage()
+        assertIs<Loadable.Ready<*>>(controller.state.value.personScreen?.events)
+
+        session.state.value = AuthState.SignedOut(SignedOutReason.SESSION_EXPIRED)
+        runCurrent()
+
+        assertNull(controller.state.value.personScreen)
+        assertEquals(Route.Person(TREE_ID, "kid"), controller.state.value.route)
+    }
 }
+
+private fun birthOf(personId: String) = eventOf("e-$personId", personId, "BIRTH", "1990", "1990-01-01")

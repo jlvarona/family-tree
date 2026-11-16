@@ -84,7 +84,16 @@ class FamilyTreeController(
                 loadBranch(screen.instance, force = true)
             }
         }
-        current.personScreen?.let { if (it.person is Loadable.Failed || it.tree is Loadable.Failed) loadPersonScreen(it.instance) }
+        // Only the profile on screen is retried; one left behind (e.g. after "Back to tree") isn't.
+        current.personScreen?.takeIf { isOnRoute(current.route, it) }?.let { page ->
+            if (page.person is Loadable.Failed || page.tree is Loadable.Failed) {
+                loadPersonScreen(page.instance)
+            } else {
+                // Only the failed sections are fetched again; the rest stays on screen.
+                if (page.graph is Loadable.Failed) loadPersonFamily(page.instance)
+                if (page.events is Loadable.Failed) loadPersonTimeline(page.instance)
+            }
+        }
     }
 
     fun selectPerson(personId: String?) = updateTreeScreen(null) { it.copy(selectedPersonId = personId) }
@@ -108,6 +117,23 @@ class FamilyTreeController(
             Route.Tree(personScreen.treeId, screen?.view ?: TreeViewKind.FULL, screen?.rootPersonId ?: personScreen.personId),
         )
         selectPerson(personScreen.personId)
+    }
+
+    /**
+     * From a person page to the tree centred on that person, keeping the view
+     * last used there (FT-006 "Show in tree"), with the person selected.
+     */
+    fun showInTree() {
+        val personScreen = _state.value.personScreen ?: return
+        val screen = _state.value.treeScreen?.takeIf { it.treeId == personScreen.treeId }
+        navigate(Route.Tree(personScreen.treeId, screen?.view ?: TreeViewKind.FULL, personScreen.personId))
+        selectPerson(personScreen.personId)
+    }
+
+    /** Opens a relative's page in the same tree; the URL changes, so back returns here. */
+    fun openPerson(personId: String) {
+        val personScreen = _state.value.personScreen ?: return
+        navigate(Route.Person(personScreen.treeId, personId))
     }
 
     fun dismissNotice() = updateTreeScreen(null) { it.copy(notice = null) }
@@ -312,14 +338,68 @@ class FamilyTreeController(
         }
     }
 
+    /**
+     * Loads a person page: the tree, then the person, then the family bundle and
+     * the timeline side by side. A record that doesn't belong to the route's
+     * tree is treated as not found, so a wrong-tree URL never shows another
+     * tree's data even if a response were mismatched. When the tree or person
+     * fails, nothing else is requested.
+     */
     private fun loadPersonScreen(instance: Long) {
-        val target = _state.value.personScreen?.takeIf { it.instance == instance } ?: return
-        updatePersonScreen(instance) { it.copy(tree = Loadable.Loading, person = Loadable.Loading) }
-        inSession { owner ->
-            val tree = load { api.tree(target.treeId) }
-            val person = if (tree is Loadable.Failed) tree else load { api.person(target.treeId, target.personId) }
-            if (isCurrent(owner)) updatePersonScreen(instance) { it.copy(tree = tree, person = person) }
+        val target = currentPersonScreen(instance) ?: return
+        updatePersonScreen(instance) {
+            it.copy(tree = Loadable.Loading, person = Loadable.Loading, graph = Loadable.Loading, events = Loadable.Loading)
         }
+        inSession { owner ->
+            val tree = load { api.tree(target.treeId).also { requireRoute(it.id, target.treeId) } }
+            val person = if (tree is Loadable.Failed) {
+                tree
+            } else {
+                load {
+                    api.person(target.treeId, target.personId).also {
+                        requireRoute(it.treeId, target.treeId)
+                        requireRoute(it.id, target.personId)
+                    }
+                }
+            }
+            if (!isCurrent(owner)) return@inSession
+            if (person is Loadable.Failed) {
+                updatePersonScreen(instance) { it.copy(tree = tree, person = person, graph = person, events = person) }
+                return@inSession
+            }
+            updatePersonScreen(instance) { it.copy(tree = tree, person = person) }
+            loadPersonFamily(instance)
+            loadPersonTimeline(instance)
+        }
+    }
+
+    private fun loadPersonFamily(instance: Long) {
+        val target = currentPersonScreen(instance) ?: return
+        updatePersonScreen(instance) { it.copy(graph = Loadable.Loading) }
+        inSession { owner ->
+            val graph = load { api.graph(target.treeId).also { requireRoute(it.treeId, target.treeId) } }
+            if (isCurrent(owner)) updatePersonScreen(instance) { it.copy(graph = graph) }
+        }
+    }
+
+    private fun loadPersonTimeline(instance: Long) {
+        val target = currentPersonScreen(instance) ?: return
+        updatePersonScreen(instance) { it.copy(events = Loadable.Loading) }
+        inSession { owner ->
+            val events = load { api.events(target.treeId, target.personId) }
+            if (isCurrent(owner)) updatePersonScreen(instance) { it.copy(events = events) }
+        }
+    }
+
+    private fun currentPersonScreen(instance: Long): PersonScreen? =
+        _state.value.personScreen?.takeIf { it.instance == instance && isOnRoute(_state.value.route, it) }
+
+    /**
+     * The server accepts dashed and hex-only UUIDs in any case and answers with
+     * the canonical form, so UUIDs are compared by identity ([Route.sameId]).
+     */
+    private fun requireRoute(returned: String, requested: String) {
+        if (!Route.sameId(returned, requested)) throw ApiException(ApiFailure.NOT_FOUND)
     }
 
     /** Runs a form action; an [ApiException] becomes the form's localized error. */
@@ -357,10 +437,14 @@ class FamilyTreeController(
         if (isCurrent(owner)) updateTreeScreen(instance, change)
     }
 
+    /** Changes the person page only if it is still [instance] and still the current route. */
     private fun updatePersonScreen(instance: Long, change: (PersonScreen) -> PersonScreen) = _state.update { state ->
         val page = state.personScreen
-        if (page == null || page.instance != instance) state else state.copy(personScreen = change(page))
+        if (page == null || page.instance != instance || !isOnRoute(state.route, page)) state else state.copy(personScreen = change(page))
     }
+
+    private fun isOnRoute(route: Route, page: PersonScreen): Boolean =
+        route is Route.Person && route.treeId == page.treeId && route.personId == page.personId
 
     /** Launches [block] in the current session's scope, passing that scope as its owner token. */
     private fun inSession(block: suspend (CoroutineScope) -> Unit) {

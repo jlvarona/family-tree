@@ -53,7 +53,7 @@ import org.jetbrains.compose.resources.stringResource
 
 /**
  * The web workflow (FT-005): sign-in, tree list, tree views and the person
- * destination. What is shown follows [AppState.auth] first, so nothing from a
+ * page (FT-006). What is shown follows [AppState.auth] first, so nothing from a
  * previous session is rendered while signed out, expired or redirecting.
  */
 @Composable

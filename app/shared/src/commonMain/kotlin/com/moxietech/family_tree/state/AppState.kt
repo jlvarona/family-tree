@@ -1,6 +1,7 @@
 package com.moxietech.family_tree.state
 
 import com.moxietech.family_tree.api.AccountDto
+import com.moxietech.family_tree.api.EventDto
 import com.moxietech.family_tree.api.PersonDto
 import com.moxietech.family_tree.api.TreeDto
 import com.moxietech.family_tree.api.TreeGraphDto
@@ -45,13 +46,20 @@ data class TreeScreen(
 
 data class BranchKey(val view: TreeViewKind, val rootPersonId: String)
 
-/** The person destination FT-006 builds into the full person page. */
+/**
+ * One opening of a person's page (FT-006). [tree] and [person] decide whether
+ * the page can render at all; [graph] (the FT-004 bundle, for family links)
+ * and [events] (the person's timeline) load afterwards and fail on their own,
+ * so a failed section shows its own retry without hiding the rest.
+ */
 data class PersonScreen(
     val treeId: String,
     val personId: String,
     val instance: Long = 0,
     val tree: Loadable<TreeDto> = Loadable.Loading,
     val person: Loadable<PersonDto> = Loadable.Loading,
+    val graph: Loadable<TreeGraphDto> = Loadable.Loading,
+    val events: Loadable<List<EventDto>> = Loadable.Loading,
 )
 
 enum class FormError {

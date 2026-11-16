@@ -80,6 +80,7 @@ Feature packages under `com.moxietech.family_tree.server.<feature>`, each with `
   - Sign-in is Keycloak authorization code + PKCE S256 for the public `family-tree-web` client. Tokens are kept in memory; `sessionStorage` holds only the one-time request and a signed-in flag, so a reload signs in again silently with `prompt=none`.
   - The browser reaches the API on its own origin at `/api`: a dev-server proxy (3000 → 8080) locally, and path routing in production. The server has no CORS.
   - Ancestor and descendant views take their person sets from the server's CTE routes and slice the whole-tree bundle, so they keep the server's redaction. Mini-map, keyboard navigation and lazy loading are not built yet.
+  - The person page (FT-006) loads from its URL: the person, the whole-tree bundle for family links and the person-events route for the timeline. Each section loads and fails on its own. `PersonProfile` builds the page through `Viewer`, so hidden living people stay placeholders and union dates show only when both partners are visible. Bios and notes are plain text only. Photos and citations wait for FT-008 and FT-002.
 - Offline cache on mobile: SQLDelight.
 - Localisation: Spanish and English from day one.
 

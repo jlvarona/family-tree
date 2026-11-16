@@ -61,6 +61,37 @@
     <string name="none_recorded">None recorded</string>
     <string name="back_to_tree">Back to tree</string>
 
+    <!-- Person page -->
+    <string name="show_in_tree">Show in tree</string>
+    <string name="photo_placeholder">No photo yet</string>
+    <string name="life_story">Life story</string>
+    <string name="story_empty">No life story has been written yet. What do you remember about %1$s?</string>
+    <string name="story_private">The details of living people are shown only to members with access.</string>
+    <string name="timeline">Timeline</string>
+    <string name="timeline_empty">No events recorded yet.</string>
+    <string name="timeline_private">Events of living people are shown only to members with access.</string>
+    <string name="family">Family</string>
+    <string name="family_empty">No family links recorded yet.</string>
+    <string name="date_unknown">Date unknown</string>
+    <string name="name_part">%1$s: %2$s</string>
+    <string name="fact_born">Born %1$s</string>
+    <string name="fact_died">Died %1$s</string>
+    <string name="fact_birthplace">Born in %1$s</string>
+    <string name="date_range">%1$s – %2$s</string>
+    <string name="date_from">from %1$s</string>
+    <string name="date_until">until %1$s</string>
+    <string name="event_birth">Birth</string>
+    <string name="event_death">Death</string>
+    <string name="event_marriage">Marriage</string>
+    <string name="event_divorce">Divorce</string>
+    <string name="event_baptism">Baptism</string>
+    <string name="event_burial">Burial</string>
+    <string name="event_immigration">Immigration</string>
+    <string name="event_emigration">Emigration</string>
+    <string name="event_residence">Residence</string>
+    <string name="event_occupation">Occupation</string>
+    <string name="event_other">Other event</string>
+
     <!-- Add person -->
     <string name="given_names">Given names</string>
     <string name="surname_paternal">First surname (paternal)</string>
