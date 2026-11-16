@@ -16,7 +16,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -77,18 +76,16 @@ internal fun TreeListScreen(trees: Loadable<List<TreeDto>>, form: FormState, con
 private fun CreateTreeForm(form: FormState, controller: FamilyTreeController) {
     var name by remember { mutableStateOf("") }
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        OutlinedTextField(
+        LabeledTextField(
+            label = Res.string.tree_name,
             value = name,
-            onValueChange = {
-                name = it
-                if (form.error != null) controller.clearFormError()
-            },
-            label = { Text(stringResource(Res.string.tree_name)) },
-            singleLine = true,
             isError = form.error != null,
             supportingText = { form.error?.let { error -> Text(stringResource(formErrorMessage(error))) } },
             modifier = Modifier.weight(1f),
-        )
+        ) {
+            name = it
+            if (form.error != null) controller.clearFormError()
+        }
         Button(
             onClick = { controller.createTree(name) { name = "" } },
             enabled = !form.submitting,

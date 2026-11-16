@@ -105,35 +105,13 @@ private fun TreeContent(
     state: AppState,
     controller: FamilyTreeController,
 ) {
-    var dialog by remember { mutableStateOf<TreeDialog?>(null) }
+    var dialog by remember(screen.instance) { mutableStateOf<TreeDialog?>(null) }
     val peopleById = remember(graph) { graph.people.associateBy { it.id } }
     val privateLabel = stringResource(Res.string.private_person)
     val label: (PersonDto) -> String = { viewer.displayName(it) ?: privateLabel }
 
-    Column(Modifier.fillMaxSize()) {
-        Toolbar(screen, graph, viewer, label, onDialog = { dialog = it }, controller = controller)
-        state.notice?.let { NoticeBanner(it, controller::dismissNotice) }
-        Row(Modifier.fillMaxSize()) {
-            Box(Modifier.weight(1f).fillMaxHeight().padding(start = 24.dp, end = 24.dp, bottom = 24.dp)) {
-                CanvasArea(screen, graph, peopleById, viewer, controller, onAddPerson = { dialog = TreeDialog.ADD_PERSON })
-            }
-            VerticalDivider(color = Palette.border)
-            SelectedPersonPanel(
-                person = screen.selectedPersonId?.let(peopleById::get),
-                graph = graph,
-                peopleById = peopleById,
-                viewer = viewer,
-                label = label,
-                onSelect = controller::selectPerson,
-                onOpen = { controller.navigate(Route.Person(screen.treeId, it)) },
-                onCenter = controller::centerOn,
-                modifier = Modifier.width(340.dp).fillMaxHeight(),
-            )
-        }
-    }
-
     when (dialog) {
-        TreeDialog.ADD_PERSON -> AddPersonDialog(
+        TreeDialog.ADD_PERSON -> AddPersonForm(
             form = state.form,
             onSubmit = { input -> controller.createPerson(input) { dialog = null } },
             onDismiss = {
@@ -142,8 +120,8 @@ private fun TreeContent(
             },
             onEdit = controller::clearFormError,
         )
-        TreeDialog.LINK_CHILD -> LinkChildDialog(
-            people = graph.people,
+        TreeDialog.LINK_CHILD -> LinkChildForm(
+            graph = graph,
             label = label,
             form = state.form,
             onSubmit = { input -> controller.linkChild(input) { dialog = null } },
@@ -153,7 +131,27 @@ private fun TreeContent(
             },
             onEdit = controller::clearFormError,
         )
-        null -> Unit
+        null -> Column(Modifier.fillMaxSize()) {
+            Toolbar(screen, graph, viewer, label, onDialog = { dialog = it }, controller = controller)
+            screen.notice?.let { NoticeBanner(it, controller::dismissNotice) }
+            Row(Modifier.fillMaxSize()) {
+                Box(Modifier.weight(1f).fillMaxHeight().padding(start = 24.dp, end = 24.dp, bottom = 24.dp)) {
+                    CanvasArea(screen, graph, peopleById, viewer, controller, onAddPerson = { dialog = TreeDialog.ADD_PERSON })
+                }
+                VerticalDivider(color = Palette.border)
+                SelectedPersonPanel(
+                    person = screen.selectedPersonId?.let(peopleById::get),
+                    graph = graph,
+                    peopleById = peopleById,
+                    viewer = viewer,
+                    label = label,
+                    onSelect = controller::selectPerson,
+                    onOpen = { controller.navigate(Route.Person(screen.treeId, it)) },
+                    onCenter = controller::centerOn,
+                    modifier = Modifier.width(340.dp).fillMaxHeight(),
+                )
+            }
+        }
     }
 }
 
@@ -349,28 +347,37 @@ private fun PersonSummary(
             OutlinedButton(onClick = { onCenter(person.id) }) { Text(stringResource(Res.string.center_here)) }
         }
         val family = remember(graph, person.id) { familyOf(graph, person.id) }
-        FamilySection(Res.string.parents, family.parents, peopleById, label, onSelect)
-        FamilySection(Res.string.partners, family.partners, peopleById, label, onSelect)
-        FamilySection(Res.string.children, family.children, peopleById, label, onSelect)
+        FamilySection(Res.string.parents, family.parents.map { it to null }, peopleById, label, onSelect)
+        // The union type stays visible next to a private partner; only dates are redacted.
+        FamilySection(
+            Res.string.partners,
+            family.partners.map { it.personId to stringResource(unionTypeLabel(it.unionType)) },
+            peopleById,
+            label,
+            onSelect,
+        )
+        FamilySection(Res.string.children, family.children.map { it to null }, peopleById, label, onSelect)
     }
 }
 
+/** [entries] are person IDs with an optional detail shown after the name. */
 @Composable
 private fun FamilySection(
     title: StringResource,
-    ids: List<String>,
+    entries: List<Pair<String, String?>>,
     peopleById: Map<String, PersonDto>,
     label: (PersonDto) -> String,
     onSelect: (String) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(stringResource(title).uppercase(), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Palette.muted)
-        if (ids.isEmpty()) {
+        if (entries.isEmpty()) {
             Text(stringResource(Res.string.none_recorded), fontSize = 13.sp, color = Palette.muted)
         }
-        ids.mapNotNull(peopleById::get).forEach { relative ->
+        entries.forEach { (id, detail) ->
+            val relative = peopleById[id] ?: return@forEach
             Text(
-                label(relative),
+                if (detail == null) label(relative) else "${label(relative)} · $detail",
                 fontSize = 13.sp,
                 modifier = Modifier.fillMaxWidth().clickable(role = Role.Button) { onSelect(relative.id) }
                     .padding(vertical = 6.dp),

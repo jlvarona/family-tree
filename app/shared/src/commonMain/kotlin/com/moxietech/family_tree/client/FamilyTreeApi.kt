@@ -12,7 +12,6 @@ import com.moxietech.family_tree.api.TreeGraphDto
 import com.moxietech.family_tree.api.UnionDto
 import com.moxietech.family_tree.auth.AccessTokenSource
 import com.moxietech.family_tree.auth.TokenResult
-import com.moxietech.family_tree.auth.UrlCodec
 import io.ktor.client.HttpClient
 import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.request
@@ -24,6 +23,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.TextContent
+import io.ktor.http.encodeURLParameter
 import io.ktor.http.isSuccess
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.DeserializationStrategy
@@ -149,10 +149,10 @@ class HttpFamilyTreeApi(
         var token = tokenOrThrow(tokens.accessToken())
         var retried = false
         while (true) {
-            val response = execute(method, path, body, token)
+            val response = execute(method, path, body, token.value)
             if (response.status == HttpStatusCode.Unauthorized) {
                 if (retried) {
-                    tokens.endSession()
+                    tokens.endSession(token)
                     throw ApiException(ApiFailure.SESSION_EXPIRED)
                 }
                 retried = true
@@ -179,13 +179,14 @@ class HttpFamilyTreeApi(
             throw ApiException(ApiFailure.UNAVAILABLE)
         }
 
-    private fun tokenOrThrow(result: TokenResult): String = when (result) {
-        is TokenResult.Token -> result.value
+    private fun tokenOrThrow(result: TokenResult): TokenResult.Token = when (result) {
+        is TokenResult.Token -> result
         TokenResult.Expired -> throw ApiException(ApiFailure.SESSION_EXPIRED)
         TokenResult.Unavailable -> throw ApiException(ApiFailure.UNAVAILABLE)
     }
 
-    private fun seg(value: String): String = UrlCodec.encode(value)
+    /** Percent-encodes an ID for one path segment, including `/` and `?`. */
+    private fun seg(value: String): String = value.encodeURLParameter()
 
     companion object {
         private val json = Json { ignoreUnknownKeys = true }

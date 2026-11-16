@@ -64,8 +64,25 @@ class TreeSlicerTest {
     }
 
     @Test
-    fun familyListsParentsPartnersAndChildren() {
-        assertEquals(Family(listOf("mum", "dad"), listOf("spouse"), listOf("grandkid")), familyOf(family, "kid"))
-        assertEquals(Family(emptyList(), listOf("mum", "second"), listOf("kid", "half")), familyOf(family, "dad"))
+    fun familyListsParentsPartnersWithUnionTypeAndChildren() {
+        assertEquals(
+            Family(listOf("mum", "dad"), listOf(PartnerLink("spouse", "MARRIED")), listOf("grandkid")),
+            familyOf(family, "kid"),
+        )
+        assertEquals(
+            Family(emptyList(), listOf(PartnerLink("mum", "MARRIED"), PartnerLink("second", "MARRIED")), listOf("kid", "half")),
+            familyOf(family, "dad"),
+        )
+    }
+
+    @Test
+    fun redactedPartnerKeepsTheUnionType() {
+        // As the server sends it to a non-owner: placeholder partner, union type kept, dates removed.
+        val redacted = graph(
+            listOf("me", "hidden"),
+            union("u", "me", "hidden", type = "DIVORCED"),
+        ).let { g -> g.copy(people = g.people.map { if (it.id == "hidden") person("hidden", "Private", living = true) else it }) }
+
+        assertEquals(listOf(PartnerLink("hidden", "DIVORCED")), familyOf(redacted, "me").partners)
     }
 }

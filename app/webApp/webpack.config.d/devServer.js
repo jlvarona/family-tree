@@ -9,10 +9,11 @@
 //   /api to the server on the web app's origin in the same way (README).
 if (config.devServer) {
     config.devServer.port = 3000;
+    config.devServer.open = false;
     config.devServer.proxy = [
         {
             context: ["/api"],
-            target: "http://localhost:8080",
+            target: "http://127.0.0.1:8080",
             changeOrigin: false,
         },
     ];

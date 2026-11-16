@@ -1,5 +1,6 @@
 package com.moxietech.family_tree.auth
 
+import io.ktor.http.Url
 import kotlinx.serialization.Serializable
 
 /**
@@ -27,4 +28,29 @@ data class WebAppConfig(
     val authorizationEndpoint: String get() = "$realmBase/protocol/openid-connect/auth"
     val tokenEndpoint: String get() = "$realmBase/protocol/openid-connect/token"
     val endSessionEndpoint: String get() = "$realmBase/protocol/openid-connect/logout"
+
+    /**
+     * The client trusts the token endpoint's TLS instead of checking ID-token
+     * signatures (OIDC Core 3.1.3.7 step 6), so the issuer and API must be HTTPS.
+     * Plain HTTP is accepted only on loopback, for local development.
+     */
+    fun isUsable(): Boolean =
+        clientId.isNotBlank() && isTrustedUrl(issuer) && (apiBaseUrl.isEmpty() || isTrustedUrl(apiBaseUrl))
+
+    companion object {
+        private val LOOPBACK_HOSTS = setOf("localhost", "127.0.0.1", "::1", "[::1]")
+
+        /** `https://…`, or `http://` to a loopback host. */
+        fun isTrustedUrl(url: String): Boolean {
+            // Ktor resolves scheme-less text against a default http://localhost, so require the scheme first.
+            val https = url.startsWith("https://")
+            if (!https && !url.startsWith("http://")) return false
+            val host = try {
+                Url(url).host
+            } catch (e: Exception) {
+                return false
+            }
+            return host.isNotEmpty() && (https || host in LOOPBACK_HOSTS)
+        }
+    }
 }

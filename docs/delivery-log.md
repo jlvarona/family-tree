@@ -18,7 +18,7 @@ build out. No server code, schema or realm changed; the client uses only existin
 routes.
 
 **Where it lives.** `app/shared` commonMain holds the client: `auth`
-(`SessionManager`, PKCE, base64url and SHA-256), `client` (`FamilyTreeApi` and its
+(`SessionManager`, PKCE and ID-token claim checks), `client` (`FamilyTreeApi` and its
 HTTP implementation, with explicit kotlinx serializers for `:core` DTOs), `navigation`
 (hash routes), `tree` (`TreeSlicer`, `TreeLayoutEngine`, `familyOf`), `state`
 (`FamilyTreeController`, `AppState`, `Viewer`) and `ui` (Compose screens).
@@ -29,17 +29,17 @@ files in `jsMain` and `wasmJsMain`), the Ktor JS engine and `config.json` loadin
 
 **Sign-in.** Authorization code with PKCE S256 against the realm as it is: public
 client `family-tree-web`, redirect URI `http://localhost:3000/`, and the FT-067
-audience mapper. The randomness for `state`, `nonce` and the 43-character verifier
-comes from `crypto.getRandomValues`. They are stored with the return route as one
-`sessionStorage` record that the callback consumes once. A missing or mismatched
-`state`, or an ID token with another `nonce`, is rejected without using the code. The
-code and state are removed from the address bar and history entry with
-`history.replaceState` in every case.
+audience mapper. Web Crypto generates `state`, `nonce` and the verifier and computes
+the S256 challenge. The client consumes the `sessionStorage` record once and strips
+the fragment callback from the URL. It requires a single matching `state` before the
+exchange and checks the returned ID token's issuer, browser client audience, expiry
+and nonce before starting the session.
 - Tokens are kept in memory only. `sessionStorage` holds a "signed in" flag so a
   reload repeats the request with `prompt=none`. `login_required` there means the
   Keycloak session ended, and the app shows the expired-session message.
-- The access token is refreshed 30 s before expiry, in the background and before
-  calls, and once after an API `401`. A second `401`, a rejected refresh token or an
+- The access token is refreshed up to 30 s before expiry, in the background and before
+  calls, and once after an API `401`. Recovering from a rejected token stays within
+  the session that sent the original request. A second `401`, a rejected refresh token or an
   elapsed refresh lifetime ends the session. If Keycloak can't be reached, the session
   is kept and the call reports "can't be reached".
 - Sign-out clears the tab, then goes to the end-session endpoint with `id_token_hint`.
@@ -80,21 +80,25 @@ between them:
 - Blocks of partners are ordered by their parents' positions, then again bottom-up by
   their children's.
 
-**Owner actions.** Create tree, add person (three name parts, sex, living) and link
-child. Linking reuses the parents' existing union, in either partner order, or creates
-one and then adds the child. A `409` shows "already linked", and the tree reloads either
-way. The server's possible duplicates are listed after a person is created. Errors are
+**Owner actions.** Create a tree, add a person and link a child through a chosen union.
+The form shows the parents' existing unions and allows creating another with a selected
+type. If creating the union succeeds and linking the child fails, the form points to
+that saved union for retry. A `409` shows "already linked". The forms and lists render
+in the page to keep Compose's browser accessibility tree in sync. The server's possible
+duplicates are listed after a person is created. Errors are
 localized by kind; server text is never shown. EN and ES strings are in
 `composeResources/values` and `values-es`.
 
 **Tests added (`:app:shared` commonTest).**
-- `PkceTest`: FIPS SHA-256 vectors, the RFC 7636 Appendix B challenge and verifier, base64url and URL codec.
+- `PkceTest`: RFC 7636 Appendix B challenge and verifier, with the browser digest behind a testable interface.
+- `TokenValidationTest`: ID-token claims and trusted configuration URLs.
 - `SessionManagerTest` (MockEngine token endpoint):
   - S256 request contents; verifier never in the URL.
   - Code exchange, URL cleanup and in-memory tokens.
   - Forged or replayed state, wrong nonce and failed exchange are rejected.
   - Silent restore and `login_required` on reload.
   - Refresh, rejected refresh, unreachable Keycloak and refresh lifetime.
+  - Late refresh and API `401` responses cannot affect a replacement session.
   - Sign-out.
 - `HttpFamilyTreeApiTest`:
   - Bearer header and same-origin URL.
@@ -114,13 +118,13 @@ localized by kind; server text is never shown. EN and ES strings are in
   - Person page reload and back.
   - Not found; back-button view change.
 
-**Verification.** Not run in this session: no Gradle build, no tests, and no browser
-check. To verify:
-- `gradlew.bat :app:shared:jvmTest :app:shared:jsTest :app:shared:wasmJsTest`
-- `gradlew.bat :app:webApp:wasmJsBrowserDevelopmentRun`, then
-  `:app:webApp:jsBrowserDevelopmentRun`, with the server and Keycloak running
-- The README "Manual check (FT-005 acceptance)" steps
-- `gradlew.bat :core:jvmTest :server:test` (unchanged code; CI gate)
+**Verification.** `:app:shared:jvmTest`, `:app:shared:jsTest` and
+`:app:shared:wasmJsTest` each passed 85 tests. Both development bundles built.
+`:core:jvmTest` and `:server:test` passed. In Edge with disposable Keycloak and
+PostgreSQL, the JS client signed in, created a tree and people, and saved a child
+link through a union that remained in the graph after reload. The full-tree, ancestor
+and descendant views rendered the saved relationship. A person's route reopened on
+reload and returned to the tree. A tampered callback was rejected before exchange.
 
 ## 2026-11-15 — FT-004 added the authenticated whole-tree bundle
 
@@ -971,9 +975,8 @@ desktop/shared build repair.
   against the existing `family-tree-web` client, with in-memory tokens and silent
   `prompt=none` restore after reload. The tree list and create form, full, ancestor and
   descendant views on a layered canvas, the selected-person panel, add-person and
-  link-child dialogs, and a minimal person destination for FT-006. See the session
-  entry for details. Not yet run: `:app:shared` tests, the web builds, and the
-  browser acceptance steps (README "Running the web client").
+  link-child forms, and a minimal person destination for FT-006. See the session
+  entry for verification details.
 - **FT-006 Person page UI** (Compose for Web). `To do · P1 · #1` — first render
   the selected person's profile, story, family links, and permitted timeline from the
   existing API. Show the localized private placeholder for redacted records. Verify

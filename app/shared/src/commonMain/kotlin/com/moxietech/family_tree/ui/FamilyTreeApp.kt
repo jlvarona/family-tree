@@ -46,6 +46,7 @@ import family_tree.app.shared.generated.resources.sign_in_body
 import family_tree.app.shared.generated.resources.sign_in_failed
 import family_tree.app.shared.generated.resources.sign_in_not_verified
 import family_tree.app.shared.generated.resources.sign_in_title
+import family_tree.app.shared.generated.resources.sign_in_unavailable
 import family_tree.app.shared.generated.resources.sign_out
 import family_tree.app.shared.generated.resources.signing_in
 import org.jetbrains.compose.resources.stringResource
@@ -84,6 +85,7 @@ private fun SignInScreen(reason: SignedOutReason?, onSignIn: () -> Unit) {
                 SignedOutReason.SESSION_EXPIRED -> Res.string.session_expired
                 SignedOutReason.SIGN_IN_FAILED -> Res.string.sign_in_failed
                 SignedOutReason.SIGN_IN_NOT_VERIFIED -> Res.string.sign_in_not_verified
+                SignedOutReason.BROWSER_UNSUPPORTED -> Res.string.sign_in_unavailable
                 null -> null
             }
             if (message != null) {

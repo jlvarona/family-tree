@@ -11,7 +11,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
 import com.moxietech.family_tree.auth.BrowserBridge
-import com.moxietech.family_tree.auth.ParsedUrl
+import com.moxietech.family_tree.auth.UrlParts
 import com.moxietech.family_tree.auth.SessionManager
 import com.moxietech.family_tree.auth.WebAppConfig
 import com.moxietech.family_tree.client.HttpFamilyTreeApi
@@ -69,14 +69,16 @@ fun FamilyTreeWebApp() {
 
 private val configJson = Json { ignoreUnknownKeys = true }
 
-/** `config.json` next to the page; null if it's missing or malformed. */
+/**
+ * `config.json` next to the page; null if it's missing, malformed, or points at
+ * a non-HTTPS issuer or API outside loopback (`WebAppConfig.isUsable`).
+ */
 private suspend fun loadConfig(http: HttpClient, bridge: BrowserBridge): WebAppConfig? {
-    val pageBase = ParsedUrl.parse(bridge.currentUrl()).base.substringBeforeLast('/')
+    val pageBase = UrlParts(bridge.currentUrl()).base.substringBeforeLast('/')
     return try {
         val response = http.get("$pageBase/config.json")
         if (!response.status.isSuccess()) return null
-        configJson.decodeFromString(WebAppConfig.serializer(), response.bodyAsText())
-            .takeIf { it.issuer.isNotBlank() && it.clientId.isNotBlank() }
+        configJson.decodeFromString(WebAppConfig.serializer(), response.bodyAsText()).takeIf { it.isUsable() }
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {

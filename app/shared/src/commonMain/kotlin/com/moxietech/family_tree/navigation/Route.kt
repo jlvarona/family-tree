@@ -1,7 +1,10 @@
 package com.moxietech.family_tree.navigation
 
-import com.moxietech.family_tree.auth.ParsedUrl
-import com.moxietech.family_tree.auth.UrlCodec
+import io.ktor.http.Parameters
+import io.ktor.http.decodeURLPart
+import io.ktor.http.encodeURLParameter
+import io.ktor.http.formUrlEncode
+import io.ktor.http.parseQueryString
 
 /** Which part of a tree the canvas shows. "Side" views come with FT-015. */
 enum class TreeViewKind(val token: String) {
@@ -41,24 +44,29 @@ sealed interface Route {
     fun toFragment(): String = when (this) {
         Trees -> "/"
         is Tree -> buildString {
-            append("/trees/").append(UrlCodec.encode(treeId))
-            val params = buildList {
-                if (view != TreeViewKind.FULL) add("view" to view.token)
-                if (rootPersonId != null) add("root" to rootPersonId)
+            append("/trees/").append(treeId.encodeURLParameter())
+            val params = Parameters.build {
+                if (view != TreeViewKind.FULL) append("view", view.token)
+                if (rootPersonId != null) append("root", rootPersonId)
             }
-            if (params.isNotEmpty()) append('?').append(UrlCodec.query(params))
+            if (!params.isEmpty()) append('?').append(params.formUrlEncode())
         }
-        is Person -> "/trees/${UrlCodec.encode(treeId)}/people/${UrlCodec.encode(personId)}"
+        is Person -> "/trees/${treeId.encodeURLParameter()}/people/${personId.encodeURLParameter()}"
     }
 
     companion object {
-        /** Anything unrecognised opens the tree list. */
+        /** Anything unrecognised (including a sign-in response) opens the tree list. */
         fun parse(fragment: String): Route {
             val text = fragment.removePrefix("#")
-            val queryIndex = text.indexOf('?')
-            val path = if (queryIndex >= 0) text.substring(0, queryIndex) else text
-            val query = if (queryIndex >= 0) ParsedUrl.parseQuery(text.substring(queryIndex + 1)) else emptyMap()
-            val segments = path.split('/').filter { it.isNotEmpty() }.map(UrlCodec::decode)
+            if (!text.startsWith('/')) return Trees
+            val path = text.substringBefore('?')
+            // A malformed escape (a hand-edited URL) is just an unknown route.
+            val (segments, query) = try {
+                path.split('/').filter { it.isNotEmpty() }.map { it.decodeURLPart() } to
+                    if ('?' in text) parseQueryString(text.substringAfter('?')) else Parameters.Empty
+            } catch (e: Exception) {
+                return Trees
+            }
             return when {
                 segments.size == 2 && segments[0] == "trees" && segments[1].isNotBlank() -> Tree(
                     treeId = segments[1],

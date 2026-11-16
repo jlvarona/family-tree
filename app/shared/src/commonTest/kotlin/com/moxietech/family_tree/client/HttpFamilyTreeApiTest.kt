@@ -16,19 +16,19 @@ import kotlin.test.assertTrue
 
 class HttpFamilyTreeApiTest {
 
-    private class Tokens(var current: String = "token-1", var refreshTo: TokenResult = TokenResult.Token("token-2")) :
+    private class Tokens(var current: String = "token-1", var refreshTo: TokenResult = TokenResult.Token("token-2", 1)) :
         AccessTokenSource {
         var ended = false
         val rejected = mutableListOf<String>()
 
-        override suspend fun accessToken(): TokenResult = TokenResult.Token(current)
+        override suspend fun accessToken(): TokenResult = TokenResult.Token(current, 1)
 
-        override suspend fun onRejected(rejected: String): TokenResult {
-            this.rejected += rejected
+        override suspend fun onRejected(rejected: TokenResult.Token): TokenResult {
+            this.rejected += rejected.value
             return refreshTo.also { if (it is TokenResult.Token) current = it.value }
         }
 
-        override fun endSession() {
+        override fun endSession(rejected: TokenResult.Token) {
             ended = true
         }
     }

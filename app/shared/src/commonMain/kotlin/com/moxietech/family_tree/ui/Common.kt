@@ -1,19 +1,23 @@
 package com.moxietech.family_tree.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
@@ -28,6 +32,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.moxietech.family_tree.client.ApiFailure
+import com.moxietech.family_tree.domain.UnionType
 import com.moxietech.family_tree.state.FormError
 import family_tree.app.shared.generated.resources.Res
 import family_tree.app.shared.generated.resources.error_forbidden
@@ -41,6 +46,11 @@ import family_tree.app.shared.generated.resources.form_child_required
 import family_tree.app.shared.generated.resources.form_name_required
 import family_tree.app.shared.generated.resources.form_parent_required
 import family_tree.app.shared.generated.resources.form_same_parent
+import family_tree.app.shared.generated.resources.form_union_required
+import family_tree.app.shared.generated.resources.union_divorced
+import family_tree.app.shared.generated.resources.union_married
+import family_tree.app.shared.generated.resources.union_partners
+import family_tree.app.shared.generated.resources.union_unknown
 import family_tree.app.shared.generated.resources.loading
 import family_tree.app.shared.generated.resources.retry
 import family_tree.app.shared.generated.resources.session_expired
@@ -91,6 +101,7 @@ internal fun formErrorMessage(error: FormError): StringResource = when (error) {
     FormError.NAME_REQUIRED -> Res.string.form_name_required
     FormError.PARENT_REQUIRED -> Res.string.form_parent_required
     FormError.CHILD_REQUIRED -> Res.string.form_child_required
+    FormError.UNION_REQUIRED -> Res.string.form_union_required
     FormError.SAME_PARENT_TWICE -> Res.string.form_same_parent
     FormError.CHILD_IS_PARENT -> Res.string.form_child_is_parent
     FormError.ALREADY_LINKED -> Res.string.form_already_linked
@@ -99,6 +110,14 @@ internal fun formErrorMessage(error: FormError): StringResource = when (error) {
     FormError.INVALID -> Res.string.error_invalid
     FormError.UNAVAILABLE -> Res.string.error_unavailable
     FormError.SERVER -> Res.string.error_server
+}
+
+/** The localized name of a union type as the API sends it (`MARRIED`, …). */
+internal fun unionTypeLabel(type: String): StringResource = when (type) {
+    UnionType.MARRIED.name -> Res.string.union_married
+    UnionType.DIVORCED.name -> Res.string.union_divorced
+    UnionType.PARTNERS.name -> Res.string.union_partners
+    else -> Res.string.union_unknown
 }
 
 @Composable
@@ -154,8 +173,8 @@ internal fun <T> Picker(
     enabled: Boolean = true,
 ) {
     var expanded by remember { mutableStateOf(false) }
-    Box(modifier) {
-        OutlinedButton(onClick = { expanded = true }, enabled = enabled) {
+    Column(modifier.widthIn(max = 320.dp)) {
+        OutlinedButton(onClick = { expanded = !expanded }, enabled = enabled) {
             Text(
                 text = selected?.let(label) ?: placeholder,
                 maxLines = 1,
@@ -164,15 +183,23 @@ internal fun <T> Picker(
             )
             Text("  ▾", color = Palette.muted)
         }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            options.forEach { option ->
-                DropdownMenuItem(
-                    text = { Text(label(option), maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    onClick = {
-                        expanded = false
-                        onSelect(option)
-                    },
-                )
+        if (expanded) {
+            Surface(
+                color = Palette.surface,
+                border = BorderStroke(1.dp, Palette.border),
+                shape = MaterialTheme.shapes.small,
+            ) {
+                Column(Modifier.heightIn(max = 208.dp).verticalScroll(rememberScrollState())) {
+                    options.forEach { option ->
+                        DropdownMenuItem(
+                            text = { Text(label(option), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            onClick = {
+                                expanded = false
+                                onSelect(option)
+                            },
+                        )
+                    }
+                }
             }
         }
     }

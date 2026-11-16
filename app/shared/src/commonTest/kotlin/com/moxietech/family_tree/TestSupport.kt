@@ -4,16 +4,29 @@ import com.moxietech.family_tree.api.PersonDto
 import com.moxietech.family_tree.api.TreeGraphDto
 import com.moxietech.family_tree.api.UnionChildDto
 import com.moxietech.family_tree.api.UnionDto
+import com.moxietech.family_tree.auth.Base64Url
 import com.moxietech.family_tree.auth.BrowserBridge
+import com.moxietech.family_tree.auth.BrowserFeatureException
 
 const val TREE_ID = "tree-1"
 
-/** An in-memory browser: URL, sessionStorage, navigations and deterministic "random" bytes. */
+/** RFC 7636 Appendix B: SHA-256 of the example verifier, as base64url. */
+const val RFC7636_CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+
+/**
+ * An in-memory browser: URL, sessionStorage, navigations, deterministic "random"
+ * bytes, and a stand-in for Web Crypto's digest that returns [digestResult]
+ * (no hashing in tests) and records what it was asked to hash.
+ */
 class FakeBridge(var url: String = "http://localhost:3000/") : BrowserBridge {
     override val origin = "http://localhost:3000"
     val storage = linkedMapOf<String, String>()
     val navigations = mutableListOf<String>()
     val replacedUrls = mutableListOf<String>()
+    val digestInputs = mutableListOf<String>()
+    var digestResult: ByteArray = Base64Url.decode(RFC7636_CHALLENGE)!!
+    var storageBlocked = false
+    var cryptoBlocked = false
     private val hashListeners = mutableListOf<() -> Unit>()
     private var seed = 1
 
@@ -42,9 +55,13 @@ class FakeBridge(var url: String = "http://localhost:3000/") : BrowserBridge {
         hashListeners.forEach { it() }
     }
 
-    override fun sessionGet(key: String) = storage[key]
+    override fun sessionGet(key: String): String? {
+        if (storageBlocked) throw BrowserFeatureException("sessionStorage")
+        return storage[key]
+    }
 
     override fun sessionSet(key: String, value: String) {
+        if (storageBlocked) throw BrowserFeatureException("sessionStorage")
         storage[key] = value
     }
 
@@ -53,6 +70,12 @@ class FakeBridge(var url: String = "http://localhost:3000/") : BrowserBridge {
     }
 
     override fun randomBytes(count: Int) = ByteArray(count) { (seed++ * 31).toByte() }
+
+    override suspend fun sha256(text: String): ByteArray {
+        if (cryptoBlocked) throw BrowserFeatureException("crypto.subtle.digest")
+        digestInputs += text
+        return digestResult
+    }
 }
 
 fun person(id: String, given: String = id, living: Boolean = false, paternal: String? = null) = PersonDto(
@@ -69,12 +92,12 @@ fun person(id: String, given: String = id, living: Boolean = false, paternal: St
     version = 0,
 )
 
-fun union(id: String, partner1: String, partner2: String?, vararg children: String) = UnionDto(
+fun union(id: String, partner1: String, partner2: String?, vararg children: String, type: String = "MARRIED") = UnionDto(
     id = id,
     treeId = TREE_ID,
     partner1Id = partner1,
     partner2Id = partner2,
-    type = "MARRIED",
+    type = type,
     startDate = null,
     endDate = null,
     children = children.map { UnionChildDto(it, "BIRTH") },

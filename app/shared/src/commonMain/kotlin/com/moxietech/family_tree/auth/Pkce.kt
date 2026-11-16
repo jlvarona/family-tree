@@ -11,10 +11,14 @@ internal object Pkce {
 
     fun randomToken(bridge: BrowserBridge, byteCount: Int): String {
         val bytes = bridge.randomBytes(byteCount)
-        check(bytes.size == byteCount) { "The browser returned too few random bytes" }
+        if (bytes.size != byteCount) throw BrowserFeatureException("crypto.getRandomValues")
         return Base64Url.encode(bytes)
     }
 
-    /** `BASE64URL(SHA256(ASCII(code_verifier)))`. */
-    fun s256Challenge(verifier: String): String = Base64Url.encode(Sha256.digest(verifier.encodeToByteArray()))
+    /** `BASE64URL(SHA256(ASCII(code_verifier)))`, hashed by Web Crypto. */
+    suspend fun s256Challenge(bridge: BrowserBridge, verifier: String): String {
+        val digest = bridge.sha256(verifier)
+        if (digest.size != 32) throw BrowserFeatureException("crypto.subtle.digest")
+        return Base64Url.encode(digest)
+    }
 }

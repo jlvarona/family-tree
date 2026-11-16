@@ -11,6 +11,7 @@
     <string name="session_expired">Your session has expired. Sign in again to continue.</string>
     <string name="sign_in_failed">Sign-in didn’t complete. Please try again.</string>
     <string name="sign_in_not_verified">This sign-in response couldn’t be verified, so it was ignored. Please sign in again.</string>
+    <string name="sign_in_unavailable">Sign-in couldn’t start because this browser blocked site storage or secure cryptography. Allow site data for this page (or leave private browsing), then try again.</string>
     <string name="config_error">The app’s configuration couldn’t be loaded. Reload the page to try again.</string>
 
     <!-- Loading and errors -->
@@ -76,7 +77,10 @@
     <string name="parent">Parent</string>
     <string name="other_parent">Other parent (optional)</string>
     <string name="no_other_parent">None</string>
-    <string name="union_type">Relationship between the parents</string>
+    <string name="union">Union</string>
+    <string name="choose_union">Choose a union</string>
+    <string name="new_union">New union</string>
+    <string name="union_type">Type of the new union</string>
     <string name="union_married">Married</string>
     <string name="union_divorced">Divorced</string>
     <string name="union_partners">Partners</string>
@@ -87,12 +91,14 @@
     <string name="relation_adopted">Adopted</string>
     <string name="relation_step">Step</string>
     <string name="relation_foster">Foster</string>
-    <string name="link_child_hint">If these parents already have a union, the child is added to it.</string>
+    <string name="link_child_hint">The child is added to the union shown above. Choose “New union” to record another relationship between these parents.</string>
 
     <!-- Form errors and notices -->
     <string name="form_name_required">Enter a name.</string>
     <string name="form_parent_required">Choose a parent.</string>
     <string name="form_child_required">Choose a child.</string>
+    <string name="form_union_required">Choose which union of these parents the child belongs to.</string>
+    <string name="form_union_created">The new union was saved. Save again to add the child to it.</string>
     <string name="form_same_parent">Choose two different parents.</string>
     <string name="form_child_is_parent">A person can’t be their own child.</string>
     <string name="form_already_linked">This child is already linked to these parents.</string>

@@ -323,15 +323,16 @@ so each deployment can supply its own file without a rebuild. Nothing in it is s
 
 If your Keycloak runs elsewhere (for example on another port because 8081 is taken), change
 `issuer` here and `OIDC_ISSUER` for the server together.
+Use HTTPS for the app, Keycloak and API in production. Loopback URLs can use HTTP for local development.
 
 **Sign-in.** The client uses Keycloak's authorization code flow with PKCE (S256) and the
 existing `family-tree-web` client and its API audience mapper (FT-067); the realm isn't
 changed.
-- `state`, `nonce` and the code verifier come from `crypto.getRandomValues`. They are
-  kept for one round trip in `sessionStorage` (per tab, cleared when it closes) and
-  removed when the callback arrives. A callback whose `state` doesn't match, or whose ID
-  token has another `nonce`, is rejected without using the code, and the code is removed
-  from the address bar either way.
+- Web Crypto generates `state`, `nonce` and the verifier and computes the S256 challenge.
+  The client keeps the one-time request in `sessionStorage` and removes it when the
+  fragment callback arrives. It checks for a single matching `state` before exchanging
+  the code, removes callback parameters from the address bar and checks the returned ID
+  token's issuer, audience, expiry and nonce before starting a session.
 - Tokens are held in memory only; nothing is put in `localStorage` and nothing is logged.
   After a reload, a `sessionStorage` flag tells the app to ask Keycloak again with
   `prompt=none`, which signs the tab back in while the Keycloak session lasts and returns
@@ -352,8 +353,8 @@ English otherwise. To check the Spanish strings, put Spanish first in the browse
 language settings and reload.
 
 **Manual check (FT-005 acceptance).** With a fresh tree:
-1. Sign in, create a tree, add three people, and link one as the child of the other two
-   (*Link child*).
+1. Sign in, create a tree and add three people. Open *Link child*, choose the parents,
+   choose an existing union or create one with the appropriate type, then select the child.
 2. Reload. The tab signs back in and the full tree shows the parents joined, with the
    child below.
 3. Select the child, choose *Center tree here*, then *Ancestors*; select a parent and
