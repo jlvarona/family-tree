@@ -2,6 +2,7 @@ package com.moxietech.family_tree.server.graph
 
 import com.moxietech.family_tree.api.CreatePersonRequest
 import com.moxietech.family_tree.api.CreatePersonResponse
+import com.moxietech.family_tree.api.UpdatePersonRequest
 import com.moxietech.family_tree.domain.AccountId
 import com.moxietech.family_tree.domain.PersonId
 import com.moxietech.family_tree.domain.TreeId
@@ -17,6 +18,7 @@ import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
+import io.ktor.server.routing.put
 import io.ktor.server.routing.route
 
 fun Route.personRoutes() {
@@ -41,6 +43,16 @@ fun Route.personRoutes() {
                 val personId = PersonId(call.requirePathParam("personId"))
                 call.respond(PersonService.getPerson(treeId, personId, account.id))
             }
+            put("/{personId}") {
+                val account = call.currentAccount()
+                val treeId = call.requireTreeId()
+                // Write check before the path ID or body is looked at: a non-owner
+                // gets 403 whatever they send (FT-068, FT-001).
+                requireTreeWriter(treeId, account.id)
+                val personId = PersonId(call.requirePathParam("personId"))
+                val request = call.receive<UpdatePersonRequest>()
+                call.respond(PersonService.updatePerson(treeId, personId, account.id, request))
+            }
             get("/{personId}/ancestors") {
                 val account = call.currentAccount()
                 val treeId = call.requireTreeId()
@@ -64,7 +76,7 @@ internal fun io.ktor.server.application.ApplicationCall.requirePathParam(name: S
     parameters[name] ?: throw NotFoundException("Missing path parameter '$name'")
 
 /**
- * Write check for a POST under a tree, run before the body is decoded so a
+ * Write check for a POST or PUT under a tree, run before the body is decoded so a
  * caller who may not write gets 403 even for malformed JSON (FT-068). The
  * service repeats the check, which keeps direct service callers covered.
  */

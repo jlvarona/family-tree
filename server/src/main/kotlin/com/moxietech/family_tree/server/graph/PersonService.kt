@@ -3,6 +3,7 @@ package com.moxietech.family_tree.server.graph
 import com.moxietech.family_tree.api.CreatePersonRequest
 import com.moxietech.family_tree.api.DuplicateCandidateDto
 import com.moxietech.family_tree.api.PersonDto
+import com.moxietech.family_tree.api.UpdatePersonRequest
 import com.moxietech.family_tree.domain.AccountId
 import com.moxietech.family_tree.domain.AuditAction
 import com.moxietech.family_tree.domain.Person
@@ -15,6 +16,7 @@ import com.moxietech.family_tree.server.config.DatabaseDispatcher
 import com.moxietech.family_tree.server.errors.ValidationException
 import com.moxietech.family_tree.server.errors.parseUuidField
 import com.moxietech.family_tree.server.errors.requireValid
+import com.moxietech.family_tree.server.errors.staleVersion
 import com.moxietech.family_tree.server.trees.TreeService
 import com.moxietech.family_tree.validation.Validation
 import kotlinx.coroutines.withContext
@@ -67,6 +69,57 @@ object PersonService {
                 )
 
                 person to duplicates
+            }
+        }
+    }
+
+    /**
+     * FT-001: replaces a person's editable fields, owner only. The person is
+     * resolved inside [treeId] (another tree's ID is the same 404 as a missing
+     * one), and [UpdatePersonRequest.version] must still be the stored version:
+     * otherwise the update is a 409 that changes neither the person nor the
+     * audit log. The write and its before/after audit share one transaction.
+     */
+    suspend fun updatePerson(
+        treeId: TreeId,
+        personId: PersonId,
+        callerAccountId: AccountId,
+        request: UpdatePersonRequest,
+    ): PersonDto {
+        TreeService.getTreeForWriter(treeId, callerAccountId)
+        val personUuid = parseUuidField("personId", personId.value)
+        Validation.validatePersonName(request.givenNames).requireValid()
+        val sex = runCatching { Sex.valueOf(request.sex) }.getOrElse {
+            throw ValidationException(listOf("Unknown sex '${request.sex}'"))
+        }
+
+        return withContext(DatabaseDispatcher) {
+            transaction {
+                val treeUuid = Uuid.parse(treeId.value)
+                val before = TreeScopedLookups.requirePerson(treeUuid, personUuid)
+                if (before.version != request.version) throw staleVersion("Person", before.id.value)
+                val after = PersonRepository.update(
+                    treeId = treeUuid,
+                    id = personUuid,
+                    expectedVersion = request.version,
+                    givenNames = request.givenNames,
+                    surnamePaternal = request.surnamePaternal,
+                    surnameMaternal = request.surnameMaternal,
+                    sex = sex,
+                    isLiving = request.isLiving,
+                    bio = request.bio,
+                ) ?: throw staleVersion("Person", before.id.value)
+                val dto = after.toDto()
+                AuditLogRepository.append(
+                    treeId = treeUuid,
+                    actorAccountId = Uuid.parse(callerAccountId.value),
+                    entityType = "Person",
+                    entityId = after.id.value,
+                    action = AuditAction.UPDATE,
+                    beforeJson = AuditJson.encodeToString(before.toDto()),
+                    afterJson = AuditJson.encodeToString(dto),
+                )
+                dto
             }
         }
     }

@@ -2,6 +2,9 @@ package com.moxietech.family_tree.server.graph
 
 import com.moxietech.family_tree.api.AddUnionChildRequest
 import com.moxietech.family_tree.api.CreateUnionRequest
+import com.moxietech.family_tree.api.UpdateUnionChildRequest
+import com.moxietech.family_tree.api.UpdateUnionRequest
+import com.moxietech.family_tree.domain.PersonId
 import com.moxietech.family_tree.domain.UnionId
 import com.moxietech.family_tree.server.config.OIDC_AUTH_NAME
 import com.moxietech.family_tree.server.identity.currentAccount
@@ -13,6 +16,7 @@ import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
+import io.ktor.server.routing.put
 import io.ktor.server.routing.route
 
 fun Route.unionRoutes() {
@@ -30,6 +34,14 @@ fun Route.unionRoutes() {
                 val treeId = call.requireTreeId()
                 call.respond(UnionService.listUnions(treeId, account.id))
             }
+            put("/{unionId}") {
+                val account = call.currentAccount()
+                val treeId = call.requireTreeId()
+                requireTreeWriter(treeId, account.id)
+                val unionId = UnionId(call.requirePathParam("unionId"))
+                val request = call.receive<UpdateUnionRequest>()
+                call.respond(UnionService.updateUnion(treeId, unionId, account.id, request))
+            }
             post("/{unionId}/children") {
                 val account = call.currentAccount()
                 val treeId = call.requireTreeId()
@@ -39,6 +51,15 @@ fun Route.unionRoutes() {
                 val unionId = UnionId(call.requirePathParam("unionId"))
                 val request = call.receive<AddUnionChildRequest>()
                 call.respond(HttpStatusCode.Created, UnionService.addChild(treeId, unionId, account.id, request))
+            }
+            put("/{unionId}/children/{childId}") {
+                val account = call.currentAccount()
+                val treeId = call.requireTreeId()
+                requireTreeWriter(treeId, account.id)
+                val unionId = UnionId(call.requirePathParam("unionId"))
+                val childId = PersonId(call.requirePathParam("childId"))
+                val request = call.receive<UpdateUnionChildRequest>()
+                call.respond(UnionService.updateChild(treeId, unionId, childId, account.id, request))
             }
         }
     }

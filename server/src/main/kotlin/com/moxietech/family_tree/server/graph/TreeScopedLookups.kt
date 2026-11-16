@@ -1,5 +1,6 @@
 package com.moxietech.family_tree.server.graph
 
+import com.moxietech.family_tree.domain.Event
 import com.moxietech.family_tree.domain.Person
 import com.moxietech.family_tree.domain.Place
 import com.moxietech.family_tree.domain.Union
@@ -23,4 +24,7 @@ internal object TreeScopedLookups {
 
     fun requirePlace(treeId: Uuid, placeId: Uuid): Place =
         PlaceRepository.findById(treeId, placeId) ?: throw NotFoundException("No place with id $placeId")
+
+    fun requireEvent(treeId: Uuid, eventId: Uuid): Event =
+        EventRepository.findById(treeId, eventId) ?: throw NotFoundException("No event with id $eventId")
 }

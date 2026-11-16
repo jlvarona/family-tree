@@ -9,6 +9,104 @@ up to date in place, not logged chronologically.
 
 ---
 
+## 2026-11-16 — FT-001 staged versioned updates (in progress)
+
+FT-001 stays **In progress**: this stage adds updates and the version strategy only.
+Delete routes and deletion semantics are untouched while the product decision on
+deleting records that other records reference is pending (now under "Still open" in
+`concept-architecture.md`). The changes are uncommitted; one pull request will cover
+the whole story.
+
+**Routes** (owner-only, like creates; `200` with the updated record):
+
+```
+PUT    /api/v1/trees/{treeId}/people/{personId}                       UpdatePersonRequest     → PersonDto
+PUT    /api/v1/trees/{treeId}/unions/{unionId}                        UpdateUnionRequest      → UnionDto
+PUT    /api/v1/trees/{treeId}/unions/{unionId}/children/{childId}     UpdateUnionChildRequest → UnionDto
+PUT    /api/v1/trees/{treeId}/events/{eventId}                        UpdateEventRequest      → EventDto
+PUT    /api/v1/trees/{treeId}/places/{placeId}                        UpdatePlaceRequest      → PlaceDto
+PUT    /api/v1/trees/{treeId}/sources/{sourceId}                      UpdateSourceRequest     → SourceDto
+```
+
+**Request shapes.** Each update request (in `:core` `api/`) has the matching create
+request's fields plus a required `version`; `UpdatePersonRequest` already existed. A
+child link is identified by its union and child in the path, so
+`UpdateUnionChildRequest` carries only `relation` and `version`. Person updates never
+change the ID, tree, creator or profile media.
+
+**Order of checks**, the same as the create routes:
+1. Authentication, then `requireTreeWriter` before the path ID or body is read, so a
+   non-owner gets `403` for any input, malformed JSON included (FT-068).
+2. Path IDs (`parseUuidField`) and field rules (`Validation`, enum names, date order,
+   two different partners, exactly one event subject) → structured `400`.
+3. Inside one transaction: the record is resolved in the URL's tree (another tree's ID
+   is the same generic `404` as a missing one), then the body's references (partners;
+   event person, union and place) are parsed and resolved in that tree. A missing
+   record therefore stays a `404` even when a body ID is malformed, as with child links.
+
+**Optimistic concurrency.** In the same transaction the service compares the stored
+version with the request's, then runs a conditional
+`UPDATE … WHERE id = ? AND tree_id = ? AND version = ?` that sets every field and
+`version + 1`. No matching row (a concurrent writer committed first) or a different
+stored version throws `staleVersion(...)` (a `ConflictException`, mapped to `409` with
+"… has been changed since you read it; reload it and try again"). The transaction
+rolls back, so neither the record nor the audit log changes. Under PostgreSQL's read
+committed isolation, a second writer blocked on the row lock re-checks the version
+after the first commits and fails.
+
+**Audit.** Each successful update appends one `UPDATE` entry in the same transaction,
+with the actor, the entity's existing type and ID (`Person`, `Union`, `UnionChild` as
+`union:child`, `Event`, `Place`, `Source`), and before/after snapshots in the same DTO
+shapes as their creation entries. Union snapshots carry the same child list before and
+after (child links have their own versions and entries); event snapshots embed the
+place as it was before and after.
+
+**Versions on place and child link (V4).**
+`V4__place_and_union_child_versions.sql` adds `version bigint not null default 1` to
+`place` and `union_child`. Existing rows start at 1, the value new rows get.
+`PlaceDto` and `UnionChildDto` gained `version` with a default of 1 marked
+`@EncodeDefault`: responses always include it, JSON without it (from before FT-001)
+still decodes, and existing Kotlin call sites compile unchanged. Create request bodies
+didn't change. The web client ignores unknown fields, so the extra field is harmless
+to it; it doesn't call the update routes yet.
+
+**Tests added (not yet run).**
+- `server/.../graph/VersionedUpdateTest` (HTTP through the production `module` on
+  Testcontainers PostgreSQL 16, as in `AuthenticatedAccessTest`):
+  - Each route as owner: `200`, version + 1 in the response and the row, one `UPDATE`
+    audit whose before is the record as created and whose after is the response.
+  - Updates are visible through the person, bundle, events, places and sources reads.
+  - Create and list responses carry place and child link versions (1) in the raw JSON;
+    create bodies without a version are still accepted.
+  - Stale (already used) and unknown (future) versions → `409` on every route, with
+    an unchanged fingerprint of every tree row and audit entry.
+  - Two writers that read the same version are parked on a test-held row lock until
+    both wait in their conditional `UPDATE` (seen in `pg_stat_activity`); after
+    release exactly one gets `200` and the other `409`, with one audit entry. A
+    burst of six concurrent writers per route also yields one success and one entry.
+  - A test trigger that rejects `UPDATE` audit inserts rolls back all six service
+    updates (PostgreSQL `P0001` in the cause chain, no row changed); after the trigger
+    is dropped the same calls succeed at the original versions.
+  - The active non-owner gets `403` for valid, malformed, version-less and
+    malformed-path requests on every route; the invitee and another tree's owner get
+    "Not a member"; nothing changes.
+  - Tree B's records as targets, and tree B's partners, event person, union and place
+    as references, give the same `404` body as random IDs, leak none of tree B's IDs
+    or names, and change neither tree.
+  - Malformed path and body IDs, unknown enums, blank names and titles, the same
+    partner in two spellings, inverted union dates, zero or two event subjects and
+    missing versions are structured `400`s. Missing references and an unlinked child
+    are `404`s, and a missing record with a malformed body ID stays a `404`. No input
+    is echoed and nothing changes.
+- `server/.../db/VersionColumnsMigrationTest`: rows written at V3 get version 1 from
+  V4 and keep their other columns.
+- `core/.../api/VersionedDtoTest`: version-less place and child link JSON decodes,
+  the version is encoded even at its default, and every update request needs one.
+
+**Verification.** None run in this session: no Gradle, Docker or Git commands were
+used. `:core:jvmTest`, `:server:test` (needs Docker) and `:app:shared:jvmTest` (the
+DTO change touches the client's shared types) still need to be run.
+
 ## 2026-11-16 — FT-006 built the person page
 
 Opening a person from the tree (or a direct link or reload of
@@ -892,7 +990,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 
 ### Status board
 
-**Done (25)** · **In progress (0)** · **To do (29)** · **Blocked (1)**
+**Done (25)** · **In progress (1)** · **To do (28)** · **Blocked (1)**
 
 | Order | ID | Story | Epic | Priority | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -921,7 +1019,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 | — | FT-004 | "Whole tree" bundle endpoint | E1 | P1 | Done |
 | — | FT-005 | Authenticated owner workflow and web tree views | E1 | P1 | Done |
 | — | FT-006 | Person page UI | E1 | P1 | Done |
-| 1 | FT-001 | Update & delete endpoints | E1 | P1 | To do |
+| 1 | FT-001 | Update & delete endpoints | E1 | P1 | In progress |
 | 2 | FT-002 | Citation routes | E1 | P1 | To do |
 | 3 | FT-007 | Duplicate-merge workflow | E1 | P1 | To do |
 | 4 | FT-008 | Photo upload (S3 presigned URLs) | E1 | P1 | Blocked |
@@ -999,12 +1097,18 @@ desktop/shared build repair.
 
 ### E1 — Close out Phase 1 (Foundations)
 
-- **FT-001 Update & delete endpoints.** `To do · P1 · #1` — Person, Union, UnionChild,
+- **FT-001 Update & delete endpoints.** `In progress · P1 · #1` — Person, Union, UnionChild,
   Event, Place, and Source currently support create/read. Reuse tree-scoped lookups,
   owner write checks, and transactional audits (FT-065, FT-068, FT-069). Use existing
   version columns for optimistic concurrency and define a version strategy for Place
   and UnionChild, which lack one. A stale mutation returns `409` with no changes
   to the domain record or audit log.
+
+  Staged so far (uncommitted, PR pending): versioned owner-only `PUT` updates for all
+  six records and V4 version columns on `place` and `union_child`; see the
+  2026-11-16 FT-001 session entry. Still to do: delete routes, once the product
+  decision on deleting records that other records reference is made (recorded under
+  "Still open" in `concept-architecture.md`).
 - **FT-002 Citation routes.** `To do · P1 · #2` — use the current `citation` table
   and `:core`'s `CitationTarget` (person/event/union). Resolve both the source and
   the polymorphic target within the authorized tree, audit writes in the same
@@ -1289,7 +1393,8 @@ Relationships go through `union_record` / `union_child`, never direct parent/chi
 columns on `person` (`AGENTS.md`: *"Union model"*). Source of truth, in order:
 [`V1__init.sql`](../server/src/main/resources/db/migration/V1__init.sql),
 [`V2__tree_scoped_references.sql`](../server/src/main/resources/db/migration/V2__tree_scoped_references.sql),
-[`V3__account_oidc_identity.sql`](../server/src/main/resources/db/migration/V3__account_oidc_identity.sql).
+[`V3__account_oidc_identity.sql`](../server/src/main/resources/db/migration/V3__account_oidc_identity.sql),
+[`V4__place_and_union_child_versions.sql`](../server/src/main/resources/db/migration/V4__place_and_union_child_versions.sql).
 
 ### Entity-relationship diagram
 
@@ -1337,6 +1442,7 @@ erDiagram
         text hierarchy
         double latitude
         double longitude
+        bigint version
     }
     UNION_RECORD {
         uuid id PK
@@ -1354,6 +1460,7 @@ erDiagram
         uuid union_id PK
         uuid child_id PK
         text relation
+        bigint version
     }
     EVENT {
         uuid id PK
@@ -1456,6 +1563,12 @@ created by any contributor. Indexed on `tree_id`, plus three `gin`/`pg_trgm` tri
 indexes on the name columns backing the fuzzy duplicate-check.
 
 **`place`** — `tree_id → tree`; shared within a tree, referenced by `event.place_id`.
+
+**Versions (FT-001).** `person`, `union_record`, `event` and `source` have had
+`version` since V1; V4 added it to `place` and `union_child` (`not null default 1`, so
+existing rows start at 1). Every update is a conditional `UPDATE … WHERE version = ?`
+that increments it in the same statement; a mismatch is a `409` with nothing written.
+`tree.version` is still unused.
 
 **`union_record`** (named to dodge the `UNION` SQL keyword) — `tree_id → tree`,
 `partner1_id → person` (required), `partner2_id → person` (nullable — a union can be

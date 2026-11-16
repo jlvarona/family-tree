@@ -2,13 +2,17 @@ package com.moxietech.family_tree.server.graph
 
 import com.moxietech.family_tree.api.CreatePlaceRequest
 import com.moxietech.family_tree.api.PlaceDto
+import com.moxietech.family_tree.api.UpdatePlaceRequest
 import com.moxietech.family_tree.domain.AccountId
 import com.moxietech.family_tree.domain.AuditAction
+import com.moxietech.family_tree.domain.PlaceId
 import com.moxietech.family_tree.domain.TreeId
 import com.moxietech.family_tree.server.collaboration.AuditJson
 import com.moxietech.family_tree.server.collaboration.AuditLogRepository
 import com.moxietech.family_tree.server.config.DatabaseDispatcher
+import com.moxietech.family_tree.server.errors.parseUuidField
 import com.moxietech.family_tree.server.errors.requireValid
+import com.moxietech.family_tree.server.errors.staleVersion
 import com.moxietech.family_tree.server.trees.TreeService
 import com.moxietech.family_tree.validation.Validation
 import kotlinx.coroutines.withContext
@@ -42,6 +46,50 @@ object PlaceService {
                     entityId = place.id.value,
                     action = AuditAction.CREATE,
                     beforeJson = null,
+                    afterJson = AuditJson.encodeToString(dto),
+                )
+                dto
+            }
+        }
+    }
+
+    /**
+     * FT-001: replaces a place's fields, owner only, with the same validation as
+     * [createPlace]. The place is resolved inside [treeId]; a version that is no
+     * longer the stored one is a 409 that changes neither the place nor the
+     * audit log. Events that point at the place show the new values.
+     */
+    suspend fun updatePlace(
+        treeId: TreeId,
+        placeId: PlaceId,
+        callerAccountId: AccountId,
+        request: UpdatePlaceRequest,
+    ): PlaceDto {
+        TreeService.getTreeForWriter(treeId, callerAccountId)
+        val placeUuid = parseUuidField("placeId", placeId.value)
+        Validation.validateNotBlank("Place name", request.name).requireValid()
+        return withContext(DatabaseDispatcher) {
+            transaction {
+                val treeUuid = Uuid.parse(treeId.value)
+                val before = TreeScopedLookups.requirePlace(treeUuid, placeUuid)
+                if (before.version != request.version) throw staleVersion("Place", before.id.value)
+                val after = PlaceRepository.update(
+                    treeId = treeUuid,
+                    id = placeUuid,
+                    expectedVersion = request.version,
+                    name = request.name,
+                    hierarchy = request.hierarchy,
+                    latitude = request.latitude,
+                    longitude = request.longitude,
+                ) ?: throw staleVersion("Place", before.id.value)
+                val dto = after.toDto()
+                AuditLogRepository.append(
+                    treeId = treeUuid,
+                    actorAccountId = Uuid.parse(callerAccountId.value),
+                    entityType = "Place",
+                    entityId = after.id.value,
+                    action = AuditAction.UPDATE,
+                    beforeJson = AuditJson.encodeToString(before.toDto()),
                     afterJson = AuditJson.encodeToString(dto),
                 )
                 dto

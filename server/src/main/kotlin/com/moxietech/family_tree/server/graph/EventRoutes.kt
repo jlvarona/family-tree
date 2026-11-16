@@ -1,6 +1,8 @@
 package com.moxietech.family_tree.server.graph
 
 import com.moxietech.family_tree.api.CreateEventRequest
+import com.moxietech.family_tree.api.UpdateEventRequest
+import com.moxietech.family_tree.domain.EventId
 import com.moxietech.family_tree.domain.PersonId
 import com.moxietech.family_tree.server.config.OIDC_AUTH_NAME
 import com.moxietech.family_tree.server.identity.currentAccount
@@ -12,6 +14,7 @@ import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
+import io.ktor.server.routing.put
 import io.ktor.server.routing.route
 
 fun Route.eventRoutes() {
@@ -23,6 +26,14 @@ fun Route.eventRoutes() {
                 requireTreeWriter(treeId, account.id)
                 val request = call.receive<CreateEventRequest>()
                 call.respond(HttpStatusCode.Created, EventService.createEvent(treeId, account.id, request))
+            }
+            put("/{eventId}") {
+                val account = call.currentAccount()
+                val treeId = call.requireTreeId()
+                requireTreeWriter(treeId, account.id)
+                val eventId = EventId(call.requirePathParam("eventId"))
+                val request = call.receive<UpdateEventRequest>()
+                call.respond(EventService.updateEvent(treeId, eventId, account.id, request))
             }
         }
         route("/api/v1/trees/{treeId}/people/{personId}/events") {

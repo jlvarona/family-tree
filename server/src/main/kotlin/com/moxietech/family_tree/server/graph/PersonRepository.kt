@@ -14,6 +14,7 @@ import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
+import org.jetbrains.exposed.v1.jdbc.update
 import java.sql.ResultSet
 import java.time.Instant
 import java.util.UUID
@@ -58,6 +59,39 @@ object PersonRepository {
             it[PersonTable.updatedAt] = now
         }
         findById(treeId, id) ?: error("Person $id was just inserted but cannot be read back")
+    }
+
+    /**
+     * FT-001: replaces the editable fields of [id] in [treeId] only while its
+     * stored version is still [expectedVersion], and increments the version in
+     * the same statement. Returns null, changing nothing, when no row matched:
+     * a concurrent writer committed first and the caller must report a conflict.
+     * Identity, tree, creator and profile media are never changed here.
+     */
+    fun update(
+        treeId: Uuid,
+        id: Uuid,
+        expectedVersion: Long,
+        givenNames: String,
+        surnamePaternal: String?,
+        surnameMaternal: String?,
+        sex: Sex,
+        isLiving: Boolean,
+        bio: String?,
+    ): Person? = transaction {
+        val updated = PersonTable.update({
+            (PersonTable.id eq id) and (PersonTable.treeId eq treeId) and (PersonTable.version eq expectedVersion)
+        }) {
+            it[PersonTable.givenNames] = givenNames
+            it[PersonTable.surnamePaternal] = surnamePaternal
+            it[PersonTable.surnameMaternal] = surnameMaternal
+            it[PersonTable.sex] = sex.name
+            it[PersonTable.isLiving] = isLiving
+            it[PersonTable.bio] = bio
+            it[PersonTable.version] = expectedVersion + 1
+            it[PersonTable.updatedAt] = Instant.now()
+        }
+        if (updated == 0) null else findById(treeId, id) ?: error("Person $id was just updated but cannot be read back")
     }
 
     /**

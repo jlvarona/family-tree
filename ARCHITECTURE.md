@@ -65,7 +65,8 @@ Feature packages under `com.moxietech.family_tree.server.<feature>`, each with `
 - Reads that combine several queries into one privacy-shaped response (the whole-tree bundle `GET …/graph`, `GET …/unions`) run in one read-only `REPEATABLE READ` transaction, so visibility is decided on the same snapshot the data comes from.
 - Repository integration tests start a disposable PostgreSQL 16 container and apply Flyway migrations. See the [README test commands](README.md#running-tests).
 - Every request: authenticate (a Keycloak access token whose `aud` names the API, `OIDC_AUDIENCE`) → resolve the account by the token's verified issuer + subject, never by email → load membership → resolve scope → check with `:core` permission rules → execute → audit.
-- Errors are `ApiErrorResponse` JSON mapped in `StatusPagesConfig`: malformed IDs (parsed with the field-aware `parseUuidField` where a path or body ID is first converted, in the tree lookup or the service), unknown enum values and undecodable bodies → `400`; forbidden → `403`; missing or foreign IDs → the same generic `404`; a duplicate child link → `409`. Responses never include exception or database text.
+- Errors are `ApiErrorResponse` JSON mapped in `StatusPagesConfig`: malformed IDs (parsed with the field-aware `parseUuidField` where a path or body ID is first converted, in the tree lookup or the service), unknown enum values and undecodable bodies → `400`; forbidden → `403`; missing or foreign IDs → the same generic `404`; a duplicate child link or a stale version → `409`. Responses never include exception or database text.
+- Updates (FT-001, `PUT` on a person, union, child link, event, place or source) carry the `version` the client last read. In one transaction the service resolves the record and its references in the URL's tree, then runs a conditional `UPDATE … WHERE version = ?` that increments the version and records the before/after audit. A version that no longer matches, including when a concurrent writer committed first, is a `409` that rolls back with no change and no audit entry. Delete routes wait for the referenced-record decision (see Open decisions).
 - Media: presigned S3 uploads/downloads, thumbnails in a worker, EXIF GPS stripped.
 - Jobs: SQS (or Postgres job table) + worker in the same codebase.
 - Real-time: WebSocket/SSE per tree for live edits.
@@ -92,3 +93,4 @@ invitation-only; billing (per-tree subscription or paid storage) comes later.
 ## Open decisions
 
 - Which citation source types to support first.
+- What deleting a record that other records reference does (FT-001 deletes).

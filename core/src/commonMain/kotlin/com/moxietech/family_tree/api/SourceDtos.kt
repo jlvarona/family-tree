@@ -27,6 +27,19 @@ data class CreateSourceRequest(
     val date: String? = null,
 )
 
+/** Replaces a source's fields (same shape as [CreateSourceRequest]); [version] is the one last read (FT-001). */
+@Serializable
+data class UpdateSourceRequest(
+    val title: String,
+    val type: String,
+    val author: String? = null,
+    val publisher: String? = null,
+    val repository: String? = null,
+    val url: String? = null,
+    val date: String? = null,
+    val version: Long,
+)
+
 @Serializable
 data class CitationDto(
     val id: String,
