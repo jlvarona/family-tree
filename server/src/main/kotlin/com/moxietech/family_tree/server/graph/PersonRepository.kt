@@ -11,6 +11,7 @@ import com.moxietech.family_tree.server.db.PersonTable
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.vendors.ForUpdateOption
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
@@ -27,6 +28,17 @@ object PersonRepository {
     /** Null when [id] doesn't exist or belongs to another tree; callers treat both as not found. */
     fun findById(treeId: Uuid, id: Uuid): Person? = transaction {
         PersonTable.selectAll().where { (PersonTable.id eq id) and (PersonTable.treeId eq treeId) }.firstOrNull()?.toPerson()
+    }
+
+    /**
+     * FT-007: [findById] that also locks the row `FOR UPDATE` until the transaction
+     * ends. While held, no other transaction can add a foreign-key reference to the
+     * person (that needs `FOR KEY SHARE`), lock it for a citation, update or delete it.
+     */
+    fun lockForUpdate(treeId: Uuid, id: Uuid): Person? = transaction {
+        PersonTable.selectAll().where { (PersonTable.id eq id) and (PersonTable.treeId eq treeId) }
+            .forUpdate(ForUpdateOption.ForUpdate)
+            .firstOrNull()?.toPerson()
     }
 
     fun listByTree(treeId: Uuid): List<Person> = transaction {

@@ -7,7 +7,10 @@ import com.moxietech.family_tree.api.AddUnionChildRequest
 import com.moxietech.family_tree.api.CreatePersonRequest
 import com.moxietech.family_tree.api.CreatePersonResponse
 import com.moxietech.family_tree.api.CreateUnionRequest
+import com.moxietech.family_tree.api.DuplicateCandidateDto
 import com.moxietech.family_tree.api.EventDto
+import com.moxietech.family_tree.api.MergePeopleRequest
+import com.moxietech.family_tree.api.MergePeopleResponse
 import com.moxietech.family_tree.api.PersonDto
 import com.moxietech.family_tree.api.TreeDto
 import com.moxietech.family_tree.api.TreeGraphDto
@@ -21,6 +24,7 @@ import com.moxietech.family_tree.client.FamilyTreeApi
 import com.moxietech.family_tree.domain.ChildRelation
 import com.moxietech.family_tree.domain.Sex
 import com.moxietech.family_tree.domain.UnionType
+import com.moxietech.family_tree.merge.MergeField
 import com.moxietech.family_tree.navigation.Route
 import com.moxietech.family_tree.navigation.TreeViewKind
 import kotlinx.coroutines.CompletableDeferred
@@ -98,6 +102,7 @@ class FamilyTreeControllerTest {
 
         /** Replaces the person record returned, e.g. one from another tree. */
         var personOverride: PersonDto? = null
+        val personReadGates = mutableMapOf<String, CompletableDeferred<Unit>>()
         var events: List<EventDto> = listOf(birthOf("kid"))
 
         /** Each events call takes the next gate / failure, if any. */
@@ -107,7 +112,9 @@ class FamilyTreeControllerTest {
         override suspend fun person(treeId: String, personId: String): PersonDto {
             calls += "person:$personId"
             personOverride?.let { return it }
-            return graph.people.firstOrNull { it.id == personId } ?: throw ApiException(ApiFailure.NOT_FOUND)
+            val person = graph.people.firstOrNull { it.id == personId } ?: throw ApiException(ApiFailure.NOT_FOUND)
+            personReadGates.remove(personId)?.await()
+            return person
         }
 
         override suspend fun events(treeId: String, personId: String): List<EventDto> {
@@ -129,7 +136,32 @@ class FamilyTreeControllerTest {
                 it.await()
                 throw ApiException(ApiFailure.UNAVAILABLE)
             }
-            return CreatePersonResponse(personOf("new", request.givenNames))
+            return CreatePersonResponse(personOf("new", request.givenNames), duplicates)
+        }
+
+        /** Returned with every created person. */
+        var duplicates: List<DuplicateCandidateDto> = emptyList()
+
+        val mergeRequests = mutableListOf<MergePeopleRequest>()
+
+        /** Each merge fails with the next queued failure, if any. */
+        val mergeFailures = ArrayDeque<ApiFailure>()
+        var mergeGate: CompletableDeferred<Unit>? = null
+
+        /** Applies the merge to the graph as the server would, so a reload shows it. */
+        override suspend fun mergePeople(treeId: String, request: MergePeopleRequest): MergePeopleResponse {
+            calls += "merge:${request.survivorId}<-${request.retiredId}"
+            mergeRequests += request
+            mergeGate?.await()
+            mergeFailures.removeFirstOrNull()?.let { throw ApiException(it) }
+            val survivor = graph.people.single { it.id == request.survivorId }.let { it.copy(version = it.version + 1) }
+            graph = graph.copy(
+                people = graph.people.filter { it.id != request.retiredId }.map { if (it.id == survivor.id) survivor else it },
+                unions = graph.unions.map { union ->
+                    union.copy(children = union.children.filter { it.childId != request.retiredId })
+                },
+            )
+            return MergePeopleResponse(survivor, request.retiredId)
         }
 
         /** Saves the union into the graph, as the server would, so a reload shows it. */
@@ -681,6 +713,270 @@ class FamilyTreeControllerTest {
 
         assertNull(controller.state.value.personScreen)
         assertEquals(Route.Person(TREE_ID, "kid"), controller.state.value.route)
+    }
+
+    // --- FT-007 merge ---------------------------------------------------------------------
+
+    /** "ana" and "ana2" are the same child of mum and dad, entered twice with different details. */
+    private fun duplicatesGraph(vararg extra: UnionDto) = TreeGraphDto(
+        TREE_ID,
+        listOf(
+            personOf("mum"),
+            personOf("dad"),
+            personOf("ana", "Ana", living = false, paternal = "Romero"),
+            // No paternal surname: blank against a value still needs a choice.
+            personOf("ana2", "Ana María", living = true),
+        ),
+        listOf(unionOf("u1", "mum", "dad", "ana", "ana2")) + extra,
+    )
+
+    private fun TestScope.openMerge(route: String = "/trees/$TREE_ID", vararg extra: UnionDto): FamilyTreeController {
+        api.graph = duplicatesGraph(*extra)
+        bridge.url = "http://localhost:3000/#$route"
+        val controller = controller().also { signIn() }
+        controller.startMerge("ana", "ana2")
+        runCurrent()
+        return controller
+    }
+
+    private val FamilyTreeController.merge get() = state.value.treeScreen?.merge
+
+    /** Keep "ana"; her surname, the duplicate's given names and living status. */
+    private fun FamilyTreeController.decide() {
+        chooseSurvivor("ana")
+        chooseMergeValue(MergeField.GIVEN_NAMES, "ana2")
+        chooseMergeValue(MergeField.SURNAME_PATERNAL, "ana")
+        chooseMergeValue(MergeField.IS_LIVING, "ana2")
+        confirmRetired(true)
+    }
+
+    @Test
+    fun duplicateNoticeNamesEachMatchAndOpensAMergeWithTheNewPerson() = runTest {
+        val controller = openTree()
+        api.graph = graphOf(listOf("mum", "dad", "kid", "new"), unionOf("u1", "mum", "dad"))
+        api.duplicates = listOf(DuplicateCandidateDto(personOf("kid", "Kid", paternal = "Romero"), 80))
+
+        controller.createPerson(PersonInput("Kid", "Romero", "", Sex.UNKNOWN, true)) {}
+        runCurrent()
+
+        val notice = assertIs<Notice.PossibleDuplicates>(controller.state.value.treeScreen?.notice)
+        assertEquals("new", notice.createdPersonId)
+        assertEquals(listOf(DuplicateMatch("kid", "Kid Romero")), notice.candidates)
+
+        controller.startMerge(notice.createdPersonId, notice.candidates.single().personId)
+        runCurrent()
+
+        val merge = controller.merge!!
+        assertEquals("new" to "kid", merge.firstId to merge.secondId)
+        val records = merge.records?.valueOrNull!!
+        assertEquals(listOf("new", "kid"), listOf(records.first.id, records.second.id))
+        assertTrue("person:new" in api.calls && "person:kid" in api.calls, "both records are read fresh")
+    }
+
+    @Test
+    fun mergeRequiresASurvivorEveryDifferenceAndAConfirmationBeforeAnyRequest() = runTest {
+        val controller = openMerge()
+        assertEquals(
+            setOf(MergeField.GIVEN_NAMES, MergeField.SURNAME_PATERNAL, MergeField.IS_LIVING),
+            FamilyTreeController.differingFields(controller.merge!!.records!!.valueOrNull!!.first, controller.merge!!.records!!.valueOrNull!!.second),
+        )
+
+        controller.submitMerge()
+        assertEquals(MergeError.SURVIVOR_REQUIRED, controller.merge?.error)
+        controller.chooseSurvivor("ana")
+        controller.chooseMergeValue(MergeField.GIVEN_NAMES, "ana2")
+        controller.chooseMergeValue(MergeField.IS_LIVING, "ana2")
+        controller.submitMerge()
+        assertEquals(MergeError.CHOICES_REQUIRED, controller.merge?.error, "the blank surname still needs a choice")
+        controller.chooseMergeValue(MergeField.SURNAME_PATERNAL, "ana")
+        controller.submitMerge()
+        assertEquals(MergeError.CONFIRMATION_REQUIRED, controller.merge?.error)
+
+        controller.confirmRetired(true)
+        controller.chooseSurvivor("ana2")
+        assertEquals(false, controller.merge?.retiredConfirmed, "changing the survivor asks again which record is removed")
+        controller.chooseMergeValue(MergeField.SEX, "nobody")
+        assertNull(controller.merge?.choices?.get(MergeField.SEX), "only the two records' values can be chosen")
+        runCurrent()
+
+        assertTrue(api.calls.none { it.startsWith("merge:") })
+    }
+
+    @Test
+    fun successfulMergeSendsOneDecisionReloadsAndOpensTheSurvivor() = runTest {
+        val controller = openMerge(route = "/trees/$TREE_ID?root=ana2")
+        controller.selectPerson("ana2")
+        controller.decide()
+
+        controller.submitMerge()
+        runCurrent()
+
+        assertEquals(
+            listOf(
+                MergePeopleRequest(
+                    survivorId = "ana",
+                    survivorVersion = 0,
+                    retiredId = "ana2",
+                    retiredVersion = 0,
+                    choices = mapOf("GIVEN_NAMES" to "RETIRED", "SURNAME_PATERNAL" to "SURVIVOR", "IS_LIVING" to "RETIRED"),
+                ),
+            ),
+            api.mergeRequests,
+        )
+        val screen = controller.state.value.treeScreen!!
+        assertNull(screen.merge, "transient merge state is cleaned up")
+        assertNull(screen.notice)
+        assertEquals("ana", screen.selectedPersonId)
+        assertEquals("ana", screen.rootPersonId, "a root that no longer exists is replaced by the survivor")
+        assertTrue(screen.graph.valueOrNull!!.people.none { it.id == "ana2" }, "the tree is reloaded")
+        assertEquals(Route.Person(TREE_ID, "ana"), controller.state.value.route)
+        assertEquals("/trees/$TREE_ID/people/ana", bridge.url.substringAfter('#'))
+        assertEquals(1L, controller.state.value.personScreen?.person?.valueOrNull?.version)
+
+        // Back from the survivor's page returns to a tree view that still exists.
+        controller.backToTree()
+        runCurrent()
+        assertEquals(Route.Tree(TREE_ID, TreeViewKind.FULL, "ana"), controller.state.value.route)
+    }
+
+    @Test
+    fun conflictReloadsBothRecordsAndTheTreeAndAsksForTheChoicesAgain() = runTest {
+        api.mergeFailures += ApiFailure.CONFLICT
+        val controller = openMerge()
+        controller.decide()
+
+        controller.submitMerge()
+        runCurrent()
+
+        val merge = controller.merge!!
+        assertEquals(MergeError.CHANGED, merge.error)
+        assertEquals(false, merge.submitting)
+        assertEquals("ana", merge.survivorId)
+        assertEquals(emptyMap(), merge.choices)
+        assertEquals(false, merge.retiredConfirmed)
+        assertIs<Loadable.Ready<*>>(merge.records)
+        assertEquals(2, api.calls.count { it == "person:ana2" }, "both records are read again")
+        assertEquals(2, api.calls.count { it == "graph:$TREE_ID" })
+        assertIs<Route.Tree>(controller.state.value.route)
+
+        controller.decide()
+        controller.submitMerge()
+        runCurrent()
+        assertNull(controller.state.value.treeScreen?.merge)
+        assertEquals(2, api.mergeRequests.size)
+    }
+
+    @Test
+    fun otherFailuresKeepTheReviewAndShowALocalizedError() = runTest {
+        api.mergeFailures += ApiFailure.UNAVAILABLE
+        val controller = openMerge()
+        controller.decide()
+
+        controller.submitMerge()
+        runCurrent()
+
+        val merge = controller.merge!!
+        assertEquals(MergeError.UNAVAILABLE, merge.error)
+        assertEquals(false, merge.submitting)
+        assertEquals(3, merge.choices.size)
+        assertTrue(merge.retiredConfirmed)
+    }
+
+    @Test
+    fun relationshipsThatCantBeMergedAreCaughtBeforeTheRequest() = runTest {
+        // ana is also recorded as ana2's parent.
+        val controller = openMerge("/trees/$TREE_ID", unionOf("u2", "ana", null, "ana2"))
+        controller.decide()
+
+        controller.submitMerge()
+        runCurrent()
+
+        assertEquals(MergeError.RELATIONSHIPS, controller.merge?.error)
+        assertTrue(api.calls.none { it.startsWith("merge:") })
+    }
+
+    @Test
+    fun choosingAnotherRecordDropsEverythingDecidedAboutTheOldPair() = runTest {
+        val controller = openMerge()
+        controller.decide()
+
+        controller.chooseSecondForMerge("mum")
+        runCurrent()
+
+        val merge = controller.merge!!
+        assertEquals("ana" to "mum", merge.firstId to merge.secondId)
+        assertNull(merge.survivorId)
+        assertEquals(emptyMap(), merge.choices)
+        assertEquals(false, merge.retiredConfirmed)
+        assertEquals("mum", merge.records?.valueOrNull?.second?.id)
+
+        controller.cancelMerge()
+        assertNull(controller.merge)
+    }
+
+    @Test
+    fun delayedReadFromTheSamePairCannotOverwriteANewerComparison() = runTest {
+        val oldRead = CompletableDeferred<Unit>()
+        api.personReadGates["ana2"] = oldRead
+        val controller = openMerge()
+        val latestVersion = api.graph.people.first { it.id == "ana2" }.version + 1
+        api.graph = api.graph.copy(people = api.graph.people.map {
+            if (it.id == "ana2") it.copy(givenNames = "Ana Lucía", version = latestVersion) else it
+        })
+
+        controller.chooseSecondForMerge("mum")
+        runCurrent()
+        controller.chooseSecondForMerge("ana2")
+        runCurrent()
+        assertEquals(latestVersion, controller.merge?.records?.valueOrNull?.second?.version)
+
+        oldRead.complete(Unit)
+        runCurrent()
+        assertEquals(latestVersion, controller.merge?.records?.valueOrNull?.second?.version)
+    }
+
+    @Test
+    fun onlyTheOwnerCanOpenAMerge() = runTest {
+        api.tree = TreeDto(TREE_ID, "Romero", "someone-else", 0)
+        val controller = openTree()
+        val before = api.calls.size
+
+        controller.startMerge("mum", "dad")
+        runCurrent()
+
+        assertNull(controller.merge)
+        assertEquals(before, api.calls.size)
+    }
+
+    @Test
+    fun aMergeAnsweredAfterTheSessionEndedChangesNothing() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        api.mergeGate = gate
+        val controller = openMerge()
+        controller.decide()
+        controller.submitMerge()
+        runCurrent()
+        assertEquals(true, controller.merge?.submitting)
+
+        session.state.value = AuthState.SignedOut(SignedOutReason.SESSION_EXPIRED)
+        runCurrent()
+        gate.complete(Unit)
+        runCurrent()
+
+        assertNull(controller.state.value.treeScreen)
+        assertEquals(Route.Tree(TREE_ID), controller.state.value.route, "no navigation to the survivor after the session ended")
+    }
+
+    @Test
+    fun leavingTheTreeDropsTheMerge() = runTest {
+        val controller = openMerge()
+        controller.decide()
+
+        controller.navigate(Route.Trees)
+        controller.navigate(Route.Tree(TREE_ID))
+        runCurrent()
+
+        assertNull(controller.merge)
     }
 }
 

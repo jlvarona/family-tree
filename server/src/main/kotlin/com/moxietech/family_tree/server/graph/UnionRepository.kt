@@ -13,8 +13,12 @@ import com.moxietech.family_tree.server.db.UnionTable
 import kotlinx.datetime.toJavaLocalDate
 import kotlinx.datetime.toKotlinLocalDate
 import org.jetbrains.exposed.v1.core.ResultRow
+import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.inList
+import org.jetbrains.exposed.v1.core.or
+import org.jetbrains.exposed.v1.core.vendors.ForUpdateOption
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
@@ -151,6 +155,64 @@ object UnionRepository {
                 (UnionChildTable.treeId eq treeId) and (UnionChildTable.version eq expectedVersion)
         }) {
             it[UnionChildTable.relation] = relation.name
+            it[UnionChildTable.version] = next
+        } > 0
+    }
+
+    /**
+     * FT-007: the unions in [treeId] with any of [personIds] as a partner, ordered by
+     * ID and locked `FOR UPDATE`, so concurrent merges and updates lock them in the
+     * same order.
+     */
+    fun lockByPartners(treeId: Uuid, personIds: List<Uuid>): List<Union> = transaction {
+        UnionTable.selectAll()
+            .where {
+                (UnionTable.treeId eq treeId) and
+                    ((UnionTable.partner1Id inList personIds) or (UnionTable.partner2Id inList personIds))
+            }
+            .orderBy(UnionTable.id to SortOrder.ASC)
+            .forUpdate(ForUpdateOption.ForUpdate)
+            .map { it.toUnion() }
+    }
+
+    /** FT-007: the child links in [treeId] of any of [childIds], ordered by key and locked `FOR UPDATE`. */
+    fun lockChildLinksOf(treeId: Uuid, childIds: List<Uuid>): List<UnionChild> = transaction {
+        UnionChildTable.selectAll()
+            .where { (UnionChildTable.treeId eq treeId) and (UnionChildTable.childId inList childIds) }
+            .orderBy(UnionChildTable.unionId to SortOrder.ASC, UnionChildTable.childId to SortOrder.ASC)
+            .forUpdate(ForUpdateOption.ForUpdate)
+            .map { it.toUnionChild() }
+    }
+
+    /**
+     * FT-007: moves [union]'s partner position(s) held by [from] to [to], only while its
+     * version is still the one read, incrementing it in the same statement. Type, dates
+     * and child links are unchanged. Null when no row matched.
+     */
+    fun replacePartner(treeId: Uuid, union: Union, from: Uuid, to: Uuid): Union? = transaction {
+        val id = Uuid.parse(union.id.value)
+        val updated = UnionTable.update({
+            (UnionTable.id eq id) and (UnionTable.treeId eq treeId) and (UnionTable.version eq union.version)
+        }) {
+            if (Uuid.parse(union.partner1Id.value) == from) it[UnionTable.partner1Id] = to
+            if (union.partner2Id?.let { partner -> Uuid.parse(partner.value) } == from) it[UnionTable.partner2Id] = to
+            it[UnionTable.version] = union.version + 1
+        }
+        if (updated == 0) null else findById(treeId, id) ?: error("Union $id was just updated but cannot be read back")
+    }
+
+    /**
+     * FT-007: moves the child link ([unionId], [fromChildId]) to [toChildId], keeping its
+     * relation, only while its version is still [expectedVersion]; the link gets a fresh
+     * sequence version (V5) in the same statement. False when no row matched.
+     */
+    fun retargetChild(treeId: Uuid, unionId: Uuid, fromChildId: Uuid, toChildId: Uuid, expectedVersion: Long): Boolean = transaction {
+        val next = nextChildVersion()
+        UnionChildTable.update({
+            (UnionChildTable.unionId eq unionId) and (UnionChildTable.childId eq fromChildId) and
+                (UnionChildTable.treeId eq treeId) and (UnionChildTable.version eq expectedVersion)
+        }) {
+            it[UnionChildTable.childId] = toChildId
             it[UnionChildTable.version] = next
         } > 0
     }

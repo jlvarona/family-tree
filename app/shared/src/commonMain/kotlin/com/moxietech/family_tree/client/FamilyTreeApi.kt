@@ -7,6 +7,8 @@ import com.moxietech.family_tree.api.CreatePersonResponse
 import com.moxietech.family_tree.api.CreateTreeRequest
 import com.moxietech.family_tree.api.CreateUnionRequest
 import com.moxietech.family_tree.api.EventDto
+import com.moxietech.family_tree.api.MergePeopleRequest
+import com.moxietech.family_tree.api.MergePeopleResponse
 import com.moxietech.family_tree.api.PersonDto
 import com.moxietech.family_tree.api.TreeDto
 import com.moxietech.family_tree.api.TreeGraphDto
@@ -85,6 +87,13 @@ interface FamilyTreeApi {
     suspend fun createUnion(treeId: String, request: CreateUnionRequest): UnionDto
 
     suspend fun addChild(treeId: String, unionId: String, request: AddUnionChildRequest): UnionDto
+
+    /**
+     * Merges two records of one person (FT-007, owner only). A `409` means either
+     * person changed since the versions in [request] were read, or the merge would
+     * break the graph; the caller reloads both and asks again.
+     */
+    suspend fun mergePeople(treeId: String, request: MergePeopleRequest): MergePeopleResponse
 }
 
 /**
@@ -134,6 +143,13 @@ class HttpFamilyTreeApi(
         AddUnionChildRequest.serializer(),
         request,
         UnionDto.serializer(),
+    )
+
+    override suspend fun mergePeople(treeId: String, request: MergePeopleRequest): MergePeopleResponse = post(
+        "/trees/${seg(treeId)}/people/merge",
+        MergePeopleRequest.serializer(),
+        request,
+        MergePeopleResponse.serializer(),
     )
 
     private suspend fun <T> get(path: String, result: DeserializationStrategy<T>): T =

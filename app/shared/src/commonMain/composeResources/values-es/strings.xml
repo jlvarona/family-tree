@@ -136,4 +136,34 @@
     <string name="notice_duplicates">Persona añadida. Puede que ya esté en el árbol:</string>
     <string name="notice_child_linked">Hijo/a vinculado.</string>
     <string name="dismiss">Cerrar</string>
+
+    <!-- Fusionar fichas duplicadas (FT-007) -->
+    <string name="merge_people">Fusionar duplicados</string>
+    <string name="merge_review">Revisar fusión</string>
+    <string name="merge_with">Fusionar con otra ficha</string>
+    <string name="merge_title">Fusionar dos fichas de la misma persona</string>
+    <string name="merge_intro">Elige las dos fichas, la que se conserva y qué valor mantener donde difieran. Los valores iguales en ambas se conservan. Las relaciones, los eventos, las citas y la cuenta vinculada pasan a la ficha conservada.</string>
+    <string name="merge_first_record">Primera ficha</string>
+    <string name="merge_second_record">Segunda ficha</string>
+    <string name="merge_keep_record">Ficha que se conserva</string>
+    <string name="merge_values">Valores que se conservan</string>
+    <string name="merge_same_value">Igual en ambas: %1$s</string>
+    <string name="merge_record_label">Ficha %1$d: %2$s</string>
+    <string name="merge_keep_value">Conservar el valor de la ficha %1$d</string>
+    <string name="merge_differs_invisibly">Estos valores solo difieren en espacios o caracteres ocultos.</string>
+    <string name="merge_blank">(vacío)</string>
+    <string name="merge_living_status">Estado vital</string>
+    <string name="merge_result_name">La ficha conservada se llamará %1$s.</string>
+    <string name="merge_blocked">Estas fichas no se pueden fusionar tal como está el árbol:</string>
+    <string name="merge_conflict_partners">Son pareja en una unión, y una persona no puede ser ambos miembros de la pareja.</string>
+    <string name="merge_conflict_parent">Una es progenitora de la otra, y nadie puede ser su propio progenitor.</string>
+    <string name="merge_conflict_ancestor">Una es antepasada de la otra, y nadie puede ser su propio antepasado.</string>
+    <string name="merge_conflict_relation">Son hijos de los mismos progenitores con relaciones distintas. Haz que coincidan primero.</string>
+    <string name="merge_confirm">Eliminar a %1$s del árbol y conservar a %2$s.</string>
+    <string name="merge_submit">Fusionar</string>
+    <string name="merge_error_same">Elige dos fichas distintas.</string>
+    <string name="merge_error_survivor">Elige qué ficha se conserva.</string>
+    <string name="merge_error_choices">Elige un valor para cada campo que difiere.</string>
+    <string name="merge_error_confirm">Confirma qué ficha se eliminará.</string>
+    <string name="merge_error_changed">Estas fichas han cambiado o no se pueden fusionar tal como se mostraban. Se han vuelto a cargar: revisa los valores e inténtalo de nuevo.</string>
 </resources>

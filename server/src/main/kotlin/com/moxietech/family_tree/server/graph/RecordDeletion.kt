@@ -24,7 +24,8 @@ import kotlin.uuid.Uuid
  * to it ("Deleting referenced records" in concept-architecture.md). Nothing is
  * cascaded or unlinked.
  *
- * Incoming references, from V1/V2 (every one is same-tree since V2):
+ * Incoming references, from V1/V2 (every one is same-tree since V2; FT-007's
+ * `PersonMergeService` moves exactly the person references below):
  * - person ← union_record.partner1_id / partner2_id, union_child.child_id,
  *   event.person_id, membership.person_id (foreign keys); citation target PERSON
  * - union_record ← union_child.union_id, event.union_id (foreign keys); citation target UNION
@@ -122,7 +123,7 @@ internal object RecordDeletion {
 
 private const val FOREIGN_KEY_VIOLATION = "23503"
 
-private fun SQLException.isForeignKeyViolation(constraints: Set<String>): Boolean =
+internal fun SQLException.isForeignKeyViolation(constraints: Set<String>): Boolean =
     generateSequence<Throwable>(this) { it.cause }
         .filterIsInstance<PSQLException>()
         .any { it.sqlState == FOREIGN_KEY_VIOLATION && it.serverErrorMessage?.constraint in constraints }
