@@ -550,6 +550,37 @@ class AuthenticatedAccessTest {
         assertEquals(before.filterKeys { it.endsWith("/B") }, after.filterKeys { it.endsWith("/B") })
     }
 
+    // --- FT-071 date bounds round-trip through PostgreSQL ----------------------------------
+
+    @Test
+    fun `storable date limits are stored and returned exactly, and an unsupported year stays text-only`() = api {
+        val f = newFamily()
+        val t = path(f.tree)
+        data class Case(val text: String, val stored: String?, val returned: String?)
+        val cases = listOf(
+            // ISO -4713-11-24 is PostgreSQL's first date, 24 Nov 4714 BC. A legacy Calendar
+            // conversion stored 4713-01-01 BC (returned -4713-11-23); pgjdbc's LocalDate
+            // binding stores -infinity. Both must be bypassed.
+            Case("24 Nov -4713", "4714-11-24 BC", "-4713-11-24"),
+            Case("31 Dec 5874897", "5874897-12-31", "+5874897-12-31"),
+            Case("5874898", null, null),
+        )
+        for (case in cases) {
+            val event = client.write("$t/events", Actor.OWNER_B, encode(CreateEventRequest(personId = f.father, type = "BIRTH", date = case.text)))
+                .decoded<EventDto>(HttpStatusCode.Created)
+            for (column in listOf("date_earliest", "date_latest")) {
+                val stored = dataSource.query("select $column::text from event where id = ? and tree_id = ?", uuid(event.id), uuid(f.tree))
+                assertEquals(case.stored, stored, "${case.text} $column")
+            }
+            val read = client.read("$t/people/${f.father}/events", Actor.OWNER_B).decoded<List<EventDto>>().single { it.id == event.id }
+            for (date in listOf(event.date, read.date)) {
+                assertEquals(case.text, date?.displayText, case.text)
+                assertEquals(case.returned, date?.earliestIso, case.text)
+                assertEquals(case.returned, date?.latestIso, case.text)
+            }
+        }
+    }
+
     // --- FT-070 structured client errors -------------------------------------------------
 
     /**
