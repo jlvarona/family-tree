@@ -122,8 +122,7 @@ internal object RecordDeletion {
 
 private const val FOREIGN_KEY_VIOLATION = "23503"
 
-/** True only for PostgreSQL's foreign-key violation (23503) on one of [constraints]. */
-internal fun SQLException.isForeignKeyViolation(constraints: Set<String>): Boolean =
+private fun SQLException.isForeignKeyViolation(constraints: Set<String>): Boolean =
     generateSequence<Throwable>(this) { it.cause }
         .filterIsInstance<PSQLException>()
         .any { it.sqlState == FOREIGN_KEY_VIOLATION && it.serverErrorMessage?.constraint in constraints }

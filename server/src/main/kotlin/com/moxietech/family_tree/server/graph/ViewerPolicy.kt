@@ -31,8 +31,9 @@ import com.moxietech.family_tree.permissions.PersonVisibility
  *   type, but its start and end dates are removed.
  * - They are never offered as duplicate candidates, so a score can't reveal
  *   who they are.
- * - Citations on them, on a union where they are a partner, and on events of
- *   either are withheld (FT-002, [citationsOn]).
+ * - Citations on them and on a union where they are a partner are withheld
+ *   (FT-002, [citationsOn]); an event of either reads as missing on the
+ *   citation route, as it is omitted everywhere else.
  */
 class ViewerPolicy(private val tree: Tree, private val callerAccountId: AccountId) {
 
@@ -61,9 +62,14 @@ class ViewerPolicy(private val tree: Tree, private val callerAccountId: AccountI
      * are returned only when every subject is visible, and none otherwise, the
      * same way [eventsOf] treats a hidden person and [project] hides the dates of
      * a union with a hidden partner. [citations] isn't read when withheld.
+     * (The citation route reports an event with a hidden subject as missing, since
+     * every other response omits that event.)
      */
     fun citationsOn(subjects: List<Person>, citations: () -> List<CitationDto>): List<CitationDto> =
-        if (subjects.all(::canSee)) citations() else emptyList()
+        if (canSeeAll(subjects)) citations() else emptyList()
+
+    /** Whether this caller can see every one of [people]. */
+    fun canSeeAll(people: List<Person>): Boolean = people.all(::canSee)
 
     /**
      * Duplicate candidates for a new person, scored only against people this

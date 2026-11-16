@@ -14,16 +14,13 @@ import com.moxietech.family_tree.server.config.DatabaseDispatcher
 import com.moxietech.family_tree.server.errors.NotFoundException
 import com.moxietech.family_tree.server.errors.ValidationException
 import com.moxietech.family_tree.server.errors.parseUuidField
-import com.moxietech.family_tree.server.graph.RecordDeletion
 import com.moxietech.family_tree.server.graph.TreeScopedLookups
 import com.moxietech.family_tree.server.graph.ViewerPolicy
-import com.moxietech.family_tree.server.graph.isForeignKeyViolation
 import com.moxietech.family_tree.server.trees.TreeService
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import java.sql.Connection
-import java.sql.SQLException
 import kotlin.uuid.Uuid
 
 /** FT-002: 400 for a confidence outside [Confidence]'s levels. */
@@ -46,7 +43,8 @@ const val CITATION_MEDIA_MESSAGE = "mediaId is not supported yet; attach citatio
  * tree, or deleted by a delete that committed first is the same generic 404.
  *
  * Reads are target-scoped and follow [ViewerPolicy.citationsOn]: the citations of a
- * fact are returned only when the caller can see every person the fact is about.
+ * fact are returned only when the caller can see every person the fact is about,
+ * and an event whose people are hidden reads as missing (404).
  * There is deliberately no tree-wide citation listing.
  */
 object CitationService {
@@ -62,39 +60,36 @@ object CitationService {
             ?: throw ValidationException(listOf(CITATION_CONFIDENCE_MESSAGE))
         if (request.mediaId != null) throw ValidationException(listOf(CITATION_MEDIA_MESSAGE))
 
-        return try {
-            withContext(DatabaseDispatcher) {
-                // READ COMMITTED (stated, not assumed): a lock that waited for a delete must
-                // re-read the row and find it gone, not fail with a serialization error.
-                transaction(transactionIsolation = Connection.TRANSACTION_READ_COMMITTED) {
-                    if (!CitationRepository.lockSource(treeUuid, sourceUuid)) throw sourceNotFound(sourceUuid)
-                    if (!CitationRepository.lockTarget(treeUuid, target)) throw target.kind.notFound(target.id)
-                    val citation = CitationRepository.insert(
-                        treeId = treeUuid,
-                        sourceId = sourceUuid,
-                        target = target,
-                        page = request.page,
-                        confidence = confidence,
-                        note = request.note,
-                    )
-                    val dto = citation.toDto()
-                    AuditLogRepository.append(
-                        treeId = treeUuid,
-                        actorAccountId = Uuid.parse(callerAccountId.value),
-                        entityType = "Citation",
-                        entityId = citation.id.value,
-                        action = AuditAction.CREATE,
-                        beforeJson = null,
-                        afterJson = AuditJson.encodeToString(dto),
-                    )
-                    dto
+        return withContext(DatabaseDispatcher) {
+            // READ COMMITTED (stated, not assumed): a lock that waited for a delete must
+            // re-read the row and find it gone, not fail with a serialization error.
+            // Once the source lock is held, a source delete waits for this transaction,
+            // so the insert's own foreign-key check on the source can't fail.
+            transaction(transactionIsolation = Connection.TRANSACTION_READ_COMMITTED) {
+                if (!CitationRepository.lockSource(treeUuid, sourceUuid)) {
+                    throw NotFoundException("No source with id $sourceUuid")
                 }
+                if (!CitationRepository.lockTarget(treeUuid, target)) throw target.kind.notFound(target.id)
+                val citation = CitationRepository.insert(
+                    treeId = treeUuid,
+                    sourceId = sourceUuid,
+                    target = target,
+                    page = request.page,
+                    confidence = confidence,
+                    note = request.note,
+                )
+                val dto = citation.toDto()
+                AuditLogRepository.append(
+                    treeId = treeUuid,
+                    actorAccountId = Uuid.parse(callerAccountId.value),
+                    entityType = "Citation",
+                    entityId = citation.id.value,
+                    action = AuditAction.CREATE,
+                    beforeJson = null,
+                    afterJson = AuditJson.encodeToString(dto),
+                )
+                dto
             }
-        } catch (e: SQLException) {
-            // Unreachable while the source lock is held, kept so a source deleted under the
-            // insert can never surface as a 500: same 404 as a missing source, after rollback.
-            if (e.isForeignKeyViolation(RecordDeletion.SOURCE_FOREIGN_KEYS)) throw sourceNotFound(sourceUuid)
-            throw e
         }
     }
 
@@ -104,6 +99,11 @@ object CitationService {
      * one). The target, the people it is about and its citations are read in one
      * read-only REPEATABLE READ snapshot, so visibility is decided on the same data
      * the citations come from.
+     *
+     * A person or union the caller can't fully see still resolves (its placeholder or
+     * links are visible, FT-066), so its list is just empty. An event whose people
+     * the caller can't see is omitted from every other response, so here it is the
+     * same 404 as a missing event: the route can't confirm a private event exists.
      */
     internal suspend fun listCitations(
         treeId: TreeId,
@@ -117,7 +117,11 @@ object CitationService {
         val policy = ViewerPolicy(tree, callerAccountId)
         return withContext(DatabaseDispatcher) {
             transaction(transactionIsolation = Connection.TRANSACTION_REPEATABLE_READ, readOnly = true) {
-                policy.citationsOn(subjectsOf(treeUuid, target)) {
+                val subjects = subjectsOf(treeUuid, target)
+                if (target.kind == CitationTargetKind.EVENT && !policy.canSeeAll(subjects)) {
+                    throw target.kind.notFound(target.id)
+                }
+                policy.citationsOn(subjects) {
                     CitationRepository.listByTarget(treeUuid, target).map { it.toDto() }
                 }
             }
@@ -142,6 +146,4 @@ object CitationService {
 
     private fun partnersOf(treeId: Uuid, union: Union): List<Person> =
         listOfNotNull(union.partner1Id, union.partner2Id).map { TreeScopedLookups.requirePerson(treeId, Uuid.parse(it.value)) }
-
-    private fun sourceNotFound(sourceId: Uuid) = NotFoundException("No source with id $sourceId")
 }

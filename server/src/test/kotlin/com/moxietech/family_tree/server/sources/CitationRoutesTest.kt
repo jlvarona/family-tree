@@ -75,8 +75,9 @@ import kotlin.uuid.Uuid
  * Contract: `POST /api/v1/trees/{treeId}/citations` (owner only) → 201 `CitationDto`,
  * audited in the same transaction; `GET …/{people|events|unions}/{id}/citations`
  * (active members) lists one target's citations. Foreign and missing sources and
- * targets are the same 404. A non-owner member gets no citations for a hidden
- * (living) person, a union with a hidden partner, or an event of either.
+ * targets are the same 404. A non-owner member gets an empty list for a hidden
+ * (living) person or a union with a hidden partner, and the missing-event 404 for
+ * an event of either.
  *
  * Actors: OWNER owns tree A; RELATIVE is an active non-owner member of tree A
  * (living people are hidden from them); INVITEE has only an invitation;
@@ -343,7 +344,7 @@ class CitationRoutesTest {
     }
 
     @Test
-    fun `citations on a hidden person, a union with a hidden partner, or their events are withheld from other members`() = api {
+    fun `citations on a hidden person or a union with a hidden partner are withheld, and their events read as missing`() = api {
         val f = family()
         val created = f.targets().associateWith { t ->
             cite(
@@ -356,8 +357,15 @@ class CitationRoutesTest {
         }
         for ((t, citation) in created) {
             assertEquals(listOf(citation), client.get(t.path(f.tree), Actor.OWNER).decoded<List<CitationDto>>(), "owner, ${t.name}")
-            val seen = client.get(t.path(f.tree), Actor.RELATIVE).decoded<List<CitationDto>>()
-            assertEquals(if (t.visible) listOf(citation) else emptyList(), seen, "relative, ${t.name}")
+            val response = client.get(t.path(f.tree), Actor.RELATIVE)
+            when {
+                t.visible -> assertEquals(listOf(citation), response.decoded<List<CitationDto>>(), "relative, ${t.name}")
+                // A hidden person or a union with a hidden partner is visible as a placeholder
+                // or links, so its list is empty; a hidden event is omitted everywhere, so 404.
+                t.targetType == "EVENT" ->
+                    assertError(response, HttpStatusCode.NotFound, "No event with id ${t.id}", "relative, ${t.name}")
+                else -> assertEquals(emptyList(), response.decoded<List<CitationDto>>(), "relative, ${t.name}")
+            }
         }
 
         // No other route the relative can call returns a withheld citation or its details.
@@ -394,6 +402,46 @@ class CitationRoutesTest {
         for ((target, citation) in created) {
             assertEquals(listOf(citation), client.get(target.path(f.tree), Actor.RELATIVE).decoded<List<CitationDto>>(), "after, ${target.name}")
         }
+    }
+
+    /**
+     * Review fix (PR #18): the citation route must not confirm that a private event
+     * exists. For a member who can't see its people, an event of a living person and
+     * an event of a union with a living partner give exactly the response of an event
+     * ID that doesn't exist, with or without citations on them; the owner still gets 200.
+     */
+    @Test
+    fun `an event whose people are hidden reads exactly like a missing event`() = api {
+        val f = family()
+        cite(f.tree, CreateCitationRequest(f.source.id, "EVENT", f.livingEvent.id, page = "cited", confidence = 1))
+        // privateUnionEvent stays uncited, so both a cited and an uncited private event are covered.
+        val missing = UUID.randomUUID().toString()
+        val missingResponse = client.get("${path(f.tree)}/events/$missing/citations", Actor.RELATIVE)
+        val missingStatus = missingResponse.status
+        val missingBody = missingResponse.bodyAsText()
+        assertEquals(HttpStatusCode.NotFound, missingStatus, missingBody)
+
+        for ((name, event) in listOf("living person's event" to f.livingEvent, "event of a union with a living partner" to f.privateUnionEvent)) {
+            val url = "${path(f.tree)}/events/${event.id}/citations"
+            val hidden = client.get(url, Actor.RELATIVE)
+            val body = hidden.bodyAsText()
+            assertEquals(missingStatus, hidden.status, "$name: $body")
+            assertEquals(missingBody.replace(missing, event.id), body, name)
+            assertEquals(
+                json.decodeFromString<ApiErrorResponse>(missingBody).copy(message = "No event with id ${event.id}"),
+                json.decodeFromString<ApiErrorResponse>(body),
+                name,
+            )
+            assertEquals(HttpStatusCode.OK, client.get(url, Actor.OWNER).status, "owner, $name")
+        }
+
+        // The person and the union stay visible to the relative (placeholder, type and
+        // links), so their citation lists are empty rather than 404.
+        for (url in listOf("${path(f.tree)}/people/${f.living.id}/citations", "${path(f.tree)}/unions/${f.privateUnion.id}/citations")) {
+            assertEquals(emptyList(), client.get(url, Actor.RELATIVE).decoded<List<CitationDto>>(), url)
+        }
+        val union = client.get("${path(f.tree)}/unions", Actor.RELATIVE).decoded<List<UnionDto>>().single { it.id == f.privateUnion.id }
+        assertEquals(f.privateUnion.copy(startDate = null, endDate = null), union)
     }
 
     // --- Tenant isolation and access ----------------------------------------------------
