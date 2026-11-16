@@ -60,7 +60,7 @@ class FamilyTreeControllerTest {
 
     private class FakeApi : FamilyTreeApi {
         val account = AccountDto("owner", "owner@example.com", "Owner", "en")
-        val tree = TreeDto(TREE_ID, "Romero", "owner", 0)
+        var tree = TreeDto(TREE_ID, "Romero", "owner", 0)
         var graph: TreeGraphDto = graphOf(listOf("mum", "dad", "kid"), unionOf("u1", "mum", "dad"))
 
         /** Each graph call takes the next gate, if any, and waits for it. */
@@ -84,7 +84,8 @@ class FamilyTreeControllerTest {
 
         override suspend fun tree(treeId: String): TreeDto {
             calls += "tree:$treeId"
-            if (!treeId.equals(TREE_ID, ignoreCase = true)) throw ApiException(ApiFailure.NOT_FOUND)
+            // Like the server: any accepted spelling of the ID, answered with the canonical one.
+            if (!Route.sameId(treeId, tree.id)) throw ApiException(ApiFailure.NOT_FOUND)
             return tree
         }
 
@@ -543,16 +544,64 @@ class FamilyTreeControllerTest {
     }
 
     @Test
-    fun routeIdsInAnotherCaseStillMatchTheCanonicalRecord() = runTest {
-        // The server accepts any spelling of a UUID in the path and answers with the canonical one.
-        bridge.url = "http://localhost:3000/#/trees/${TREE_ID.uppercase()}/people/KID"
-        api.personOverride = personOf("kid")
+    fun compactUuidLinkOpensTheProfileAndCentresOnTheCanonicalId() = runTest {
+        val treeUuid = "0f8fad5b-d9cb-469f-a165-70867728950e"
+        val personUuid = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+        api.tree = TreeDto(treeUuid, "Romero", "owner", 0)
+        api.personOverride = personOf(personUuid).copy(treeId = treeUuid)
+        api.graph = api.graph.copy(treeId = treeUuid)
+        // Hex-only and upper case: a spelling the API accepts.
+        bridge.url = "http://localhost:3000/#/trees/${treeUuid.replace("-", "")}/people/${personUuid.replace("-", "").uppercase()}"
         val controller = controller()
         signIn()
 
         val page = controller.state.value.personScreen!!
-        assertEquals("kid", page.person.valueOrNull?.id)
+        assertEquals(Route.Person(treeUuid, personUuid), controller.state.value.route)
+        assertEquals(personUuid, page.person.valueOrNull?.id)
         assertIs<Loadable.Ready<*>>(page.graph)
+
+        controller.showInTree()
+        runCurrent()
+        assertEquals(Route.Tree(treeUuid, TreeViewKind.FULL, personUuid), controller.state.value.route)
+        assertEquals(personUuid, controller.state.value.treeScreen?.selectedPersonId)
+    }
+
+    @Test
+    fun opaqueIdsMustMatchExactly() = runTest {
+        api.personOverride = personOf("KID")
+        val controller = openPersonPage("kid")
+
+        assertEquals(Loadable.Failed(ApiFailure.NOT_FOUND), controller.state.value.personScreen?.person)
+    }
+
+    @Test
+    fun retryAfterLeavingAProfileDoesNotReloadOrUpdateIt() = runTest {
+        api.eventFailures += ApiFailure.UNAVAILABLE
+        val controller = openPersonPage()
+        assertEquals(Loadable.Failed(ApiFailure.UNAVAILABLE), controller.state.value.personScreen?.events)
+
+        controller.backToTree()
+        runCurrent()
+        controller.retry()
+        runCurrent()
+
+        assertEquals(1, api.calls.count { it == "events:kid" }, "the left profile isn't retried")
+        assertIs<Route.Tree>(controller.state.value.route)
+    }
+
+    @Test
+    fun profileResponseArrivingAfterLeavingIsDiscarded() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        api.eventGates += gate
+        val controller = openPersonPage()
+
+        controller.backToTree()
+        runCurrent()
+        gate.complete(Unit)
+        runCurrent()
+
+        assertEquals(Loadable.Loading, controller.state.value.personScreen?.events)
+        assertIs<Route.Tree>(controller.state.value.route)
     }
 
     @Test

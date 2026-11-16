@@ -103,17 +103,20 @@ object PersonProfile {
 
     fun family(graph: TreeGraphDto, person: PersonDto, viewer: Viewer): FamilyLinks {
         if (!graph.treeId.equals(person.treeId, ignoreCase = true)) return FamilyLinks(emptyList(), emptyList(), emptyList())
-        val people = graph.people.associateBy { it.id }
+        // Nested records are checked too: another tree's people or unions are never shown.
+        fun sameTree(treeId: String) = treeId.equals(person.treeId, ignoreCase = true)
+        val people = graph.people.filter { sameTree(it.treeId) }.associateBy { it.id }
+        val unions = graph.unions.filter { sameTree(it.treeId) }
         val personVisible = viewer.canSeeDetails(person)
         fun link(id: String) = people[id]?.takeIf { it.id != person.id }?.let { relativeOf(it, viewer) }
 
-        val parents = graph.unions.flatMap { union ->
+        val parents = unions.flatMap { union ->
             val relation = union.children.firstOrNull { it.childId == person.id }?.relation
                 ?: return@flatMap emptyList<RelativeLink>()
             union.partnerIds().mapNotNull { id -> link(id)?.copy(relation = relation) }
         }.distinctBy { it.personId }
 
-        val own = graph.unions.filter { person.id in it.partnerIds() }
+        val own = unions.filter { person.id in it.partnerIds() }
         val partners = own.mapNotNull { union ->
             val partner = union.partnerIds().firstOrNull { it != person.id }?.let { people[it] } ?: return@mapNotNull null
             val datesVisible = personVisible && viewer.canSeeDetails(partner)
@@ -214,12 +217,15 @@ object PersonProfile {
 
     /**
      * Birth first, death then burial last; within each group, dated events by
-     * their earliest bound (handling years before 1 and beyond 9999), then
-     * undated ones, then by ID so the order is stable.
+     * their earliest bound, or the latest bound for an open-ended date such as
+     * "bef 1900" (handling years before 1 and beyond 9999), then events with
+     * no bound at all, then by ID so the order is stable.
      */
     private val eventOrder: Comparator<EventDto> = compareBy<EventDto> { rank(it.type) }
-        .thenComparator { a, b -> compareDates(isoKey(a.date?.earliestIso), isoKey(b.date?.earliestIso)) }
+        .thenComparator { a, b -> compareDates(sortKey(a), sortKey(b)) }
         .thenBy { it.id }
+
+    private fun sortKey(event: EventDto): DateKey? = isoKey(event.date?.earliestIso) ?: isoKey(event.date?.latestIso)
 
     private fun rank(type: String): Int = when (type) {
         EventType.BIRTH.name -> 0

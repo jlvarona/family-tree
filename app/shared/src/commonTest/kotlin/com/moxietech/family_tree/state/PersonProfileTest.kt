@@ -152,6 +152,47 @@ class PersonProfileTest {
     }
 
     @Test
+    fun openEndedDatesSortByTheirAvailableBoundAndKeepTheirText() {
+        val events = listOf(
+            event("undated", "antonio", "RESIDENCE"),
+            event("text-only", "antonio", "RESIDENCE", "sometime in the war"),
+            event("after", "antonio", "RESIDENCE", "aft 1970", "1970-01-01", latestIso = null),
+            event("before", "antonio", "OCCUPATION", "bef 1950", null, latestIso = "1949-12-31"),
+            event("exact", "antonio", "RESIDENCE", "1960", "1960-01-01"),
+        )
+
+        val entries = (PersonProfile.timeline(antonio, events, owner) as Timeline.Entries).entries
+
+        assertEquals(listOf("before", "exact", "after", "text-only", "undated"), entries.map { it.eventId })
+        assertEquals("bef 1950", entries.first().date)
+    }
+
+    @Test
+    fun familyIgnoresNestedPeopleAndUnionsFromAnotherTree() {
+        // Right envelope, mixed contents: foreign records must not surface names, types or dates.
+        val graph = TreeGraphDto(
+            TREE_ID,
+            listOf(antonio, person("carmen", "Carmen"), person("intruder", "Intruso").copy(treeId = "tree-2")),
+            listOf(
+                union("u1", "antonio", "carmen", type = "MARRIED"),
+                union("u2", "antonio", "intruder", type = "DIVORCED"),
+                union("foreign", "antonio", "carmen", "kid", type = "PARTNERS").copy(
+                    treeId = "tree-2",
+                    startDate = GedcomDateDto("1999", "1999-01-01", "1999-12-31"),
+                ),
+                union("u3", "gp", null, "antonio").copy(treeId = "tree-2"),
+            ),
+        )
+
+        val family = PersonProfile.family(graph, antonio, owner)
+
+        assertEquals(listOf("carmen" to "MARRIED"), family.partners.map { it.personId to it.unionType })
+        assertNull(family.partners.single().unionStart)
+        assertTrue(family.parents.isEmpty())
+        assertTrue(family.children.isEmpty())
+    }
+
+    @Test
     fun visiblePersonWithNoEventsHasAnEmptyTimeline() {
         assertEquals(Timeline.Entries(emptyList()), PersonProfile.timeline(antonio, emptyList(), member))
     }

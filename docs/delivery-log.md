@@ -47,8 +47,9 @@ response for a previous person is dropped, and an expired session clears the pag
   override/isolate marks are removed, line breaks normalized, and blank text treated
   as empty.
 - A person, bundle or event from a different tree or ID than the route asked for is
-  treated as not found or dropped. ID comparison ignores case, since the server
-  accepts any UUID spelling in the path and returns canonical IDs. A wrong-tree URL
+  treated as not found or dropped. Valid UUIDs in the route (dashed or hex-only,
+  any case) are canonicalized with Kotlin's `Uuid` parser, matching the canonical IDs
+  the server returns; other IDs are kept and compared as typed. A wrong-tree URL
   stops at the tree's `404` and requests nothing else.
 
 **Navigation.** Family links open the relative's page and change the URL, so back
@@ -91,11 +92,14 @@ are in `composeResources/values` and `values-es`.
 - `HttpFamilyTreeApiTest` (1 more): the events route, encoded path ID, and tolerance of
   unknown fields.
 
-**Verification.** Not yet run. The implementation was written without running Gradle
-or a browser, so `:app:shared:jvmTest`, `:app:shared:jsTest`,
-`:app:shared:wasmJsTest`, the development bundles and the browser check (tree →
-person → relative → back, reload of a person page, a non-owner viewing a living
-person, a wrong-tree URL) are still to be done before merge.
+**Verification.** The core and server suites passed. All 112 distinct shared tests
+passed on JVM, JS and Wasm, and both development bundles built. In Edge with
+disposable Keycloak and PostgreSQL, both browser builds opened the profile from
+the tree, followed a relative and returned, reopened a compact UUID link, and
+reloaded the profile. They displayed and retried a timeline request failure,
+ordered an open-ended date by its known bound, rejected a person from a different
+tree, and showed the Spanish private placeholder with visible union type and
+hidden union dates and personal details.
 
 ## 2026-11-15 — FT-005 built the authenticated web workflow and tree views
 

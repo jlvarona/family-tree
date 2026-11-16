@@ -84,7 +84,8 @@ class FamilyTreeController(
                 loadBranch(screen.instance, force = true)
             }
         }
-        current.personScreen?.let { page ->
+        // Only the profile on screen is retried; one left behind (e.g. after "Back to tree") isn't.
+        current.personScreen?.takeIf { isOnRoute(current.route, it) }?.let { page ->
             if (page.person is Loadable.Failed || page.tree is Loadable.Failed) {
                 loadPersonScreen(page.instance)
             } else {
@@ -391,14 +392,14 @@ class FamilyTreeController(
     }
 
     private fun currentPersonScreen(instance: Long): PersonScreen? =
-        _state.value.personScreen?.takeIf { it.instance == instance }
+        _state.value.personScreen?.takeIf { it.instance == instance && isOnRoute(_state.value.route, it) }
 
     /**
-     * The server answers with canonical (lower-case) UUIDs and accepts any
-     * spelling in the path, so IDs are compared without case.
+     * The server accepts dashed and hex-only UUIDs in any case and answers with
+     * the canonical form, so UUIDs are compared by identity ([Route.sameId]).
      */
     private fun requireRoute(returned: String, requested: String) {
-        if (!returned.equals(requested, ignoreCase = true)) throw ApiException(ApiFailure.NOT_FOUND)
+        if (!Route.sameId(returned, requested)) throw ApiException(ApiFailure.NOT_FOUND)
     }
 
     /** Runs a form action; an [ApiException] becomes the form's localized error. */
@@ -436,10 +437,14 @@ class FamilyTreeController(
         if (isCurrent(owner)) updateTreeScreen(instance, change)
     }
 
+    /** Changes the person page only if it is still [instance] and still the current route. */
     private fun updatePersonScreen(instance: Long, change: (PersonScreen) -> PersonScreen) = _state.update { state ->
         val page = state.personScreen
-        if (page == null || page.instance != instance) state else state.copy(personScreen = change(page))
+        if (page == null || page.instance != instance || !isOnRoute(state.route, page)) state else state.copy(personScreen = change(page))
     }
+
+    private fun isOnRoute(route: Route, page: PersonScreen): Boolean =
+        route is Route.Person && route.treeId == page.treeId && route.personId == page.personId
 
     /** Launches [block] in the current session's scope, passing that scope as its owner token. */
     private fun inSession(block: suspend (CoroutineScope) -> Unit) {
