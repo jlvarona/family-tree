@@ -9,12 +9,48 @@ up to date in place, not logged chronologically.
 
 ---
 
+## 2026-11-16 — FT-001 review fix: child-link versions are never reused
+
+**Finding (PR #17, reproduced with disposable Keycloak and PostgreSQL).** A child
+link is keyed by union and child. Deleting a link and creating the same key again
+gave both incarnations version 1, so a delayed `DELETE` (or `PUT`) carrying the first
+link's version changed the replacement and returned success.
+
+**Fix.** `V5__union_child_version_sequence.sql` adds `union_child_version_seq`, set to
+start above the highest existing `union_child.version`, and makes it the column
+default. `UnionRepository` takes a fresh value from the sequence for every link insert
+and for every successful relation update (the conditional `UPDATE … WHERE version = ?`
+is unchanged). Existing rows keep their versions; V4 is untouched. Child-link versions
+are now opaque change tokens: they increase, can skip numbers (a rolled-back update
+uses up a value), and are never issued twice. Clients send back what they read. JSON
+without a version still decodes as 1 (`VersionedDtoTest` unchanged). Person, union, event, place and
+source keep their per-record increment, since their IDs are never reused.
+
+**Regression coverage.**
+- `VersionedDeleteTest`: delete a link, recreate the same key with `STEP`; the new
+  version is higher; a `DELETE` and a `PUT` carrying the old version are stale `409`s
+  with every row and audit entry unchanged and the replacement still `STEP` at its own
+  version, which then deletes. The concurrent-delete and audit-rollback cases now send
+  the link's actual version.
+- `VersionColumnsMigrationTest`: a V4 link at version 7 keeps it; new links get 8, and
+  a deleted and recreated link gets 9.
+- `VersionedUpdateTest` reads child-link versions instead of assuming `1` or `+1`
+  (the other records still assert `+1`); the "future version" probe is now far above
+  any issued value.
+
+**Verification.** The final JVM suites passed with 49 core, 105 server and 112 shared
+tests. The opt-in live Keycloak server test was skipped. A separate real Keycloak and
+PostgreSQL run verified that recreated child links reject the previous version,
+successful deletes write one audit entry, and both concurrent foreign-key references
+and citation writers following the target lock contract lead to `409`. A concurrent
+event create that lost its place to an earlier delete returned `404`.
+
 ## 2026-11-16 — FT-001 completed with versioned deletes
 
 The user decided the delete policy ("Deleting referenced records" in
 `concept-architecture.md`): an unreferenced record is deleted, a referenced one is a
-`409`. This completes FT-001 on draft PR #17 (status `Done` in this draft). Reads and
-updates are unchanged; no migration was needed.
+`409`. This completes the six delete routes on PR #17. V5 above protects versions
+when a child link is recreated.
 
 **Contract.**
 
@@ -90,7 +126,7 @@ A database-level design (triggers or a citation foreign key per target type) was
 chosen: the polymorphic `target_type`/`target_id` can't carry one foreign key without a
 schema change and a backfill of existing citations, which FT-002 can still decide on.
 
-**Tests added (not yet run).** `server/.../graph/VersionedDeleteTest` (HTTP through the
+**Tests.** `server/.../graph/VersionedDeleteTest` (HTTP through the
 production `module` and token verifier on Testcontainers PostgreSQL 16; "nothing
 changed" is a fingerprint of every tenant row, citations and audit entries included):
 - Every route deletes an unreferenced record with `204` and an empty body, the row is
@@ -121,10 +157,8 @@ changed" is a fingerprint of every tenant row, citations and audit entries inclu
 - Malformed `version` values, malformed path IDs, missing records and an unlinked child
   are `400` or `404` with nothing written.
 
-**Verification.** None run in this session: no Gradle, Docker or Git commands were
-used. `:core:jvmTest`, `:server:test` (needs Docker) and `:app:shared:jvmTest` remain
-to be run. Exposed 1.0's `deleteWhere` signature is written from memory, as `update`
-was before the user's run confirmed it.
+**Verification.** The final regression results are recorded in the V5 review entry
+above.
 
 ## 2026-11-16 — FT-001 staged versioned updates (in progress)
 
@@ -192,7 +226,7 @@ still decodes, and existing Kotlin call sites compile unchanged. Create request 
 didn't change. The web client ignores unknown fields, so the extra field is harmless
 to it; it doesn't call the update routes yet.
 
-**Tests added (not yet run).**
+**Tests added.**
 - `server/.../graph/VersionedUpdateTest` (HTTP through the production `module` on
   Testcontainers PostgreSQL 16, as in `AuthenticatedAccessTest`):
   - Each route as owner: `200`, version + 1 in the response and the row, one `UPDATE`
@@ -1236,11 +1270,10 @@ desktop/shared build repair.
   and UnionChild, which lack one. A stale mutation returns `409` with no changes
   to the domain record or audit log.
 
-  Implemented on draft PR #17: versioned owner-only `PUT` updates and `DELETE …?version=N`
-  for all six records, V4 version columns on `place` and `union_child`, and the
-  referenced-record policy (unreferenced records are deleted, referenced ones are a
-  `409`). See the two 2026-11-16 FT-001 session entries for the contract and
-  verification status.
+  PR #17 adds versioned owner-only `PUT` updates and `DELETE …?version=N` for all six
+  records, V4 version columns and a V5 child-link version sequence. A referenced record
+  returns `409`; a successful deletion leaves a before-only audit entry. See the
+  2026-11-16 FT-001 entries for the contract and verification.
 - **FT-002 Citation routes.** `To do · P1 · #1` — use the current `citation` table
   and `:core`'s `CitationTarget` (person/event/union). Resolve both the source and
   the polymorphic target within the authorized tree, audit writes in the same
@@ -1528,7 +1561,8 @@ columns on `person` (`AGENTS.md`: *"Union model"*). Source of truth, in order:
 [`V1__init.sql`](../server/src/main/resources/db/migration/V1__init.sql),
 [`V2__tree_scoped_references.sql`](../server/src/main/resources/db/migration/V2__tree_scoped_references.sql),
 [`V3__account_oidc_identity.sql`](../server/src/main/resources/db/migration/V3__account_oidc_identity.sql),
-[`V4__place_and_union_child_versions.sql`](../server/src/main/resources/db/migration/V4__place_and_union_child_versions.sql).
+[`V4__place_and_union_child_versions.sql`](../server/src/main/resources/db/migration/V4__place_and_union_child_versions.sql),
+[`V5__union_child_version_sequence.sql`](../server/src/main/resources/db/migration/V5__union_child_version_sequence.sql).
 
 ### Entity-relationship diagram
 
@@ -1700,7 +1734,9 @@ indexes on the name columns backing the fuzzy duplicate-check.
 
 **Versions (FT-001).** `person`, `union_record`, `event` and `source` have had
 `version` since V1; V4 added it to `place` and `union_child` (`not null default 1`, so
-existing rows start at 1). Every update is a conditional `UPDATE … WHERE version = ?`
+existing rows start at 1). Since V5, `union_child.version` comes from
+`union_child_version_seq` on every insert and update, so a recreated link never reuses
+a version. Every update is a conditional `UPDATE … WHERE version = ?`
 that increments it in the same statement; a mismatch is a `409` with nothing written.
 Deletes are conditional on the version too, and a record that another row in its tree
 references (a foreign key, or a citation's polymorphic target) is not deleted (`409`);

@@ -111,8 +111,18 @@ object UnionRepository {
             it[UnionChildTable.unionId] = unionId
             it[UnionChildTable.childId] = childId
             it[UnionChildTable.relation] = relation.name
-            it[UnionChildTable.version] = 1
+            it[UnionChildTable.version] = nextChildVersion()
         }
+    }
+
+    /**
+     * A child-link version from `union_child_version_seq` (V5): never issued twice,
+     * so a deleted and recreated link can't accept the old link's version. Opaque:
+     * versions increase but can skip numbers.
+     */
+    private fun nextChildVersion(): Long = transaction {
+        exec("select nextval('union_child_version_seq')") { rs -> rs.next(); rs.getLong(1) }
+            ?: error("union_child_version_seq returned no value")
     }
 
     /** Null when the link doesn't exist in [treeId]; callers treat that as not found. */
@@ -124,8 +134,9 @@ object UnionRepository {
 
     /**
      * FT-001: changes the relation of one child link only while its stored version
-     * is still [expectedVersion], incrementing it in the same statement. Returns
-     * false, changing nothing, when no row matched.
+     * is still [expectedVersion], replacing it with a fresh sequence value in the
+     * same statement. Returns false, changing nothing, when no row matched (the
+     * unused sequence value is simply skipped).
      */
     fun updateChild(
         treeId: Uuid,
@@ -134,12 +145,13 @@ object UnionRepository {
         expectedVersion: Long,
         relation: ChildRelation,
     ): Boolean = transaction {
+        val next = nextChildVersion()
         UnionChildTable.update({
             (UnionChildTable.unionId eq unionId) and (UnionChildTable.childId eq childId) and
                 (UnionChildTable.treeId eq treeId) and (UnionChildTable.version eq expectedVersion)
         }) {
             it[UnionChildTable.relation] = relation.name
-            it[UnionChildTable.version] = expectedVersion + 1
+            it[UnionChildTable.version] = next
         } > 0
     }
 

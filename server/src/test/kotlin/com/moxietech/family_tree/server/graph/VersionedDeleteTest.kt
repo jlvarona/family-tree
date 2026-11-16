@@ -15,6 +15,7 @@ import com.moxietech.family_tree.api.SourceDto
 import com.moxietech.family_tree.api.TreeGraphDto
 import com.moxietech.family_tree.api.UnionDto
 import com.moxietech.family_tree.api.UpdatePersonRequest
+import com.moxietech.family_tree.api.UpdateUnionChildRequest
 import com.moxietech.family_tree.api.UpdatePlaceRequest
 import com.moxietech.family_tree.domain.AccountId
 import com.moxietech.family_tree.domain.EventId
@@ -538,7 +539,7 @@ class VersionedDeleteTest {
     fun `concurrent deletes of one record delete it once and audit it once`() = api {
         val f = family()
         val t = linkTarget(f)
-        val responses = coroutineScope { List(6) { async { client.delete(t.path, Actor.OWNER, "1") } }.awaitAll() }
+        val responses = coroutineScope { List(6) { async { client.delete(t.path, Actor.OWNER, t.version.toString()) } }.awaitAll() }
         val statuses = responses.map { it.status }
         assertEquals(1, statuses.count { it == HttpStatusCode.NoContent }, "statuses: $statuses")
         // A loser that resolved the link before the winner committed is stale; one that came later finds nothing.
@@ -547,6 +548,36 @@ class VersionedDeleteTest {
         }
         assertEquals(0, rows(t))
         assertEquals(1, deleteAudits(f.tree, t).size)
+    }
+
+    /**
+     * Review regression: a child link deleted and created again under the same
+     * union/child key gets a new version (V5 sequence), so a delayed DELETE or PUT
+     * carrying the first link's version is a stale 409 that leaves the replacement,
+     * its relation and the audit log untouched.
+     */
+    @Test
+    fun `a recreated child link rejects the deleted link's version`() = api {
+        val f = family()
+        val first = linkTarget(f)
+        assertEquals(HttpStatusCode.NoContent, client.delete(first.path, Actor.OWNER, first.version.toString()).status)
+        val recreated = client.post("${path(f.tree)}/unions/${f.union.id}/children", Actor.OWNER, encode(AddUnionChildRequest(f.child.id, "STEP")))
+            .decoded<UnionDto>(HttpStatusCode.Created).children.single { it.childId == f.child.id }
+        assertTrue(recreated.version > first.version, "replacement ${recreated.version} vs deleted ${first.version}")
+
+        val before = fingerprint(f.tree)
+        assertError(client.delete(first.path, Actor.OWNER, first.version.toString()), HttpStatusCode.Conflict, first.stale, "stale delete")
+        assertError(
+            client.send(HttpMethod.Put, first.path, Actor.OWNER, encode(UpdateUnionChildRequest("FOSTER", first.version))),
+            HttpStatusCode.Conflict, first.stale, "stale update",
+        )
+        assertEquals(before, fingerprint(f.tree))
+        val stored = dataSource.query(
+            "select relation || '|' || version from union_child where union_id = ? and child_id = ?", uuid(f.union.id), uuid(f.child.id),
+        )
+        assertEquals("STEP|${recreated.version}", stored)
+        // The replacement's own version still works.
+        assertEquals(HttpStatusCode.NoContent, client.delete(first.path, Actor.OWNER, recreated.version.toString()).status)
     }
 
     // --- Races with reference writers ----------------------------------------------------
@@ -674,7 +705,9 @@ class VersionedDeleteTest {
         fun call(name: String, block: suspend () -> Unit) = name to block
         // Unreferenced records of every kind, each deletable on its own.
         val calls = listOf(
-            call("child link") { UnionService.deleteChild(tree, UnionId(f.union.id), PersonId(f.child.id), owner, v) },
+            call("child link") {
+                UnionService.deleteChild(tree, UnionId(f.union.id), PersonId(f.child.id), owner, listOf(linkTarget(f).version.toString()))
+            },
             call("event") { EventService.deleteEvent(tree, EventId(f.event.id), owner, v) },
             call("place") { PlaceService.deletePlace(tree, PlaceId(spare.id), owner, v) },
             call("source") { SourceService.deleteSource(tree, SourceId(f.source.id), owner, v) },

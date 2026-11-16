@@ -23,8 +23,10 @@ data class UnionChildDto(
     val childId: String,
     val relation: String,
     /**
-     * The child link's own version (FT-001), sent back in [UpdateUnionChildRequest].
-     * Always encoded; the default only lets JSON from before FT-001 still decode.
+     * The child link's own version (FT-001), sent back in [UpdateUnionChildRequest] and
+     * on delete. An opaque change token: it increases but can skip numbers, and a
+     * deleted and recreated link never gets an earlier link's value (V5). Always
+     * encoded; the default only lets JSON from before FT-001 still decode.
      */
     @EncodeDefault val version: Long = 1,
 )

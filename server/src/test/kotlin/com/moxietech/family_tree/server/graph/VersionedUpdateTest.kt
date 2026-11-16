@@ -85,6 +85,7 @@ import kotlin.test.assertFails
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 import kotlin.uuid.Uuid
 
 /**
@@ -363,6 +364,18 @@ class VersionedUpdateTest {
         }
     }
 
+    /**
+     * A successful update's new version: one more for records with a per-record counter;
+     * for child links (V5) a fresh sequence value, opaque but always larger.
+     */
+    private fun assertAdvanced(u: Update, newVersion: Long) {
+        if (u.entityType == "UnionChild") {
+            assertTrue(newVersion > u.version, "${u.name}: $newVersion should be above ${u.version}")
+        } else {
+            assertEquals(u.version + 1, newVersion, u.name)
+        }
+    }
+
     private fun storedVersion(u: Update): Long =
         dataSource.query("select version from ${u.table} where ${u.keyWhere}", *u.keyArgs.toTypedArray())!!.toLong()
 
@@ -383,8 +396,8 @@ class VersionedUpdateTest {
             val u = updates(f)[index]
             val response = client.put(u.path, Actor.OWNER, u.body(u.version))
             val body = json.parseToJsonElement(response.bodyWithStatus(HttpStatusCode.OK))
-            assertEquals(u.version + 1, u.versionIn(body), u.name)
-            assertEquals(u.version + 1, storedVersion(u), u.name)
+            assertAdvanced(u, u.versionIn(body))
+            assertEquals(u.versionIn(body), storedVersion(u), u.name)
             assertNotEquals(u.before, body, u.name)
 
             val (before, after) = updateAudits(f.tree, u).single()
@@ -405,7 +418,10 @@ class VersionedUpdateTest {
         val union = graph.unions.single { it.id == f.union.id }
         assertEquals("DIVORCED", union.type)
         assertEquals(2, union.version)
-        assertEquals(UnionChildDto(f.child.id, "ADOPTED", version = 2), union.children.single { it.childId == f.child.id })
+        val link = union.children.single { it.childId == f.child.id }
+        assertEquals("ADOPTED", link.relation)
+        assertEquals(storedVersion(updates(f).single { it.name == "child link" }), link.version)
+        assertTrue(link.version > f.childLink.version)
         val events = client.request("$t/people/${f.mother.id}/events") { bearerAuth(token(Actor.OWNER)) }.decoded<List<EventDto>>()
         val event = events.single { it.id == f.event.id }
         assertEquals(2, event.version)
@@ -421,13 +437,13 @@ class VersionedUpdateTest {
         val f = family()
         val t = path(f.tree)
         assertEquals(1, f.place.version)
-        assertEquals(1, f.childLink.version)
+        assertTrue(f.childLink.version >= 1)
         // The raw wire JSON carries the versions even at their default value.
         fun JsonElement.withId(id: String) = jsonArray.single { it.jsonObject.getValue("id").jsonPrimitive.content == id }
         val rawPlaces = json.parseToJsonElement(client.request("$t/places") { bearerAuth(token(Actor.OWNER)) }.bodyAsText())
         assertEquals(1, rawPlaces.withId(f.place.id).version())
         val rawUnions = json.parseToJsonElement(client.request("$t/unions") { bearerAuth(token(Actor.OWNER)) }.bodyAsText())
-        assertEquals(1, childIn(rawUnions.withId(f.union.id), f.child.id).version())
+        assertEquals(f.childLink.version, childIn(rawUnions.withId(f.union.id), f.child.id).version())
         // Create bodies shaped like an existing client's (no version) are still accepted.
         val huelva = client.post("$t/places", Actor.OWNER, """{"name":"Huelva"}""").decoded<PlaceDto>(HttpStatusCode.Created)
         assertEquals(1, huelva.version)
@@ -435,7 +451,10 @@ class VersionedUpdateTest {
             .decoded<CreatePersonResponse>(HttpStatusCode.Created).person
         val link = client.post("$t/unions/${f.union.id}/children", Actor.OWNER, """{"childId":"${sibling.id}","relation":"STEP"}""")
             .decoded<UnionDto>(HttpStatusCode.Created)
-        assertEquals(listOf(1L, 1L), link.children.map { it.version })
+        // Child-link versions are sequence values (V5): read them, don't assume 1.
+        val versions = link.children.map { it.version }
+        assertEquals(2, versions.toSet().size, "each link has its own version: $versions")
+        assertTrue(link.children.single { it.childId == sibling.id }.version > f.childLink.version)
     }
 
     // --- Optimistic concurrency ---------------------------------------------------------
@@ -448,7 +467,7 @@ class VersionedUpdateTest {
         val before = fingerprint(f.tree)
         for (u in all) {
             assertError(client.put(u.path, Actor.OWNER, u.body(u.version)), HttpStatusCode.Conflict, u.conflict, "${u.name} stale")
-            assertError(client.put(u.path, Actor.OWNER, u.body(u.version + 5)), HttpStatusCode.Conflict, u.conflict, "${u.name} future")
+            assertError(client.put(u.path, Actor.OWNER, u.body(u.version + 1_000_000)), HttpStatusCode.Conflict, u.conflict, "${u.name} future")
         }
         assertEquals(before, fingerprint(f.tree))
     }
@@ -483,7 +502,7 @@ class VersionedUpdateTest {
             val statuses = responses.map { it.status }
             assertEquals(listOf(HttpStatusCode.OK, HttpStatusCode.Conflict), statuses.sortedBy { it.value }, u.name)
             assertError(responses.single { it.status == HttpStatusCode.Conflict }, HttpStatusCode.Conflict, u.conflict, u.name)
-            assertEquals(u.version + 1, storedVersion(u), u.name)
+            assertAdvanced(u, storedVersion(u))
             assertEquals(1, updateAudits(f.tree, u).size, u.name)
         }
     }
@@ -498,7 +517,7 @@ class VersionedUpdateTest {
             for (response in responses.filter { it.status != HttpStatusCode.OK }) {
                 assertError(response, HttpStatusCode.Conflict, u.conflict, u.name)
             }
-            assertEquals(u.version + 1, storedVersion(u), u.name)
+            assertAdvanced(u, storedVersion(u))
             assertEquals(1, updateAudits(f.tree, u).size, u.name)
         }
     }
@@ -543,29 +562,32 @@ class VersionedUpdateTest {
         val t = path(f.tree)
         val sibling = client.post("$t/people", Actor.OWNER, encode(CreatePersonRequest(givenNames = "Pablo", sex = "MALE", isLiving = false)))
             .decoded<CreatePersonResponse>(HttpStatusCode.Created).person
-        client.post("$t/unions/${f.union.id}/children", Actor.OWNER, encode(AddUnionChildRequest(sibling.id, "BIRTH")))
-            .decoded<UnionDto>(HttpStatusCode.Created)
+        val siblingVersion = client.post("$t/unions/${f.union.id}/children", Actor.OWNER, encode(AddUnionChildRequest(sibling.id, "BIRTH")))
+            .decoded<UnionDto>(HttpStatusCode.Created).children.single { it.childId == sibling.id }.version
         val first = updates(f).single { it.name == "child link" }
 
         val response = lockedRace(
             table = "union_child", keyWhere = first.keyWhere, keyArgs = first.keyArgs,
-            blocked = { client.put(first.path, Actor.OWNER, first.body(1)) },
+            blocked = { client.put(first.path, Actor.OWNER, first.body(first.version)) },
             whileBlocked = {
-                client.put("$t/unions/${f.union.id}/children/${sibling.id}", Actor.OWNER, encode(UpdateUnionChildRequest("FOSTER", 1)))
-                    .bodyWithStatus(HttpStatusCode.OK)
+                client.put(
+                    "$t/unions/${f.union.id}/children/${sibling.id}", Actor.OWNER, encode(UpdateUnionChildRequest("FOSTER", siblingVersion)),
+                ).bodyWithStatus(HttpStatusCode.OK)
             },
         )
         val body = json.parseToJsonElement(response.bodyWithStatus(HttpStatusCode.OK))
-        assertEquals(2, childIn(body, f.child.id).version())
+        val newVersion = childIn(body, f.child.id).version()
+        assertTrue(newVersion > first.version)
+        assertEquals(newVersion, storedVersion(first))
 
         val (beforeJson, afterJson) = updateAudits(f.tree, first).single()
         val before = json.parseToJsonElement(beforeJson!!)
         val after = json.parseToJsonElement(afterJson!!)
         assertEquals(childIn(before, sibling.id), childIn(after, sibling.id), "sibling must be unchanged within child 1's entry")
         assertEquals("BIRTH", childIn(before, f.child.id).jsonObject.getValue("relation").jsonPrimitive.content)
-        assertEquals(1, childIn(before, f.child.id).version())
+        assertEquals(first.version, childIn(before, f.child.id).version())
         assertEquals("ADOPTED", childIn(after, f.child.id).jsonObject.getValue("relation").jsonPrimitive.content)
-        assertEquals(2, childIn(after, f.child.id).version())
+        assertEquals(newVersion, childIn(after, f.child.id).version())
         assertEquals(body, after)
     }
 
