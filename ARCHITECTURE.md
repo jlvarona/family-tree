@@ -76,6 +76,10 @@ Feature packages under `com.moxietech.family_tree.server.<feature>`, each with `
 - Compose Multiplatform everywhere; web via Wasm (JS fallback target exists).
 - **Web is desktop-first**: full-width tree canvas, side panel for the selected person, mini-map, keyboard navigation. Mobile layouts are separate, not stretched.
 - Tree layout engine in `:app:shared` commonMain: computes positions for any branch view; drawn on a Canvas with pan/zoom and lazy loading by generation.
+- **Web client today (FT-005).** `app/shared` commonMain holds the session, the API client, routing, state (`FamilyTreeController`), view slicing, layout and UI. `webMain` (js + wasmJs) holds only the `window` bridge, the Ktor JS engine and `config.json` loading; `app/webApp` mounts `FamilyTreeWebApp()`.
+  - Sign-in is Keycloak authorization code + PKCE S256 for the public `family-tree-web` client. Tokens are kept in memory; `sessionStorage` holds only the one-time request and a signed-in flag, so a reload signs in again silently with `prompt=none`.
+  - The browser reaches the API on its own origin at `/api`: a dev-server proxy (3000 → 8080) locally, and path routing in production. The server has no CORS.
+  - Ancestor and descendant views take their person sets from the server's CTE routes and slice the whole-tree bundle, so they keep the server's redaction. Mini-map, keyboard navigation and lazy loading are not built yet.
 - Offline cache on mobile: SQLDelight.
 - Localisation: Spanish and English from day one.
 

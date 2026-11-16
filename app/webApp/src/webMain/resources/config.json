@@ -1,0 +1,5 @@
+{
+  "issuer": "http://localhost:8081/realms/family-tree",
+  "clientId": "family-tree-web",
+  "apiBaseUrl": ""
+}

@@ -16,8 +16,10 @@ been built so far and the current database design.
 
 **Status:** Phase 1 ("Foundations") is underway — accounts, trees, people, unions,
 events, sources and the ancestor/descendant graph queries exist behind a real Postgres +
-Keycloak backend. No Compose client screens yet; see the delivery log for the exact
-cut line.
+Keycloak backend. The web client (Compose for Web, JS and Wasm) signs in with Keycloak
+and covers the owner workflow and the full, ancestor and descendant tree views
+([Running the web client](#running-the-web-client)). Android, iOS and desktop still show
+the starter screen. See the delivery log for the exact cut line.
 
 ## Repository layout
 
@@ -25,7 +27,7 @@ cut line.
 | --- | --- |
 | [`core/`](./core/src) | Domain types, DTOs, validation, date parsing, name formatting — pure Kotlin, no I/O, shared by every target. Start in [`commonMain`](./core/src/commonMain/kotlin). |
 | [`server/`](./server/src/main/kotlin) | The Ktor server: routing, Postgres persistence (Exposed + Flyway), Keycloak OIDC auth. |
-| [`app/shared/`](./app/shared/src) | Compose Multiplatform UI, view models, API client — shared by Android/iOS/desktop/web. [`commonMain`](./app/shared/src/commonMain/kotlin) first; platform folders (`androidMain`, `iosMain`, `jvmMain`, `wasmJsMain`) only for `expect`/`actual` code. |
+| [`app/shared/`](./app/shared/src) | Compose Multiplatform UI, view models, API client — shared by Android/iOS/desktop/web. [`commonMain`](./app/shared/src/commonMain/kotlin) first; platform folders (`androidMain`, `iosMain`, `jvmMain`, `jsMain`, `wasmJsMain`) only for `expect`/`actual` code, and `webMain` (shared by JS and Wasm) for the browser wiring. |
 | [`app/androidApp/`](./app/androidApp), [`app/desktopApp/`](./app/desktopApp), [`app/webApp/`](./app/webApp), [`app/iosApp/`](./app/iosApp) | Thin per-platform entry points. |
 | [`docs/`](./docs) | Product concept, decisions log, delivery log, desktop mockups. |
 | [`ops/keycloak/`](./ops/keycloak) | The seeded Keycloak realm used by local dev. |
@@ -273,7 +275,8 @@ See [docs/delivery-log.md](docs/delivery-log.md) for the full route list.
 - **Desktop app:**
     - Hot reload: `./gradlew :app:desktopApp:hotRun --auto`
     - Standard run: `./gradlew :app:desktopApp:run`
-- **Web app:**
+- **Web app:** see [Running the web client](#running-the-web-client) (needs the server
+  and Keycloak running)
     - Wasm target (faster, modern browsers): `./gradlew :app:webApp:wasmJsBrowserDevelopmentRun`
     - JS target (slower, supports older browsers): `./gradlew :app:webApp:jsBrowserDevelopmentRun`
 - **Android app:** `./gradlew :app:androidApp:assembleDebug` (installs via Android Studio's run button, or `adb install` the built APK)
@@ -281,14 +284,96 @@ See [docs/delivery-log.md](docs/delivery-log.md) for the full route list.
 
 Or use the run configurations in your IDE's toolbar instead of the CLI for any of these.
 
+## Running the web client
+
+The web client (FT-005) is Compose for Web on both web targets. Shared state, API client,
+sign-in and tree layout live in `app/shared`; `app/webApp` only mounts
+`FamilyTreeWebApp()`.
+
+```bash
+# 1. Keycloak with the repo realm (or your own; see "Setting up the database")
+docker compose up -d keycloak
+
+# 2. The API on :8080
+./gradlew :server:run
+
+# 3. The web client on http://localhost:3000 (pick one target)
+./gradlew :app:webApp:wasmJsBrowserDevelopmentRun
+./gradlew :app:webApp:jsBrowserDevelopmentRun
+```
+
+Open http://localhost:3000 and sign in as `dev@example.com` / `devpassword`.
+
+**Dev server and API routing.** [`app/webApp/webpack.config.d/devServer.js`](./app/webApp/webpack.config.d/devServer.js)
+serves the app on port 3000 (Kotlin's default, 8080, is the API's) and proxies `/api`
+to `http://localhost:8080`. The browser calls the API on its own origin, so the server
+needs no CORS settings. **Production** must do the same: serve the static bundle and
+route `/api/*` to the Ktor server on one origin (for example CloudFront or ALB path
+routing). Otherwise set `apiBaseUrl` and add CORS to the server, which FT-005 doesn't do.
+
+**Configuration** is read at startup from `config.json` next to `index.html`
+([`app/webApp/src/webMain/resources/config.json`](./app/webApp/src/webMain/resources/config.json)),
+so each deployment can supply its own file without a rebuild. Nothing in it is secret.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `issuer` | `http://localhost:8081/realms/family-tree` | The realm URL as the browser reaches it. It must equal the API's `OIDC_ISSUER`, because Keycloak puts the URL the browser used into the token's `iss`. |
+| `clientId` | `family-tree-web` | The realm's public browser client. |
+| `apiBaseUrl` | `""` | Empty means the page's origin (the proxy above). |
+
+If your Keycloak runs elsewhere (for example on another port because 8081 is taken), change
+`issuer` here and `OIDC_ISSUER` for the server together.
+Use HTTPS for the app, Keycloak and API in production. Loopback URLs can use HTTP for local development.
+
+**Sign-in.** The client uses Keycloak's authorization code flow with PKCE (S256) and the
+existing `family-tree-web` client and its API audience mapper (FT-067); the realm isn't
+changed.
+- Web Crypto generates `state`, `nonce` and the verifier and computes the S256 challenge.
+  The client keeps the one-time request in `sessionStorage` and removes it when the
+  fragment callback arrives. It checks for a single matching `state` before exchanging
+  the code, removes callback parameters from the address bar and checks the returned ID
+  token's issuer, audience, expiry and nonce before starting a session.
+- Tokens are held in memory only; nothing is put in `localStorage` and nothing is logged.
+  After a reload, a `sessionStorage` flag tells the app to ask Keycloak again with
+  `prompt=none`, which signs the tab back in while the Keycloak session lasts and returns
+  to the same page.
+- The access token is refreshed before it expires and once after an API `401`. If the
+  refresh token is rejected, or Keycloak's session has ended at reload, the app drops all
+  tree data and shows "Your session has expired".
+- **Sign out** clears the tab, then opens Keycloak's end-session endpoint with
+  `id_token_hint`. The realm lists no post-logout redirect URI for `family-tree-web`,
+  so Keycloak shows its own "logged out" page; open http://localhost:3000 again from
+  there.
+- Another origin needs to be added to the client's redirect URIs and web origins by a
+  realm administrator. The repo realm allows `http://localhost:3000/*` and
+  `http://localhost:8080/*`.
+
+**Language.** The UI follows the browser's preferred language: Spanish for `es`,
+English otherwise. To check the Spanish strings, put Spanish first in the browser's
+language settings and reload.
+
+**Manual check (FT-005 acceptance).** With a fresh tree:
+1. Sign in, create a tree and add three people. Open *Link child*, choose the parents,
+   choose an existing union or create one with the appropriate type, then select the child.
+2. Reload. The tab signs back in and the full tree shows the parents joined, with the
+   child below.
+3. Select the child, choose *Center tree here*, then *Ancestors*; select a parent and
+   switch to *Descendants*. Reload in each view and confirm it comes back.
+4. Select a person and *Open page*; reload the page, then *Back to tree*.
+5. Empty and failure states: a new tree shows the empty state; stopping the server shows
+   the "can't be reached" message with *Try again*.
+6. Expiry: end the session in the Keycloak admin console (Users → dev user → Sessions →
+   Sign out) and wait for the next refresh (up to 15 minutes), or reload. The app returns
+   to sign-in with the expired message and shows no tree data.
+
 ## Running tests
 
 ```bash
 ./gradlew :core:jvmTest                        # :core domain/validation/format logic
 ./gradlew :server:test                          # server routing tests + Testcontainers Postgres integration test
-./gradlew :app:shared:jvmTest                   # desktop-target shared code
-./gradlew :app:shared:wasmJsTest                # web (Wasm) shared code
-./gradlew :app:shared:jsTest                     # web (JS) shared code
+./gradlew :app:shared:jvmTest                   # shared client logic on the JVM: sign-in, API client, routes, layout, controller
+./gradlew :app:shared:wasmJsTest                # the same common tests on Wasm
+./gradlew :app:shared:jsTest                     # the same common tests on JS
 ./gradlew :app:shared:testAndroidHostTest       # Android shared code
 ./gradlew :app:shared:iosSimulatorArm64Test     # iOS shared code (macOS only)
 
