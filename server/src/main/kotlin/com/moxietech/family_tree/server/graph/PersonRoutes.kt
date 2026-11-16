@@ -2,6 +2,7 @@ package com.moxietech.family_tree.server.graph
 
 import com.moxietech.family_tree.api.CreatePersonRequest
 import com.moxietech.family_tree.api.CreatePersonResponse
+import com.moxietech.family_tree.api.MergePeopleRequest
 import com.moxietech.family_tree.api.UpdatePersonRequest
 import com.moxietech.family_tree.domain.AccountId
 import com.moxietech.family_tree.domain.PersonId
@@ -37,6 +38,15 @@ fun Route.personRoutes() {
                 val account = call.currentAccount()
                 val treeId = call.requireTreeId()
                 call.respond(PersonService.listPeople(treeId, account.id))
+            }
+            // FT-007: merge two records of one person. Owner check before the body is
+            // decoded, like every write (FT-068).
+            post("/merge") {
+                val account = call.currentAccount()
+                val treeId = call.requireTreeId()
+                requireTreeWriter(treeId, account.id)
+                val request = call.receive<MergePeopleRequest>()
+                call.respond(PersonMergeService.merge(treeId, account.id, request))
             }
             get("/{personId}") {
                 val account = call.currentAccount()

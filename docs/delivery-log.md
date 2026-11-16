@@ -9,6 +9,147 @@ up to date in place, not logged chronologically.
 
 ---
 
+## 2026-11-16 — FT-007 duplicate-person merge (in progress, unverified)
+
+FT-007 is **In progress**. The implementation, tests and docs are uncommitted
+on `claude/FT-007-duplicate-merge`. No Gradle, Docker or browser run has happened yet, so
+nothing below is verified. The user decided the product rule ("Duplicate person merge"
+in `concept-architecture.md`). The integrity rules this session settled are in
+"Merge integrity" in the same table.
+
+**Contract.**
+
+```
+POST /api/v1/trees/{treeId}/people/merge   MergePeopleRequest → 200 MergePeopleResponse
+```
+
+`MergePeopleRequest` (`:core` `api/MergeDtos.kt`) has `survivorId`, `survivorVersion`,
+`retiredId`, `retiredVersion` and `choices`, which maps a `MergeField` name to `SURVIVOR` or
+`RETIRED`. The response is `{ survivor: PersonDto, retiredId }`. Checks, in order:
+1. The owner write check, before the body is decoded (`403` whatever the body).
+2. An undecodable body or missing `choices` is a `400`. So are malformed IDs ("survivorId|retiredId
+   must be a UUID", parsed once at the boundary), the same person in any spelling,
+   and an unknown field or side (fixed messages, no input echoed).
+3. In the transaction: both people in the URL's tree (the generic `404` for a missing or foreign
+   ID). Then both versions (`409` stale). Then the choices, which must name exactly the fields that differ
+   (`400`). Choices are read only after the versions match, because a changed person changes what they mean.
+4. Then the graph and link checks (`409`, below).
+
+**Shared rules (`:core` `merge/PersonMerge.kt`).** The fields are `GIVEN_NAMES`, `SURNAME_PATERNAL`,
+`SURNAME_MATERNAL`, `SEX`, `IS_LIVING` and `BIO`. Surnames stay in their two parts and names are
+formatted through `PersonNameFormatter`. Null and blank optional text are the same
+value. Empty against a value is a difference. `merged` keeps the chosen side's value
+exactly as stored and the survivor's value for equal fields. `relationshipConflicts` reads every union with its
+child links. It reports partners of each other, parent and child, ancestor and descendant
+(BFS upwards, so existing loops terminate), and siblings in one union with different
+relations. The server and the web client use the same functions.
+
+**Transaction (`server/.../graph/PersonMergeService.kt`).** One READ COMMITTED transaction:
+1. `GraphWriteLock.exclusive(tree)`, a `pg_advisory_xact_lock` keyed from the tree ID.
+2. Both people `FOR UPDATE` in UUID order, then the versions and choices. Different `profile_media_id` values are a `409`;
+   no route sets that column until FT-008.
+3. Every reference, `FOR UPDATE` in a fixed order. This uses the V1–V5 and FT-002 inventory, the same as `RecordDeletion`: unions where either person is
+   a partner (by ID), child links of either (by union, child), the retired person's events
+   (by ID), memberships of either (by account) and the retired person's person citations (by ID).
+4. A `409` that writes nothing: any `relationshipConflicts` result over the whole tree,
+   or both people linked to memberships (two accounts can't share one person).
+5. Moves, each keeping the record's ID:
+   - Union partner positions get `version + 1`; type, dates and links are unchanged.
+   - A child link only the retired person had is retargeted with its relation and a fresh V5
+     sequence version.
+   - A child link both had with the same relation is removed, since it duplicates the survivor's.
+   - Events get `version + 1`.
+   - The membership's `person_id` changes; status is unchanged and the table has no version.
+   - Citations change `target_id` after `CitationRepository.lockTarget` on the survivor (FT-002 lock contract).
+6. The survivor's conditional update with the merged values (`version + 1`). Then the
+   retired person's conditional delete at its reviewed version, a citation re-check after
+   the DELETE as in `RecordDeletion`, and the audit entries.
+
+A foreign-key violation on the person constraints after rollback maps to `409`. It's unreachable while
+the retired row is locked, but it means a missed reference can never become a `500`.
+
+**Audit** (same transaction): `PersonMerge` / `survivor:retired` `CREATE` holds the decision (both IDs and
+versions, the side kept for every differing field, the survivor's new version). Also:
+- `Person` `UPDATE` for the survivor and `Person` `DELETE` for the retired person.
+- `Union` `UPDATE` for each moved partner position.
+- `UnionChild` `UPDATE` or `DELETE`, under the old `union:retired` key, with union-shaped
+  snapshots from one read of the links.
+- `Event` `UPDATE` (one place read for both snapshots).
+- `Citation` `UPDATE`.
+- `Membership` `UPDATE` (`tree:account`, a new server-only snapshot shape).
+
+**Concurrent writers.** Union and child-link creates, union updates and event creates and updates take
+`GraphWriteLock` shared as their first statement:
+- A writer that started first commits, and the merge then locks and moves its new row.
+- A writer that arrives during a merge waits, then resolves the retired person afresh: the usual `404`, not a
+  foreign-key `500`.
+- No child link or partner change can connect the two people after the ancestry check reads the
+  tree, so a merge can't close a loop.
+- The writers' own order (advisory lock, then row) matches the merge's, so a union or event update can't deadlock with it.
+
+Citation writers keep their FT-002 lock instead. A writer that locked the retired person first
+commits, and its citation is moved. One that comes later waits on the merge's `FOR UPDATE`, then finds
+no row (`404`). Updates and deletes of either person wait on the row lock and then fail their
+version check (`409`).
+
+**Privacy.** The route is owner-only, and moves never change a union's type, dates or links. FT-066
+projections apply to the result unchanged: a living survivor is a placeholder for members,
+and their union keeps its type and links without dates. Citations follow `citationsOn`.
+
+**Web client.**
+- `FamilyTreeApi.mergePeople`. `Notice.PossibleDuplicates` now carries the created person and each
+  match's ID.
+- `TreeScreen.merge` (`MergeState`) holds two picks, freshly fetched records, the survivor,
+  a chosen person per differing field and the removal confirmation. Changing the survivor clears the confirmation.
+  Changing a pick clears everything.
+- The owner opens it from "Review merge" on the duplicate notice, the toolbar ("Merge
+  duplicates") or the selected person ("Merge with another record"). The UI hides these controls from non-owners
+  and the controller refuses to open a merge for them.
+- `MergePeoplePane` shows both records' values side by side, plain text after
+  `PersonProfile.cleanText`. Equal fields are shown as kept. A difference, including blank against a value, needs a chip
+  choice. The pane previews the formatted name and lists `relationshipConflicts` blockers.
+- `submitMerge` checks everything before sending. On success it drops the merge and the duplicate
+  notice, selects the survivor, replaces a retired root (the tree route too, so "back"
+  works), reloads the tree and opens the survivor's page.
+- A `409` reloads both records and the tree, clears the choices and confirmation and shows "changed".
+  Other failures keep the review. Results apply only to the same session, tree screen
+  and merge. EN and ES strings were added.
+
+**Tests added (not yet run).**
+- `core/.../merge/PersonMergeTest` (10): differences (blank against a value, living status), null
+  equals blank, exact choice coverage, merged values, refusing incomplete choices, each
+  conflict in both directions, and unrelated families and loops elsewhere.
+- `server/.../graph/PersonMergeTest`, HTTP through the production module on Testcontainers PostgreSQL 16:
+  - The full merge, with upper-case IDs: chosen values, every reference moved with its ID and version, the
+    duplicate child link collapsed, the retired person `404`, and eight audit entries with their snapshots.
+  - A moved link with a new sequence version, where the old key and version are `404`.
+  - A living survivor seen by a member.
+  - Non-owner, invitee and other owner `403` for any body.
+  - Cross-tree and missing IDs give the same `404`, and neither tree changes.
+  - Stale and future versions are `409`.
+  - Every `400` case (missing choice, blank against a value, extra field, unknown field or side, same person in two spellings,
+    malformed IDs, missing `choices`, undecodable body).
+  - Each graph conflict and the two-accounts conflict give `409` with nothing written.
+  - A rejected `PersonMerge` audit rolls everything back (`P0001`).
+  - Event writer before and during a merge, and citation writer before and after, parked with test-held locks.
+  - Two concurrent merges of one duplicate leave one winner.
+- `:app:shared` `FamilyTreeControllerTest`:
+  - The duplicate notice opens a merge.
+  - Validation happens before any request.
+  - Success sends one decision, reloads, opens the survivor and fixes the root.
+  - A `409` reloads and asks again.
+  - Other failures keep the review.
+  - The relationship blocker stops the request.
+  - Re-picking resets the decisions.
+  - Non-owners can't open a merge.
+  - A late answer after expiry is dropped.
+  - Leaving the tree drops the merge.
+- `HttpFamilyTreeApiTest`: merge path, body and `409`.
+
+**Verification.** Not run. Next: `:core:jvmTest`, `:server:test`,
+`:app:shared:jvmTest` (also JS and Wasm), then a browser check of the notice, toolbar
+and panel entry points.
+
 ## 2026-11-16 — FT-002 citation creation and target-scoped reads
 
 PR #18 adds owner-only citation creation and target-scoped reads using the existing citation table and shared DTOs.
@@ -1260,7 +1401,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 
 ### Status board
 
-**Done (27)** · **In progress (0)** · **To do (27)** · **Blocked (1)**
+**Done (27)** · **In progress (1)** · **To do (26)** · **Blocked (1)**
 
 | Order | ID | Story | Epic | Priority | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -1291,7 +1432,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 | — | FT-006 | Person page UI | E1 | P1 | Done |
 | — | FT-001 | Update & delete endpoints | E1 | P1 | Done |
 | — | FT-002 | Citation routes | E1 | P1 | Done |
-| 2 | FT-007 | Duplicate-merge workflow | E1 | P1 | To do |
+| 2 | FT-007 | Duplicate-merge workflow | E1 | P1 | In progress |
 | 3 | FT-008 | Photo upload (S3 presigned URLs) | E1 | P1 | Blocked |
 | 4 | FT-064 | Make compose host ports configurable | E7 | P2 | To do |
 | 5 | FT-010 | `Grant` + `GrantScope` tables, branch resolution | E2 | P1 | To do |
@@ -1458,9 +1599,14 @@ desktop/shared build repair.
   from the URL through the existing person, bundle and person-events routes. No
   server, schema or realm change. Citations (FT-002) and photos (FT-008) are not
   shown. See the session entry for tests and verification.
-- **FT-007 Duplicate-merge workflow.** `To do · P1 · #2` — `DuplicatePersonScorer` only
-  returns a warning score today (`CreatePersonResponse.possibleDuplicates`); there's no
-  UI or API path to actually merge two person records into one yet.
+- **FT-007 Duplicate-merge workflow.** `In progress · P1 · #2` — `DuplicatePersonScorer` only
+  returned a warning score (`CreatePersonResponse.possibleDuplicates`), with no UI or API
+  path to merge two person records into one.
+
+  Implemented, awaiting verification and review: owner-only
+  `POST /api/v1/trees/{treeId}/people/merge` (`PersonMergeService`) with the shared
+  `:core` `PersonMerge` rules, and the web merge pane opened from the duplicate notice,
+  the toolbar and the selected person. No migration. See the 2026-11-16 FT-007 entry.
 - **FT-008 Photo upload** (S3 presigned URLs + a `media` table). `Blocked · P1 · #3` —
   waiting on an AWS bucket/credentials decision; not something to guess at.
   `person.profile_media_id` and `citation.media_id` are already typed `uuid` and

@@ -395,7 +395,10 @@ subject: parallel first logins, email changes and reused emails, FT-003),
 accounts, FT-003), `TreeScopedMigrationTest` (V2 migration preflight and backfill) and
 `AuthenticatedAccessTest` (FT-072: tenant isolation, living-person privacy, membership
 and owner-only writes over HTTP, through the production module and verifier with
-test-signed access tokens for two owners, an active non-owner and an invitee).
+test-signed access tokens for two owners, an active non-owner and an invitee) and
+`PersonMergeTest` (FT-007: duplicate-person merges over HTTP, including authorization,
+cross-tree IDs, versions, graph conflicts, audit rollback and races with event and
+citation writers).
 
 `KeycloakBrowserTokenTest` is opt-in. It starts a disposable Keycloak 26 and Postgres
 on random ports (nothing already running is touched), imports

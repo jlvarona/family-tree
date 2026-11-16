@@ -56,6 +56,8 @@ object UnionService {
         return withContext(DatabaseDispatcher) {
             transaction {
                 val treeUuid = Uuid.parse(treeId.value)
+                // Waits for a person merge in this tree, so a retired partner is a 404 (FT-007).
+                GraphWriteLock.shared(treeUuid)
                 TreeScopedLookups.requirePerson(treeUuid, partner1Uuid)
                 partner2Uuid?.let { TreeScopedLookups.requirePerson(treeUuid, it) }
                 val union = UnionRepository.insert(
@@ -114,6 +116,8 @@ object UnionService {
         withContext(DatabaseDispatcher) {
             transaction {
                 val treeUuid = Uuid.parse(treeId.value)
+                // A new child link is an ancestry edge: serialized with person merges (FT-007).
+                GraphWriteLock.shared(treeUuid)
                 // Resolve the union before parsing the body's child ID: a missing union
                 // stays a 404 even when childId is malformed (PR #3).
                 val union = TreeScopedLookups.requireUnion(treeUuid, unionUuid)
@@ -167,6 +171,8 @@ object UnionService {
         return withContext(DatabaseDispatcher) {
             transaction {
                 val treeUuid = Uuid.parse(treeId.value)
+                // Taken before the union's row lock, in the same order as a merge (FT-007).
+                GraphWriteLock.shared(treeUuid)
                 val before = TreeScopedLookups.requireUnion(treeUuid, unionUuid)
                 val partner1Uuid = parseUuidField("partner1Id", request.partner1Id)
                 val partner2Uuid = parseOptionalUuidField("partner2Id", request.partner2Id)

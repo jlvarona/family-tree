@@ -12,8 +12,10 @@ import com.moxietech.family_tree.server.db.EventTable
 import kotlinx.datetime.toJavaLocalDate
 import kotlinx.datetime.toKotlinLocalDate
 import org.jetbrains.exposed.v1.core.ResultRow
+import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.vendors.ForUpdateOption
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
@@ -92,6 +94,29 @@ object EventRepository {
             it[EventTable.dateLatest] = date?.latest?.toJavaLocalDate()
             it[EventTable.placeId] = placeId
             it[EventTable.notes] = notes
+            it[EventTable.version] = expectedVersion + 1
+        }
+        if (updated == 0) null else findById(treeId, id) ?: error("Event $id was just updated but cannot be read back")
+    }
+
+    /** FT-007: the events of [personId] in [treeId], ordered by ID and locked `FOR UPDATE`. */
+    fun lockByPerson(treeId: Uuid, personId: Uuid): List<Event> = transaction {
+        EventTable.selectAll().where { (EventTable.personId eq personId) and (EventTable.treeId eq treeId) }
+            .orderBy(EventTable.id to SortOrder.ASC)
+            .forUpdate(ForUpdateOption.ForUpdate)
+            .map { it.toEvent() }
+    }
+
+    /**
+     * FT-007: moves event [id] to [personId], only while its version is still
+     * [expectedVersion], incrementing it in the same statement. Every other field is
+     * unchanged. Null when no row matched.
+     */
+    fun retargetPerson(treeId: Uuid, id: Uuid, expectedVersion: Long, personId: Uuid): Event? = transaction {
+        val updated = EventTable.update({
+            (EventTable.id eq id) and (EventTable.treeId eq treeId) and (EventTable.version eq expectedVersion)
+        }) {
+            it[EventTable.personId] = personId
             it[EventTable.version] = expectedVersion + 1
         }
         if (updated == 0) null else findById(treeId, id) ?: error("Event $id was just updated but cannot be read back")

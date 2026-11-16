@@ -61,6 +61,9 @@ import family_tree.app.shared.generated.resources.deceased
 import family_tree.app.shared.generated.resources.dismiss
 import family_tree.app.shared.generated.resources.link_child
 import family_tree.app.shared.generated.resources.living
+import family_tree.app.shared.generated.resources.merge_people
+import family_tree.app.shared.generated.resources.merge_review
+import family_tree.app.shared.generated.resources.merge_with
 import family_tree.app.shared.generated.resources.none_recorded
 import family_tree.app.shared.generated.resources.notice_child_linked
 import family_tree.app.shared.generated.resources.notice_duplicates
@@ -110,6 +113,14 @@ private fun TreeContent(
     val privateLabel = stringResource(Res.string.private_person)
     val label: (PersonDto) -> String = { viewer.displayName(it) ?: privateLabel }
 
+    // The owner's merge (FT-007) is controller state, so it survives recomposition and is
+    // dropped with the screen or the session like every other piece of tree data.
+    val merge = screen.merge
+    if (merge != null && viewer.canWrite) {
+        MergePeoplePane(merge, graph, label, controller)
+        return
+    }
+
     when (dialog) {
         TreeDialog.ADD_PERSON -> AddPersonForm(
             form = state.form,
@@ -133,7 +144,7 @@ private fun TreeContent(
         )
         null -> Column(Modifier.fillMaxSize()) {
             Toolbar(screen, graph, viewer, label, onDialog = { dialog = it }, controller = controller)
-            screen.notice?.let { NoticeBanner(it, controller::dismissNotice) }
+            screen.notice?.let { NoticeBanner(it, viewer, controller) }
             Row(Modifier.fillMaxSize()) {
                 Box(Modifier.weight(1f).fillMaxHeight().padding(start = 24.dp, end = 24.dp, bottom = 24.dp)) {
                     CanvasArea(screen, graph, peopleById, viewer, controller, onAddPerson = { dialog = TreeDialog.ADD_PERSON })
@@ -148,6 +159,7 @@ private fun TreeContent(
                     onSelect = controller::selectPerson,
                     onOpen = { controller.navigate(Route.Person(screen.treeId, it)) },
                     onCenter = controller::centerOn,
+                    onMerge = if (viewer.canWrite && graph.people.size >= 2) ({ controller.startMerge(it) }) else null,
                     modifier = Modifier.width(340.dp).fillMaxHeight(),
                 )
             }
@@ -193,6 +205,10 @@ private fun Toolbar(
                 onClick = { onDialog(TreeDialog.LINK_CHILD) },
                 enabled = graph.people.size >= 2,
             ) { Text(stringResource(Res.string.link_child)) }
+            OutlinedButton(
+                onClick = { controller.startMerge() },
+                enabled = graph.people.size >= 2,
+            ) { Text(stringResource(Res.string.merge_people)) }
         }
     }
 }
@@ -274,20 +290,31 @@ private fun CanvasArea(
 }
 
 @Composable
-private fun NoticeBanner(notice: Notice, onDismiss: () -> Unit) {
+private fun NoticeBanner(notice: Notice, viewer: Viewer, controller: FamilyTreeController) {
     val privateLabel = stringResource(Res.string.private_person)
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 12.dp)
             .background(Palette.noticeBackground, MaterialTheme.shapes.medium).padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        val text = when (notice) {
-            Notice.ChildLinked -> stringResource(Res.string.notice_child_linked)
-            is Notice.PossibleDuplicates -> stringResource(Res.string.notice_duplicates) + " " +
-                notice.names.joinToString(", ") { it ?: privateLabel }
+        when (notice) {
+            Notice.ChildLinked -> Text(stringResource(Res.string.notice_child_linked), color = Palette.accent, modifier = Modifier.weight(1f))
+            is Notice.PossibleDuplicates -> Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(stringResource(Res.string.notice_duplicates), color = Palette.accent)
+                notice.candidates.forEach { candidate ->
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(candidate.name ?: privateLabel, color = Palette.accent)
+                        // FT-007: the owner can review a merge of the new person with each match.
+                        if (viewer.canWrite) {
+                            TextButton(onClick = { controller.startMerge(notice.createdPersonId, candidate.personId) }) {
+                                Text(stringResource(Res.string.merge_review))
+                            }
+                        }
+                    }
+                }
+            }
         }
-        Text(text, color = Palette.accent, modifier = Modifier.weight(1f))
-        TextButton(onClick = onDismiss) { Text(stringResource(Res.string.dismiss)) }
+        TextButton(onClick = controller::dismissNotice) { Text(stringResource(Res.string.dismiss)) }
     }
 }
 
@@ -301,6 +328,7 @@ private fun SelectedPersonPanel(
     onSelect: (String) -> Unit,
     onOpen: (String) -> Unit,
     onCenter: (String) -> Unit,
+    onMerge: ((String) -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -311,6 +339,9 @@ private fun SelectedPersonPanel(
             Text(stringResource(Res.string.select_person_hint), color = Palette.muted)
         } else {
             PersonSummary(person, graph, peopleById, viewer, label, onSelect, onOpen, onCenter)
+            if (onMerge != null) {
+                OutlinedButton(onClick = { onMerge(person.id) }) { Text(stringResource(Res.string.merge_with)) }
+            }
         }
     }
 }

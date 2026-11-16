@@ -10,6 +10,7 @@ import com.moxietech.family_tree.client.ApiFailure
 import com.moxietech.family_tree.domain.ChildRelation
 import com.moxietech.family_tree.domain.Sex
 import com.moxietech.family_tree.domain.UnionType
+import com.moxietech.family_tree.merge.MergeField
 import com.moxietech.family_tree.navigation.Route
 import com.moxietech.family_tree.navigation.TreeViewKind
 
@@ -42,7 +43,61 @@ data class TreeScreen(
     val selectedPersonId: String? = null,
     /** The result of the owner's last action on this tree; dropped with the screen. */
     val notice: Notice? = null,
+    /** The owner's merge in progress (FT-007); dropped with the screen, the session or on success. */
+    val merge: MergeState? = null,
 )
+
+/**
+ * The owner merging two records of one person (FT-007). [id] identifies this
+ * opening of the merge, so a late response for an earlier one is dropped.
+ *
+ * The owner picks [firstId] and [secondId]; both are then fetched fresh
+ * ([records]) so the versions sent are the ones reviewed. [survivorId] is the record
+ * kept. [choices] holds, for each differing field, the ID of the person whose value
+ * is kept; fields that are the same in both need none. [retiredConfirmed] is the
+ * owner's explicit confirmation of which record is removed, and is cleared whenever
+ * the survivor changes.
+ */
+data class MergeState(
+    val id: Long,
+    val firstId: String? = null,
+    val secondId: String? = null,
+    val records: Loadable<MergeRecords>? = null,
+    val survivorId: String? = null,
+    val choices: Map<MergeField, String> = emptyMap(),
+    val retiredConfirmed: Boolean = false,
+    val submitting: Boolean = false,
+    val error: MergeError? = null,
+)
+
+/** The two records as just read from the server, in the order the owner picked them. */
+data class MergeRecords(val first: PersonDto, val second: PersonDto) {
+    fun byId(id: String?): PersonDto? = listOf(first, second).firstOrNull { it.id == id }
+
+    fun other(id: String?): PersonDto? = when (id) {
+        first.id -> second
+        second.id -> first
+        else -> null
+    }
+}
+
+enum class MergeError {
+    SAME_PERSON,
+    SURVIVOR_REQUIRED,
+    CHOICES_REQUIRED,
+    CONFIRMATION_REQUIRED,
+
+    /** The tree's relationships stop these two from becoming one (see `PersonMerge.relationshipConflicts`). */
+    RELATIONSHIPS,
+
+    /** A `409`: a record changed or can't be merged as shown; both were reloaded to review again. */
+    CHANGED,
+    FORBIDDEN,
+    NOT_FOUND,
+    INVALID,
+    UNAVAILABLE,
+    SERVER,
+}
 
 data class BranchKey(val view: TreeViewKind, val rootPersonId: String)
 
@@ -91,11 +146,17 @@ data class FormState(
 )
 
 sealed interface Notice {
-    /** The person was created; the server's duplicate check found these near-matches. */
-    data class PossibleDuplicates(val names: List<String?>) : Notice
+    /**
+     * The person was created; the server's duplicate check found these near-matches,
+     * each of which the owner can review for a merge with [createdPersonId] (FT-007).
+     */
+    data class PossibleDuplicates(val createdPersonId: String, val candidates: List<DuplicateMatch>) : Notice
 
     data object ChildLinked : Notice
 }
+
+/** One near-match from the duplicate check; [name] is null when the UI should show the private placeholder. */
+data class DuplicateMatch(val personId: String, val name: String?)
 
 /**
  * Everything the web UI renders. Every field except [auth] and [route] holds

@@ -136,4 +136,31 @@
     <string name="notice_duplicates">Person added. They may already be in the tree:</string>
     <string name="notice_child_linked">Child linked.</string>
     <string name="dismiss">Dismiss</string>
+
+    <!-- Merge duplicate records (FT-007) -->
+    <string name="merge_people">Merge duplicates</string>
+    <string name="merge_review">Review merge</string>
+    <string name="merge_with">Merge with another record</string>
+    <string name="merge_title">Merge two records of the same person</string>
+    <string name="merge_intro">Choose the two records, the one to keep, and which value to keep wherever they differ. Values that are the same in both are kept. Relationships, events, citations and a linked account move to the kept record.</string>
+    <string name="merge_first_record">First record</string>
+    <string name="merge_second_record">Second record</string>
+    <string name="merge_keep_record">Record to keep</string>
+    <string name="merge_values">Values to keep</string>
+    <string name="merge_same_value">Same in both: %1$s</string>
+    <string name="merge_blank">(blank)</string>
+    <string name="merge_living_status">Living status</string>
+    <string name="merge_result_name">The kept record will be named %1$s.</string>
+    <string name="merge_blocked">These records can’t be merged as the tree stands:</string>
+    <string name="merge_conflict_partners">They are partners in a union, and one person can’t be both partners.</string>
+    <string name="merge_conflict_parent">One is a parent of the other, and a person can’t be their own parent.</string>
+    <string name="merge_conflict_ancestor">One is an ancestor of the other, and a person can’t be their own ancestor.</string>
+    <string name="merge_conflict_relation">They are children of the same parents with different relations. Make the relations match first.</string>
+    <string name="merge_confirm">Remove %1$s from the tree and keep %2$s.</string>
+    <string name="merge_submit">Merge</string>
+    <string name="merge_error_same">Choose two different records.</string>
+    <string name="merge_error_survivor">Choose which record to keep.</string>
+    <string name="merge_error_choices">Choose a value for every field that differs.</string>
+    <string name="merge_error_confirm">Confirm which record will be removed.</string>
+    <string name="merge_error_changed">These records changed, or can’t be merged as shown. They were reloaded: review the values and try again.</string>
 </resources>

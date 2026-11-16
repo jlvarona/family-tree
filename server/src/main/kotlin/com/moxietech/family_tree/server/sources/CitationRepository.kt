@@ -20,6 +20,7 @@ import org.jetbrains.exposed.v1.core.vendors.ForUpdateOption
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
+import org.jetbrains.exposed.v1.jdbc.update
 import kotlin.uuid.Uuid
 
 internal object CitationRepository {
@@ -90,6 +91,35 @@ internal object CitationRepository {
             }
             .orderBy(CitationTable.id to SortOrder.ASC)
             .map { it.toCitation() }
+    }
+
+    /** FT-007: the citations in [treeId] whose target is person [personId], ordered by ID and locked `FOR UPDATE`. */
+    fun lockOnPerson(treeId: Uuid, personId: Uuid): List<Citation> = transaction {
+        CitationTable.selectAll()
+            .where {
+                (CitationTable.treeId eq treeId) and
+                    (CitationTable.targetType eq CitationTargetKind.PERSON.name) and
+                    (CitationTable.targetId eq personId)
+            }
+            .orderBy(CitationTable.id to SortOrder.ASC)
+            .forUpdate(ForUpdateOption.ForUpdate)
+            .map { it.toCitation() }
+    }
+
+    /**
+     * FT-007: moves citation [id] from person [from] to person [to]; source, page,
+     * confidence, note and media are unchanged. The caller must already hold [to]
+     * under the FT-002 lock contract ([lockTarget]) in this transaction. Null when the
+     * citation no longer targets [from]. Citations have no version column.
+     */
+    fun retargetPerson(treeId: Uuid, id: Uuid, from: Uuid, to: Uuid): Citation? = transaction {
+        val updated = CitationTable.update({
+            (CitationTable.id eq id) and (CitationTable.treeId eq treeId) and
+                (CitationTable.targetType eq CitationTargetKind.PERSON.name) and (CitationTable.targetId eq from)
+        }) {
+            it[CitationTable.targetId] = to
+        }
+        if (updated == 0) null else findById(treeId, id) ?: error("Citation $id was just updated but cannot be read back")
     }
 
     private fun lockKeyShare(table: Table, idColumn: Column<Uuid>, treeColumn: Column<Uuid>, treeId: Uuid, id: Uuid): Boolean =

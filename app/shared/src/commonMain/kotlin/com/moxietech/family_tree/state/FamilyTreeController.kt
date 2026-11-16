@@ -3,6 +3,9 @@ package com.moxietech.family_tree.state
 import com.moxietech.family_tree.api.AddUnionChildRequest
 import com.moxietech.family_tree.api.CreatePersonRequest
 import com.moxietech.family_tree.api.CreateUnionRequest
+import com.moxietech.family_tree.api.MergePeopleRequest
+import com.moxietech.family_tree.api.MergePeopleResponse
+import com.moxietech.family_tree.api.PersonDto
 import com.moxietech.family_tree.api.TreeGraphDto
 import com.moxietech.family_tree.api.UnionDto
 import com.moxietech.family_tree.auth.AuthSession
@@ -12,6 +15,9 @@ import com.moxietech.family_tree.auth.UrlParts
 import com.moxietech.family_tree.client.ApiException
 import com.moxietech.family_tree.client.ApiFailure
 import com.moxietech.family_tree.client.FamilyTreeApi
+import com.moxietech.family_tree.merge.MergeField
+import com.moxietech.family_tree.merge.MergeSide
+import com.moxietech.family_tree.merge.PersonMerge
 import com.moxietech.family_tree.navigation.Route
 import com.moxietech.family_tree.navigation.TreeViewKind
 import com.moxietech.family_tree.validation.Validation
@@ -83,6 +89,7 @@ class FamilyTreeController(
             } else if (screen.branch is Loadable.Failed) {
                 loadBranch(screen.instance, force = true)
             }
+            screen.merge?.takeIf { it.records is Loadable.Failed }?.let { loadMergeRecords(screen.instance, it.id) }
         }
         // Only the profile on screen is retried; one left behind (e.g. after "Back to tree") isn't.
         current.personScreen?.takeIf { isOnRoute(current.route, it) }?.let { page ->
@@ -173,7 +180,10 @@ class FamilyTreeController(
                 current.copy(
                     selectedPersonId = response.person.id,
                     notice = response.possibleDuplicates.takeIf { it.isNotEmpty() }?.let { candidates ->
-                        Notice.PossibleDuplicates(candidates.map { viewer?.displayName(it.person) })
+                        Notice.PossibleDuplicates(
+                            createdPersonId = response.person.id,
+                            candidates = candidates.map { DuplicateMatch(it.person.id, viewer?.displayName(it.person)) },
+                        )
                     },
                 )
             }
@@ -223,6 +233,173 @@ class FamilyTreeController(
             if (isCurrent(owner)) refreshTree(screen.instance)
         }
     }
+
+    // --- FT-007: merging two records of one person (owner only) ------------------------
+
+    /**
+     * Opens the merge on the tree screen, for the owner only, with one or both
+     * records already chosen (from the duplicate notice or the selected person).
+     */
+    fun startMerge(firstId: String? = null, secondId: String? = null) {
+        val screen = _state.value.treeScreen ?: return
+        if (viewerFor(screen)?.canWrite != true) return
+        val merge = MergeState(id = nextInstance++).withPeople(firstId, secondId)
+        updateTreeScreen(screen.instance) { it.copy(merge = merge) }
+        loadMergeRecords(screen.instance, merge.id)
+    }
+
+    fun chooseFirstForMerge(personId: String) = chooseMergePeople { it.withPeople(personId, it.secondId) }
+
+    fun chooseSecondForMerge(personId: String) = chooseMergePeople { it.withPeople(it.firstId, personId) }
+
+    /** The record that is kept. Changing it asks again which record is removed. */
+    fun chooseSurvivor(personId: String) = updateMerge(null, null) { merge ->
+        if (merge.records?.valueOrNull?.byId(personId) == null) merge else merge.copy(survivorId = personId, retiredConfirmed = false, error = null)
+    }
+
+    /** For a differing [field], keep the value of [personId] (one of the two records). */
+    fun chooseMergeValue(field: MergeField, personId: String) = updateMerge(null, null) { merge ->
+        if (merge.records?.valueOrNull?.byId(personId) == null) merge else merge.copy(choices = merge.choices + (field to personId), error = null)
+    }
+
+    fun confirmRetired(confirmed: Boolean) = updateMerge(null, null) { it.copy(retiredConfirmed = confirmed, error = null) }
+
+    fun cancelMerge() = updateTreeScreen(null) { if (it.merge?.submitting == true) it else it.copy(merge = null) }
+
+    /**
+     * Sends the owner's decision: both reviewed versions and, for every field that
+     * differs, the side whose value is kept. Checked here first (survivor, every
+     * difference chosen, retired record confirmed, no relationship blocker), so the
+     * request only goes out complete. A `409` reloads both records and the tree and
+     * asks the owner to review again.
+     */
+    fun submitMerge() {
+        val screen = _state.value.treeScreen ?: return
+        val merge = screen.merge ?: return
+        if (merge.submitting) return
+        val records = merge.records?.valueOrNull ?: return
+        val survivor = records.byId(merge.survivorId) ?: return mergeError(MergeError.SURVIVOR_REQUIRED)
+        val retired = records.other(survivor.id) ?: return mergeError(MergeError.SURVIVOR_REQUIRED)
+        val differing = differingFields(survivor, retired)
+        if (differing.any { merge.choices[it] != survivor.id && merge.choices[it] != retired.id }) {
+            return mergeError(MergeError.CHOICES_REQUIRED)
+        }
+        if (!merge.retiredConfirmed) return mergeError(MergeError.CONFIRMATION_REQUIRED)
+        val graph = screen.graph.valueOrNull
+        if (graph != null && PersonMerge.relationshipConflicts(survivor.id, retired.id, graph.unions).isNotEmpty()) {
+            return mergeError(MergeError.RELATIONSHIPS)
+        }
+        val request = MergePeopleRequest(
+            survivorId = survivor.id,
+            survivorVersion = survivor.version,
+            retiredId = retired.id,
+            retiredVersion = retired.version,
+            choices = differing.associate { field ->
+                field.name to (if (merge.choices[field] == survivor.id) MergeSide.SURVIVOR else MergeSide.RETIRED).name
+            },
+        )
+        updateMerge(screen.instance, merge.id) { it.copy(submitting = true, error = null) }
+        inSession { owner ->
+            try {
+                val result = api.mergePeople(screen.treeId, request)
+                if (isCurrent(owner)) onMerged(screen, merge.id, result)
+            } catch (e: ApiException) {
+                if (!isCurrent(owner)) return@inSession
+                if (e.failure == ApiFailure.CONFLICT) {
+                    // The values or relationships may have changed: review everything again.
+                    updateMerge(screen.instance, merge.id) {
+                        it.copy(submitting = false, error = MergeError.CHANGED, choices = emptyMap(), retiredConfirmed = false)
+                    }
+                    loadMergeRecords(screen.instance, merge.id)
+                    refreshTree(screen.instance)
+                } else {
+                    updateMerge(screen.instance, merge.id) { it.copy(submitting = false, error = mergeErrorFor(e.failure)) }
+                }
+            }
+        }
+    }
+
+    /**
+     * After a merge: the merge and the duplicate notice (which may name the retired
+     * record) are dropped, the survivor replaces the retired person as selection and
+     * root, the tree reloads, and the survivor's page opens. If the owner has left the
+     * tree meanwhile, only the reload happens.
+     */
+    private fun onMerged(screen: TreeScreen, mergeId: Long, result: MergePeopleResponse) {
+        val survivorId = result.survivor.id
+        val retiredId = result.retiredId
+        val current = currentScreen(screen.instance)
+        if (current?.merge?.id == mergeId) {
+            updateTreeScreen(screen.instance) {
+                it.copy(
+                    merge = null,
+                    notice = null,
+                    selectedPersonId = survivorId,
+                    rootPersonId = if (it.rootPersonId == retiredId) survivorId else it.rootPersonId,
+                )
+            }
+        }
+        refreshTree(screen.instance)
+        val route = _state.value.route
+        if (current?.merge?.id != mergeId || route !is Route.Tree || route.treeId != screen.treeId) return
+        // Replace a root that no longer exists first, so "back" from the profile lands on a valid view.
+        if (route.rootPersonId == retiredId) navigate(route.copy(rootPersonId = survivorId))
+        navigate(Route.Person(screen.treeId, survivorId))
+    }
+
+    private fun chooseMergePeople(change: (MergeState) -> MergeState) {
+        val screen = _state.value.treeScreen ?: return
+        val merge = screen.merge ?: return
+        if (merge.submitting) return
+        val changed = change(merge)
+        if (changed == merge) return
+        updateMerge(screen.instance, merge.id) { changed }
+        loadMergeRecords(screen.instance, merge.id)
+    }
+
+    /** New picks drop everything decided about the previous pair. */
+    private fun MergeState.withPeople(firstId: String?, secondId: String?): MergeState =
+        if (firstId == this.firstId && secondId == this.secondId && records != null) {
+            this
+        } else {
+            MergeState(
+                id = id,
+                firstId = firstId,
+                secondId = secondId,
+                error = if (firstId != null && firstId == secondId) MergeError.SAME_PERSON else null,
+            )
+        }
+
+    /** Fetches both chosen records fresh, so the versions sent are the ones the owner reviews. */
+    private fun loadMergeRecords(instance: Long, mergeId: Long) {
+        val screen = currentScreen(instance) ?: return
+        val merge = screen.merge?.takeIf { it.id == mergeId } ?: return
+        val first = merge.firstId ?: return
+        val second = merge.secondId ?: return
+        if (first == second) return
+        updateMerge(instance, mergeId) { it.copy(records = Loadable.Loading) }
+        inSession { owner ->
+            val records = load {
+                fun checked(person: PersonDto, id: String) = person.also {
+                    requireRoute(it.treeId, screen.treeId)
+                    requireRoute(it.id, id)
+                }
+                MergeRecords(checked(api.person(screen.treeId, first), first), checked(api.person(screen.treeId, second), second))
+            }
+            if (!isCurrent(owner)) return@inSession
+            updateMerge(instance, mergeId) { current ->
+                if (current.firstId == first && current.secondId == second) current.copy(records = records) else current
+            }
+        }
+    }
+
+    /** Changes the merge if it is still [mergeId] on tree screen [instance] (any, when null). */
+    private fun updateMerge(instance: Long?, mergeId: Long?, change: (MergeState) -> MergeState) = updateTreeScreen(instance) { screen ->
+        val merge = screen.merge
+        if (merge == null || (mergeId != null && merge.id != mergeId)) screen else screen.copy(merge = change(merge))
+    }
+
+    private fun mergeError(error: MergeError) = updateMerge(null, null) { it.copy(error = error) }
 
     private fun onAuth(auth: AuthState) {
         if (auth is AuthState.SignedIn) {
@@ -499,6 +676,19 @@ class FamilyTreeController(
                     setOf(union.partner1Id, union.partner2Id) == setOf(parentId, otherParentId)
                 }
             }
+
+        /** The profile fields that differ between two records (FT-007), by the `:core` rule the server applies. */
+        fun differingFields(first: PersonDto, second: PersonDto): Set<MergeField> =
+            PersonMerge.differingFields(PersonMerge.profileOf(first.toDomain()), PersonMerge.profileOf(second.toDomain()))
+
+        internal fun mergeErrorFor(failure: ApiFailure): MergeError = when (failure) {
+            ApiFailure.CONFLICT -> MergeError.CHANGED
+            ApiFailure.FORBIDDEN -> MergeError.FORBIDDEN
+            ApiFailure.NOT_FOUND -> MergeError.NOT_FOUND
+            ApiFailure.INVALID -> MergeError.INVALID
+            ApiFailure.UNAVAILABLE -> MergeError.UNAVAILABLE
+            ApiFailure.SESSION_EXPIRED, ApiFailure.SERVER -> MergeError.SERVER
+        }
 
         internal fun formErrorFor(failure: ApiFailure): FormError = when (failure) {
             ApiFailure.CONFLICT -> FormError.ALREADY_LINKED

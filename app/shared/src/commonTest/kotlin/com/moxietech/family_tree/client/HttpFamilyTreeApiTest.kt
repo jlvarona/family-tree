@@ -1,14 +1,18 @@
 package com.moxietech.family_tree.client
 
+import com.moxietech.family_tree.api.MergePeopleRequest
 import com.moxietech.family_tree.auth.AccessTokenSource
 import com.moxietech.family_tree.auth.TokenResult
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.content.TextContent
 import io.ktor.http.headersOf
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -34,12 +38,14 @@ class HttpFamilyTreeApiTest {
     }
 
     private val seen = mutableListOf<Pair<String, String?>>()
+    private val sent = mutableListOf<Pair<HttpMethod, String?>>()
 
     private fun api(tokens: AccessTokenSource, vararg replies: Pair<HttpStatusCode, String>): HttpFamilyTreeApi {
         val queue = ArrayDeque(replies.toList())
         val client = HttpClient(
             MockEngine { request ->
                 seen += request.url.toString() to request.headers[HttpHeaders.Authorization]
+                sent += request.method to (request.body as? TextContent)?.text
                 val (status, body) = queue.removeFirst()
                 respond(body, status, headersOf(HttpHeaders.ContentType, "application/json"))
             },
@@ -132,5 +138,28 @@ class HttpFamilyTreeApiTest {
         assertEquals("http://localhost:3000/api/v1/trees/t1/people/p%2F1/events", seen.single().first)
         assertEquals("abt 1890", events.single().date?.displayText)
         assertEquals("Toledo", events.single().place?.name)
+    }
+
+    @Test
+    fun mergePostsTheWholeDecisionAndReadsTheSurvivor() = runTest {
+        val api = api(
+            Tokens(),
+            HttpStatusCode.OK to """{"survivor":{"id":"p1","treeId":"t/1","givenNames":"Ana","surnamePaternal":null,
+                "surnameMaternal":null,"fullName":"Ana","sex":"FEMALE","isLiving":false,"profileMediaId":null,"bio":null,
+                "version":4,"futureField":1},"retiredId":"p2"}""",
+        )
+        val request = MergePeopleRequest("p1", 3, "p2", 7, mapOf("IS_LIVING" to "RETIRED"))
+
+        val result = api.mergePeople("t/1", request)
+
+        assertEquals("http://localhost:3000/api/v1/trees/t%2F1/people/merge", seen.single().first)
+        val (method, body) = sent.single()
+        assertEquals(HttpMethod.Post, method)
+        assertEquals(request, Json.decodeFromString<MergePeopleRequest>(body!!))
+        assertEquals(4, result.survivor.version)
+        assertEquals("p2", result.retiredId)
+
+        val conflict = api(Tokens(), HttpStatusCode.Conflict to """{"message":"Person p1 has been changed"}""")
+        assertEquals(ApiFailure.CONFLICT, assertFailsWith<ApiException> { conflict.mergePeople("t1", request) }.failure)
     }
 }

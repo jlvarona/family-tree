@@ -43,6 +43,8 @@ object EventService {
         return withContext(DatabaseDispatcher) {
             transaction {
                 val treeUuid = Uuid.parse(treeId.value)
+                // Waits for a person merge in this tree, so a retired subject is a 404 (FT-007).
+                GraphWriteLock.shared(treeUuid)
                 personUuid?.let { TreeScopedLookups.requirePerson(treeUuid, it) }
                 unionUuid?.let { TreeScopedLookups.requireUnion(treeUuid, it) }
                 val place = placeUuid?.let { TreeScopedLookups.requirePlace(treeUuid, it) }
@@ -97,6 +99,8 @@ object EventService {
         return withContext(DatabaseDispatcher) {
             transaction {
                 val treeUuid = Uuid.parse(treeId.value)
+                // Taken before the event's row lock, in the same order as a merge (FT-007).
+                GraphWriteLock.shared(treeUuid)
                 val before = TreeScopedLookups.requireEvent(treeUuid, eventUuid)
                 val beforePlace = before.placeId?.let { PlaceRepository.findById(treeUuid, Uuid.parse(it.value)) }
                 val personUuid = parseOptionalUuidField("personId", request.personId)
