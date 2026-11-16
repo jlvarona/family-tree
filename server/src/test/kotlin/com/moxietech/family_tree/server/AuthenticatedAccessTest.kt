@@ -13,6 +13,7 @@ import com.moxietech.family_tree.api.PersonDto
 import com.moxietech.family_tree.api.PlaceDto
 import com.moxietech.family_tree.api.SourceDto
 import com.moxietech.family_tree.api.TreeDto
+import com.moxietech.family_tree.api.TreeGraphDto
 import com.moxietech.family_tree.api.UnionDto
 import com.moxietech.family_tree.domain.MembershipStatus
 import com.moxietech.family_tree.module
@@ -47,6 +48,8 @@ import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.junit.AfterClass
@@ -89,6 +92,9 @@ class AuthenticatedAccessTest {
         OWNER_B("ft072-owner-b", "owner-b@example.com"),
         RELATIVE("ft072-relative", "relative@example.com"),
         INVITEE("ft072-invitee", "invitee@example.com"),
+
+        /** Active non-owner of a tree the FT-004 snapshot test creates; holds nothing else. */
+        SNAPSHOT_READER("ft004-snapshot-reader", "snapshot-reader@example.com"),
     }
 
     companion object {
@@ -243,7 +249,7 @@ class AuthenticatedAccessTest {
         val a = path(treeA.id)
         return listOf(
             a, "$a/people", "$a/people/$carmen", "$a/people/$sofia/ancestors", "$a/people/$antonio/descendants",
-            "$a/people/$carmen/events", "$a/unions", "$a/places", "$a/sources",
+            "$a/people/$carmen/events", "$a/unions", "$a/places", "$a/sources", "$a/graph",
         )
     }
 
@@ -548,6 +554,161 @@ class AuthenticatedAccessTest {
         assertEquals(before.getValue("source/A") + 1, after.getValue("source/A"))
         assertEquals(before.getValue("audit_log/A") + 1, after.getValue("audit_log/A"))
         assertEquals(before.filterKeys { it.endsWith("/B") }, after.filterKeys { it.endsWith("/B") })
+    }
+
+    // --- FT-004 whole-tree bundle -------------------------------------------------------
+
+    @Test
+    fun `the owner's whole-tree bundle has every person, union and child link in full`() = api {
+        val a = path(treeA.id)
+        val graph = client.read("$a/graph", Actor.OWNER_A).decoded<TreeGraphDto>()
+        assertEquals(treeA.id, graph.treeId)
+        // Same content as the separate list routes, which keep working.
+        val people = client.read("$a/people", Actor.OWNER_A).decoded<List<PersonDto>>()
+        val unions = client.read("$a/unions", Actor.OWNER_A).decoded<List<UnionDto>>()
+        assertEquals(people.associateBy { it.id }, graph.people.associateBy { it.id })
+        assertEquals(unions.associateBy { it.id }, graph.unions.associateBy { it.id })
+
+        val byId = graph.people.associateBy { it.id }
+        assertTrue(byId.keys.containsAll(listOf(antonio, rosa, carmen, luis, sofia)))
+        assertEquals("Carmen López", byId.getValue(carmen).fullName)
+        assertEquals("Lives in Madrid", byId.getValue(carmen).bio)
+        val graphUnions = graph.unions.associateBy { it.id }
+        assertEquals(setOf(grandparentsUnion, parentsUnion), graphUnions.keys)
+        val parents = graphUnions.getValue(parentsUnion)
+        assertEquals("MARRIED", parents.type)
+        assertEquals("1980", parents.startDate?.displayText)
+        assertEquals("2010", parents.endDate?.displayText)
+        assertEquals(listOf(sofia to "BIRTH"), parents.children.map { it.childId to it.relation })
+        assertEquals(listOf(carmen), graphUnions.getValue(grandparentsUnion).children.map { it.childId })
+    }
+
+    @Test
+    fun `a member's whole-tree bundle has placeholders and keeps union type and links without hidden dates`() = api {
+        val response = client.read("${path(treeA.id)}/graph", Actor.RELATIVE)
+        val graph = response.decoded<TreeGraphDto>()
+        val people = graph.people.associateBy { it.id }
+        assertPlaceholder(people.getValue(carmen))
+        assertPlaceholder(people.getValue(sofia))
+        assertEquals("Antonio López", people.getValue(antonio).fullName)
+        assertEquals("Luis Ortega", people.getValue(luis).fullName)
+
+        val unions = graph.unions.associateBy { it.id }
+        val parents = unions.getValue(parentsUnion)
+        assertEquals("MARRIED", parents.type)
+        assertEquals(carmen, parents.partner1Id)
+        assertEquals(luis, parents.partner2Id)
+        assertEquals(listOf(sofia), parents.children.map { it.childId })
+        assertNull(parents.startDate)
+        assertNull(parents.endDate)
+        val grandparents = unions.getValue(grandparentsUnion)
+        assertEquals("1950", grandparents.startDate?.displayText)
+        assertEquals(listOf(carmen), grandparents.children.map { it.childId })
+        assertAbsent(response.bodyAsText(), listOf("Carmen", "Sofia", "Lives in Madrid", "1980", "2010"), "member graph")
+    }
+
+    @Test
+    fun `the whole-tree bundle stays in its tree and is closed to non-members`() = api {
+        val body = client.read("${path(treeA.id)}/graph", Actor.OWNER_A).bodyAsText()
+        assertNoTreeBData(body, "tree A graph")
+        val graph = json.decodeFromString<TreeGraphDto>(body)
+        assertTrue(graph.people.all { it.treeId == treeA.id })
+        assertTrue(graph.unions.all { it.treeId == treeA.id })
+
+        val bGraph = "${path(treeB.id)}/graph"
+        val notMemberB = "Not a member of tree ${treeB.id}"
+        val foreign = client.read(bGraph, Actor.OWNER_A)
+        assertError(foreign, HttpStatusCode.Forbidden, notMemberB, "other owner")
+        assertNoTreeBData(foreign.bodyAsText().replace(notMemberB, ""), "other owner")
+        assertError(client.read(bGraph, Actor.RELATIVE), HttpStatusCode.Forbidden, notMemberB, "member of another tree")
+        assertError(
+            client.read("${path(treeA.id)}/graph", Actor.INVITEE), HttpStatusCode.Forbidden, "Not a member of tree ${treeA.id}", "invitee",
+        )
+        val missing = randomId()
+        assertError(client.read("${path(missing)}/graph", Actor.OWNER_A), HttpStatusCode.NotFound, "No tree with id $missing", "missing")
+    }
+
+    @Test
+    fun `an empty tree's bundle has no people and no unions`() = api {
+        val tree = client.createTree(token(Actor.OWNER_B), "FT-004 empty").id
+        val graph = client.read("${path(tree)}/graph", Actor.OWNER_B).decoded<TreeGraphDto>()
+        assertEquals(TreeGraphDto(treeId = tree, people = emptyList(), unions = emptyList()), graph)
+    }
+
+    /**
+     * FT-004 review: the bundle's queries share one snapshot. A lock on
+     * `union_child` parks a non-owner's bundle read after it has read people;
+     * a living person and their dated union are then committed. That read must
+     * show neither (no dangling link, no dates exposed because the new partner
+     * was missing from the visibility set); a fresh read shows them redacted.
+     */
+    @Test
+    fun `a bundle read keeps one snapshot while a living partner and dated union are committed`() = api {
+        val tree = client.createTree(token(Actor.OWNER_B), "FT-004 snapshot").id
+        MembershipRepository.insert(
+            Uuid.parse(tree), Uuid.parse(accounts.getValue(Actor.SNAPSHOT_READER).id), personId = null, status = MembershipStatus.ACTIVE,
+        )
+        val t = path(tree)
+        val elena = client.write(
+            "$t/people", Actor.OWNER_B, encode(CreatePersonRequest(givenNames = "Elena", sex = "FEMALE", isLiving = false)),
+        ).decoded<CreatePersonResponse>(HttpStatusCode.Created).person.id
+        val newcomer = randomId()
+        val union = randomId()
+
+        coroutineScope {
+            val lock = dataSource.connection
+            try {
+                lock.autoCommit = false
+                lock.createStatement().use { it.execute("lock table union_child in access exclusive mode") }
+                val pending = async { client.read("$t/graph", Actor.SNAPSHOT_READER) }
+                awaitBlockedRead("union_child")
+                lock.prepareStatement(
+                    "insert into person (id, tree_id, given_names, sex, is_living) values (?, ?, 'Valeria', 'FEMALE', true)",
+                ).use { st ->
+                    st.setObject(1, uuid(newcomer)); st.setObject(2, uuid(tree)); st.executeUpdate()
+                }
+                lock.prepareStatement(
+                    """
+                    insert into union_record (id, tree_id, partner1_id, partner2_id, type,
+                        start_date_text, start_date_earliest, start_date_latest)
+                    values (?, ?, ?, ?, 'MARRIED', '1999', date '1999-01-01', date '1999-12-31')
+                    """.trimIndent(),
+                ).use { st ->
+                    st.setObject(1, uuid(union)); st.setObject(2, uuid(tree))
+                    st.setObject(3, uuid(elena)); st.setObject(4, uuid(newcomer)); st.executeUpdate()
+                }
+                lock.commit()
+
+                val snapshot = withTimeout(10_000) { pending.await() }.decoded<TreeGraphDto>()
+                assertEquals(listOf(elena), snapshot.people.map { it.id })
+                assertEquals(emptyList(), snapshot.unions)
+            } finally {
+                // Releases the lock (if not committed) before the scope waits for the read.
+                runCatching { lock.rollback() }
+                lock.close()
+            }
+        }
+
+        val response = client.read("$t/graph", Actor.SNAPSHOT_READER)
+        val fresh = response.decoded<TreeGraphDto>()
+        assertPlaceholder(fresh.people.single { it.id == newcomer })
+        val added = fresh.unions.single()
+        assertEquals(union, added.id)
+        assertEquals("MARRIED", added.type)
+        assertEquals(elena, added.partner1Id)
+        assertEquals(newcomer, added.partner2Id)
+        assertNull(added.startDate)
+        assertNull(added.endDate)
+        assertAbsent(response.bodyAsText(), listOf("Valeria", "1999"), "fresh graph")
+    }
+
+    /** Waits, at most 10 s, until another session is waiting on a lock while querying [table]. */
+    private suspend fun awaitBlockedRead(table: String) = withTimeout(10_000) {
+        val sql = """
+            select count(*) from pg_stat_activity
+            where pid <> pg_backend_pid() and wait_event_type = 'Lock' and query ilike ?
+        """.trimIndent()
+        while (dataSource.query(sql, "%$table%")!!.toLong() == 0L) delay(25)
     }
 
     // --- FT-071 date bounds round-trip through PostgreSQL ----------------------------------

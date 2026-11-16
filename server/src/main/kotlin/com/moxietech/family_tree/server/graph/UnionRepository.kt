@@ -34,13 +34,14 @@ object UnionRepository {
     fun childrenOf(treeId: Uuid, unionId: Uuid): List<UnionChild> = transaction {
         UnionChildTable.selectAll().where {
             (UnionChildTable.unionId eq unionId) and (UnionChildTable.treeId eq treeId)
-        }.map {
-            UnionChild(
-                unionId = UnionId(it[UnionChildTable.unionId].toString()),
-                childId = PersonId(it[UnionChildTable.childId].toString()),
-                relation = ChildRelation.valueOf(it[UnionChildTable.relation]),
-            )
-        }
+        }.map { it.toUnionChild() }
+    }
+
+    /** Every child link in [treeId], grouped by union, in one query (FT-004). */
+    fun childrenByUnion(treeId: Uuid): Map<UnionId, List<UnionChild>> = transaction {
+        UnionChildTable.selectAll().where { UnionChildTable.treeId eq treeId }
+            .map { it.toUnionChild() }
+            .groupBy { it.unionId }
     }
 
     fun insert(
@@ -77,6 +78,12 @@ object UnionRepository {
             it[UnionChildTable.relation] = relation.name
         }
     }
+
+    private fun ResultRow.toUnionChild() = UnionChild(
+        unionId = UnionId(this[UnionChildTable.unionId].toString()),
+        childId = PersonId(this[UnionChildTable.childId].toString()),
+        relation = ChildRelation.valueOf(this[UnionChildTable.relation]),
+    )
 
     private fun ResultRow.toUnion() = Union(
         id = UnionId(this[UnionTable.id].toString()),

@@ -7,6 +7,7 @@ import com.moxietech.family_tree.server.config.OidcSettings
 import com.moxietech.family_tree.server.config.configureErrorMapping
 import com.moxietech.family_tree.server.config.configureOidc
 import com.moxietech.family_tree.server.graph.eventRoutes
+import com.moxietech.family_tree.server.graph.graphRoutes
 import com.moxietech.family_tree.server.graph.personRoutes
 import com.moxietech.family_tree.server.graph.placeRoutes
 import com.moxietech.family_tree.server.graph.unionRoutes
@@ -55,5 +56,6 @@ fun Application.module(oidc: OidcSettings = OidcSettings()) {
         eventRoutes()
         placeRoutes()
         sourceRoutes()
+        graphRoutes()
     }
 }
