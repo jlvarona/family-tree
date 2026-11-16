@@ -120,7 +120,7 @@ class VersionedUpdateTest {
         val source: SourceDto,
         val event: EventDto,
     ) {
-        val childLink: UnionChildDto get() = union.children.single()
+        val childLink: UnionChildDto get() = union.children.single { it.childId == child.id }
     }
 
     /**
@@ -259,6 +259,10 @@ class VersionedUpdateTest {
 
     private fun JsonElement.version(): Long = jsonObject.getValue("version").jsonPrimitive.long
 
+    /** The child link for [childId] in a union's JSON, chosen by ID rather than position. */
+    private fun childIn(union: JsonElement, childId: String): JsonElement =
+        union.jsonObject.getValue("children").jsonArray.single { it.jsonObject.getValue("childId").jsonPrimitive.content == childId }
+
     /** Every update route, each applied to one record of [f]. */
     private fun updates(f: Family): List<Update> {
         val t = path(f.tree)
@@ -293,7 +297,7 @@ class VersionedUpdateTest {
                 path = "$t/unions/${f.union.id}/children/${f.child.id}",
                 body = { v -> encode(UpdateUnionChildRequest(relation = "ADOPTED", version = v)) },
                 version = f.childLink.version, before = AuditJson.encodeToJsonElement(f.union),
-                versionIn = { it.jsonObject.getValue("children").jsonArray.single().version() },
+                versionIn = { childIn(it, f.child.id).version() },
                 table = "union_child", keyWhere = "union_id = ? and child_id = ?", keyArgs = listOf(uuid(f.union.id), uuid(f.child.id)),
             ),
             Update(
@@ -401,7 +405,7 @@ class VersionedUpdateTest {
         val union = graph.unions.single { it.id == f.union.id }
         assertEquals("DIVORCED", union.type)
         assertEquals(2, union.version)
-        assertEquals(UnionChildDto(f.child.id, "ADOPTED", version = 2), union.children.single())
+        assertEquals(UnionChildDto(f.child.id, "ADOPTED", version = 2), union.children.single { it.childId == f.child.id })
         val events = client.request("$t/people/${f.mother.id}/events") { bearerAuth(token(Actor.OWNER)) }.decoded<List<EventDto>>()
         val event = events.single { it.id == f.event.id }
         assertEquals(2, event.version)
@@ -423,7 +427,7 @@ class VersionedUpdateTest {
         val rawPlaces = json.parseToJsonElement(client.request("$t/places") { bearerAuth(token(Actor.OWNER)) }.bodyAsText())
         assertEquals(1, rawPlaces.withId(f.place.id).version())
         val rawUnions = json.parseToJsonElement(client.request("$t/unions") { bearerAuth(token(Actor.OWNER)) }.bodyAsText())
-        assertEquals(1, rawUnions.withId(f.union.id).jsonObject.getValue("children").jsonArray.single().version())
+        assertEquals(1, childIn(rawUnions.withId(f.union.id), f.child.id).version())
         // Create bodies shaped like an existing client's (no version) are still accepted.
         val huelva = client.post("$t/places", Actor.OWNER, """{"name":"Huelva"}""").decoded<PlaceDto>(HttpStatusCode.Created)
         assertEquals(1, huelva.version)
@@ -497,6 +501,101 @@ class VersionedUpdateTest {
             assertEquals(u.version + 1, storedVersion(u), u.name)
             assertEquals(1, updateAudits(f.tree, u).size, u.name)
         }
+    }
+
+    /**
+     * Holds a row lock on [table] while [whileBlocked] runs: [blocked] is started, parked
+     * in its UPDATE behind the lock, then the lock is released and its response returned.
+     */
+    private suspend fun lockedRace(
+        table: String,
+        keyWhere: String,
+        keyArgs: List<UUID>,
+        blocked: suspend () -> HttpResponse,
+        whileBlocked: suspend () -> Unit,
+    ): HttpResponse = coroutineScope {
+        val lock = dataSource.connection
+        try {
+            lock.autoCommit = false
+            lock.prepareStatement("select 1 from $table where $keyWhere for update").use { st ->
+                keyArgs.forEachIndexed { i, arg -> st.setObject(i + 1, arg) }
+                st.executeQuery().close()
+            }
+            val pending = async { blocked() }
+            awaitBlockedUpdates(table, count = 1)
+            whileBlocked()
+            lock.rollback()
+            withTimeout(10_000) { pending.await() }
+        } finally {
+            runCatching { lock.rollback() }
+            lock.close()
+        }
+    }
+
+    /**
+     * Review regression: child 1's update waits on its row lock while a sibling's update
+     * commits. Child 1's audit entry must show only child 1 changing; the sibling appears
+     * identically in its before and after.
+     */
+    @Test
+    fun `a child link audit entry never reports a sibling link committed meanwhile`() = api {
+        val f = family()
+        val t = path(f.tree)
+        val sibling = client.post("$t/people", Actor.OWNER, encode(CreatePersonRequest(givenNames = "Pablo", sex = "MALE", isLiving = false)))
+            .decoded<CreatePersonResponse>(HttpStatusCode.Created).person
+        client.post("$t/unions/${f.union.id}/children", Actor.OWNER, encode(AddUnionChildRequest(sibling.id, "BIRTH")))
+            .decoded<UnionDto>(HttpStatusCode.Created)
+        val first = updates(f).single { it.name == "child link" }
+
+        val response = lockedRace(
+            table = "union_child", keyWhere = first.keyWhere, keyArgs = first.keyArgs,
+            blocked = { client.put(first.path, Actor.OWNER, first.body(1)) },
+            whileBlocked = {
+                client.put("$t/unions/${f.union.id}/children/${sibling.id}", Actor.OWNER, encode(UpdateUnionChildRequest("FOSTER", 1)))
+                    .bodyWithStatus(HttpStatusCode.OK)
+            },
+        )
+        val body = json.parseToJsonElement(response.bodyWithStatus(HttpStatusCode.OK))
+        assertEquals(2, childIn(body, f.child.id).version())
+
+        val (beforeJson, afterJson) = updateAudits(f.tree, first).single()
+        val before = json.parseToJsonElement(beforeJson!!)
+        val after = json.parseToJsonElement(afterJson!!)
+        assertEquals(childIn(before, sibling.id), childIn(after, sibling.id), "sibling must be unchanged within child 1's entry")
+        assertEquals("BIRTH", childIn(before, f.child.id).jsonObject.getValue("relation").jsonPrimitive.content)
+        assertEquals(1, childIn(before, f.child.id).version())
+        assertEquals("ADOPTED", childIn(after, f.child.id).jsonObject.getValue("relation").jsonPrimitive.content)
+        assertEquals(2, childIn(after, f.child.id).version())
+        assertEquals(body, after)
+    }
+
+    /**
+     * An event update that keeps its place, parked on its row lock while that place is
+     * edited and committed, must record the same place before and after.
+     */
+    @Test
+    fun `an event audit entry keeps an unchanged place identical before and after`() = api {
+        val f = family()
+        val t = path(f.tree)
+        val event = updates(f).single { it.name == "event" }
+        val response = lockedRace(
+            table = "event", keyWhere = event.keyWhere, keyArgs = event.keyArgs,
+            blocked = {
+                client.put(
+                    event.path, Actor.OWNER,
+                    encode(UpdateEventRequest(personId = f.father.id, type = "BIRTH", date = "1946", placeId = f.place.id, version = 1)),
+                )
+            },
+            whileBlocked = {
+                client.put("$t/places/${f.place.id}", Actor.OWNER, encode(UpdatePlaceRequest("Sevilla", version = 1)))
+                    .bodyWithStatus(HttpStatusCode.OK)
+            },
+        )
+        response.bodyWithStatus(HttpStatusCode.OK)
+        val (beforeJson, afterJson) = updateAudits(f.tree, event).single()
+        val beforePlace = json.parseToJsonElement(beforeJson!!).jsonObject.getValue("place")
+        val afterPlace = json.parseToJsonElement(afterJson!!).jsonObject.getValue("place")
+        assertEquals(beforePlace, afterPlace)
     }
 
     /** Waits, at most 10 s, until [count] other sessions are waiting on a lock in an UPDATE of [table]. */

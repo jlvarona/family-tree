@@ -10,6 +10,7 @@ import com.moxietech.family_tree.domain.AuditAction
 import com.moxietech.family_tree.domain.ChildRelation
 import com.moxietech.family_tree.domain.PersonId
 import com.moxietech.family_tree.domain.TreeId
+import com.moxietech.family_tree.domain.UnionChild
 import com.moxietech.family_tree.domain.UnionId
 import com.moxietech.family_tree.domain.UnionType
 import com.moxietech.family_tree.format.GedcomDateParser
@@ -229,18 +230,25 @@ object UnionService {
                     ?: throw NotFoundException("No child $childUuid in union $unionUuid")
                 val entityId = "$unionUuid:$childUuid"
                 if (link.version != request.version) throw staleVersion("Child link", entityId)
-                val childrenBefore = UnionRepository.childrenOf(treeUuid, unionUuid)
                 if (!UnionRepository.updateChild(treeUuid, unionUuid, childUuid, request.version, relation)) {
                     throw staleVersion("Child link", entityId)
                 }
-                val dto = union.toDto(UnionRepository.childrenOf(treeUuid, unionUuid))
+                val updated = UnionRepository.findChild(treeUuid, unionUuid, childUuid)
+                    ?: error("Child link $entityId was just updated but cannot be read back")
+                // One read of the sibling links, taken after this link's row lock is held,
+                // with only the targeted link swapped between its original and updated value.
+                // Two separate reads could straddle a sibling's commit and attribute that
+                // sibling's change to this entry (FT-001 review).
+                val siblings = UnionRepository.childrenOf(treeUuid, unionUuid)
+                fun withLink(value: UnionChild) = siblings.map { if (it.childId == value.childId) value else it }
+                val dto = union.toDto(withLink(updated))
                 AuditLogRepository.append(
                     treeId = treeUuid,
                     actorAccountId = Uuid.parse(callerAccountId.value),
                     entityType = "UnionChild",
                     entityId = entityId,
                     action = AuditAction.UPDATE,
-                    beforeJson = AuditJson.encodeToString(union.toDto(childrenBefore)),
+                    beforeJson = AuditJson.encodeToString(union.toDto(withLink(link))),
                     afterJson = AuditJson.encodeToString(dto),
                 )
                 dto

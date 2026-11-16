@@ -102,7 +102,13 @@ object EventService {
                 val placeUuid = parseOptionalUuidField("placeId", request.placeId)
                 personUuid?.let { TreeScopedLookups.requirePerson(treeUuid, it) }
                 unionUuid?.let { TreeScopedLookups.requireUnion(treeUuid, it) }
-                val place = placeUuid?.let { TreeScopedLookups.requirePlace(treeUuid, it) }
+                // An unchanged place reuses the one read for "before", so a concurrent place
+                // edit can't show up in this event's audit entry as if the event changed it.
+                val place = when {
+                    placeUuid == null -> null
+                    beforePlace != null && placeUuid.toString() == beforePlace.id.value -> beforePlace
+                    else -> TreeScopedLookups.requirePlace(treeUuid, placeUuid)
+                }
                 if (before.version != request.version) throw staleVersion("Event", before.id.value)
                 val after = EventRepository.update(
                     treeId = treeUuid,

@@ -58,8 +58,13 @@ after the first commits and fails.
 with the actor, the entity's existing type and ID (`Person`, `Union`, `UnionChild` as
 `union:child`, `Event`, `Place`, `Source`), and before/after snapshots in the same DTO
 shapes as their creation entries. Union snapshots carry the same child list before and
-after (child links have their own versions and entries); event snapshots embed the
-place as it was before and after.
+after (child links have their own versions and entries). A child link entry is built
+from one read of the union's links, taken after the targeted row is locked, with only
+the targeted link swapped between its original and updated value. So a sibling link
+committed meanwhile appears identically in both (review finding on draft PR #17: two
+separate reads had attributed a sibling's change to the entry). An event that keeps its
+place reuses the place read for "before", so a concurrent place edit never appears as
+an event change.
 
 **Versions on place and child link (V4).**
 `V4__place_and_union_child_versions.sql` adds `version bigint not null default 1` to
@@ -84,6 +89,11 @@ to it; it doesn't call the update routes yet.
     both wait in their conditional `UPDATE` (seen in `pg_stat_activity`); after
     release exactly one gets `200` and the other `409`, with one audit entry. A
     burst of six concurrent writers per route also yields one success and one entry.
+  - Review regressions under a test-held row lock: child 1's update waits while a
+    sibling's relation change commits, and child 1's entry shows the sibling
+    unchanged; an event update that keeps its place waits while the place is renamed,
+    and its entry shows the same place before and after. Child links are selected by
+    child ID, never by position.
   - A test trigger that rejects `UPDATE` audit inserts rolls back all six service
     updates (PostgreSQL `P0001` in the cause chain, no row changed); after the trigger
     is dropped the same calls succeed at the original versions.
@@ -103,9 +113,14 @@ to it; it doesn't call the update routes yet.
 - `core/.../api/VersionedDtoTest`: version-less place and child link JSON decodes,
   the version is encoded even at its default, and every update request needs one.
 
-**Verification.** None run in this session: no Gradle, Docker or Git commands were
-used. `:core:jvmTest`, `:server:test` (needs Docker) and `:app:shared:jvmTest` (the
-DTO change touches the client's shared types) still need to be run.
+**Verification.** `:core:jvmTest`, `:server:test` and `:app:shared:jvmTest` passed
+with 49, 92 and 112 passing tests respectively. The opt-in Keycloak test was skipped
+by the server suite. A separate check with disposable Keycloak and PostgreSQL
+confirmed that competing person updates produce one write and one audit entry,
+stale and foreign-tree requests change neither, and an audit failure rolls back
+the write. Repeating the live sibling-link race confirmed that each audit shows
+only the link updated by the request. Delete routes remain pending the policy for
+referenced records.
 
 ## 2026-11-16 — FT-006 built the person page
 
