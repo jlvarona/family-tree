@@ -44,6 +44,7 @@ data class Place(
     val hierarchy: String?,
     val latitude: Double?,
     val longitude: Double?,
+    val version: Long,
 )
 
 data class PlaceId(val value: String)

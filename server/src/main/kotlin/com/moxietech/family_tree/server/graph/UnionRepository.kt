@@ -15,9 +15,11 @@ import kotlinx.datetime.toKotlinLocalDate
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
+import org.jetbrains.exposed.v1.jdbc.update
 import kotlin.uuid.Uuid
 
 object UnionRepository {
@@ -70,12 +72,101 @@ object UnionRepository {
         findById(treeId, id) ?: error("Union $id was just inserted but cannot be read back")
     }
 
+    /**
+     * FT-001: replaces the fields of union [id] in [treeId] only while its stored
+     * version is still [expectedVersion], incrementing it in the same statement.
+     * Returns null, changing nothing, when no row matched (a concurrent writer
+     * committed first). Child links keep their own versions and aren't touched.
+     */
+    fun update(
+        treeId: Uuid,
+        id: Uuid,
+        expectedVersion: Long,
+        partner1Id: Uuid,
+        partner2Id: Uuid?,
+        type: UnionType,
+        startDate: GedcomDate?,
+        endDate: GedcomDate?,
+    ): Union? = transaction {
+        val updated = UnionTable.update({
+            (UnionTable.id eq id) and (UnionTable.treeId eq treeId) and (UnionTable.version eq expectedVersion)
+        }) {
+            it[UnionTable.partner1Id] = partner1Id
+            it[UnionTable.partner2Id] = partner2Id
+            it[UnionTable.type] = type.name
+            it[UnionTable.startDateText] = startDate?.displayText
+            it[UnionTable.startDateEarliest] = startDate?.earliest?.toJavaLocalDate()
+            it[UnionTable.startDateLatest] = startDate?.latest?.toJavaLocalDate()
+            it[UnionTable.endDateText] = endDate?.displayText
+            it[UnionTable.endDateEarliest] = endDate?.earliest?.toJavaLocalDate()
+            it[UnionTable.endDateLatest] = endDate?.latest?.toJavaLocalDate()
+            it[UnionTable.version] = expectedVersion + 1
+        }
+        if (updated == 0) null else findById(treeId, id) ?: error("Union $id was just updated but cannot be read back")
+    }
+
     fun addChild(treeId: Uuid, unionId: Uuid, childId: Uuid, relation: ChildRelation) = transaction {
         UnionChildTable.insert {
             it[UnionChildTable.treeId] = treeId
             it[UnionChildTable.unionId] = unionId
             it[UnionChildTable.childId] = childId
             it[UnionChildTable.relation] = relation.name
+            it[UnionChildTable.version] = nextChildVersion()
+        }
+    }
+
+    /**
+     * A child-link version from `union_child_version_seq` (V5): never issued twice,
+     * so a deleted and recreated link can't accept the old link's version. Opaque:
+     * versions increase but can skip numbers.
+     */
+    private fun nextChildVersion(): Long = transaction {
+        exec("select nextval('union_child_version_seq')") { rs -> rs.next(); rs.getLong(1) }
+            ?: error("union_child_version_seq returned no value")
+    }
+
+    /** Null when the link doesn't exist in [treeId]; callers treat that as not found. */
+    fun findChild(treeId: Uuid, unionId: Uuid, childId: Uuid): UnionChild? = transaction {
+        UnionChildTable.selectAll().where {
+            (UnionChildTable.unionId eq unionId) and (UnionChildTable.childId eq childId) and (UnionChildTable.treeId eq treeId)
+        }.firstOrNull()?.toUnionChild()
+    }
+
+    /**
+     * FT-001: changes the relation of one child link only while its stored version
+     * is still [expectedVersion], replacing it with a fresh sequence value in the
+     * same statement. Returns false, changing nothing, when no row matched (the
+     * unused sequence value is simply skipped).
+     */
+    fun updateChild(
+        treeId: Uuid,
+        unionId: Uuid,
+        childId: Uuid,
+        expectedVersion: Long,
+        relation: ChildRelation,
+    ): Boolean = transaction {
+        val next = nextChildVersion()
+        UnionChildTable.update({
+            (UnionChildTable.unionId eq unionId) and (UnionChildTable.childId eq childId) and
+                (UnionChildTable.treeId eq treeId) and (UnionChildTable.version eq expectedVersion)
+        }) {
+            it[UnionChildTable.relation] = relation.name
+            it[UnionChildTable.version] = next
+        } > 0
+    }
+
+    /** FT-001: conditional delete of union [id]; see [PersonRepository.delete]. */
+    fun delete(treeId: Uuid, id: Uuid, expectedVersion: Long): Int = transaction {
+        UnionTable.deleteWhere {
+            (UnionTable.id eq id) and (UnionTable.treeId eq treeId) and (UnionTable.version eq expectedVersion)
+        }
+    }
+
+    /** FT-001: conditional delete of one child link; nothing references a link. */
+    fun deleteChild(treeId: Uuid, unionId: Uuid, childId: Uuid, expectedVersion: Long): Int = transaction {
+        UnionChildTable.deleteWhere {
+            (UnionChildTable.unionId eq unionId) and (UnionChildTable.childId eq childId) and
+                (UnionChildTable.treeId eq treeId) and (UnionChildTable.version eq expectedVersion)
         }
     }
 
@@ -83,6 +174,7 @@ object UnionRepository {
         unionId = UnionId(this[UnionChildTable.unionId].toString()),
         childId = PersonId(this[UnionChildTable.childId].toString()),
         relation = ChildRelation.valueOf(this[UnionChildTable.relation]),
+        version = this[UnionChildTable.version],
     )
 
     private fun ResultRow.toUnion() = Union(

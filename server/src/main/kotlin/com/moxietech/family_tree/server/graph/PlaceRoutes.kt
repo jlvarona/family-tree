@@ -1,6 +1,8 @@
 package com.moxietech.family_tree.server.graph
 
 import com.moxietech.family_tree.api.CreatePlaceRequest
+import com.moxietech.family_tree.api.UpdatePlaceRequest
+import com.moxietech.family_tree.domain.PlaceId
 import com.moxietech.family_tree.server.config.OIDC_AUTH_NAME
 import com.moxietech.family_tree.server.identity.currentAccount
 import io.ktor.http.HttpStatusCode
@@ -9,8 +11,10 @@ import io.ktor.server.auth.authenticate
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
+import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
+import io.ktor.server.routing.put
 import io.ktor.server.routing.route
 
 fun Route.placeRoutes() {
@@ -27,6 +31,22 @@ fun Route.placeRoutes() {
                 val account = call.currentAccount()
                 val treeId = call.requireTreeId()
                 call.respond(PlaceService.listPlaces(treeId, account.id))
+            }
+            put("/{placeId}") {
+                val account = call.currentAccount()
+                val treeId = call.requireTreeId()
+                requireTreeWriter(treeId, account.id)
+                val placeId = PlaceId(call.requirePathParam("placeId"))
+                val request = call.receive<UpdatePlaceRequest>()
+                call.respond(PlaceService.updatePlace(treeId, placeId, account.id, request))
+            }
+            delete("/{placeId}") {
+                val account = call.currentAccount()
+                val treeId = call.requireTreeId()
+                requireTreeWriter(treeId, account.id)
+                val placeId = PlaceId(call.requirePathParam("placeId"))
+                PlaceService.deletePlace(treeId, placeId, account.id, call.versionParam())
+                call.respond(HttpStatusCode.NoContent)
             }
         }
     }

@@ -55,6 +55,8 @@ object PlaceTable : Table("place") {
     val hierarchy = text("hierarchy").nullable()
     val latitude = double("latitude").nullable()
     val longitude = double("longitude").nullable()
+    /** Optimistic-concurrency version (V4); existing rows start at 1. */
+    val version = long("version")
     override val primaryKey = PrimaryKey(id)
 }
 
@@ -79,6 +81,8 @@ object UnionChildTable : Table("union_child") {
     val unionId = uuid("union_id") references UnionTable.id
     val childId = uuid("child_id") references PersonTable.id
     val relation = text("relation")
+    /** Optimistic-concurrency version (V4); existing rows start at 1. */
+    val version = long("version")
     override val primaryKey = PrimaryKey(unionId, childId)
 }
 

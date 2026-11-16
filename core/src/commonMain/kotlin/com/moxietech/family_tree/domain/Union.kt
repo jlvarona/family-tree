@@ -28,6 +28,7 @@ data class UnionChild(
     val unionId: UnionId,
     val childId: PersonId,
     val relation: ChildRelation,
+    val version: Long,
 )
 
 enum class ChildRelation {

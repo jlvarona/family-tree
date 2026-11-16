@@ -2,16 +2,24 @@ package com.moxietech.family_tree.server.sources
 
 import com.moxietech.family_tree.api.CreateSourceRequest
 import com.moxietech.family_tree.api.SourceDto
+import com.moxietech.family_tree.api.UpdateSourceRequest
 import com.moxietech.family_tree.domain.AccountId
 import com.moxietech.family_tree.domain.AuditAction
+import com.moxietech.family_tree.domain.SourceId
 import com.moxietech.family_tree.domain.SourceType
 import com.moxietech.family_tree.domain.TreeId
 import com.moxietech.family_tree.format.GedcomDateParser
 import com.moxietech.family_tree.server.collaboration.AuditJson
 import com.moxietech.family_tree.server.collaboration.AuditLogRepository
 import com.moxietech.family_tree.server.config.DatabaseDispatcher
+import com.moxietech.family_tree.server.errors.NotFoundException
 import com.moxietech.family_tree.server.errors.ValidationException
+import com.moxietech.family_tree.server.errors.parseUuidField
+import com.moxietech.family_tree.server.errors.parseVersionParam
+import com.moxietech.family_tree.server.errors.referenced
 import com.moxietech.family_tree.server.errors.requireValid
+import com.moxietech.family_tree.server.graph.RecordDeletion
+import com.moxietech.family_tree.server.errors.staleVersion
 import com.moxietech.family_tree.server.trees.TreeService
 import com.moxietech.family_tree.validation.Validation
 import kotlinx.coroutines.withContext
@@ -53,6 +61,83 @@ object SourceService {
                 )
                 dto
             }
+        }
+    }
+
+    /**
+     * FT-001: replaces a source's fields, owner only, with the same validation
+     * as [createSource]. The source is resolved inside [treeId] (another tree's
+     * ID is the same 404 as a missing one); a version that is no longer the
+     * stored one is a 409 that changes neither the source nor the audit log.
+     */
+    suspend fun updateSource(
+        treeId: TreeId,
+        sourceId: SourceId,
+        callerAccountId: AccountId,
+        request: UpdateSourceRequest,
+    ): SourceDto {
+        TreeService.getTreeForWriter(treeId, callerAccountId)
+        val sourceUuid = parseUuidField("sourceId", sourceId.value)
+        Validation.validateNotBlank("Source title", request.title).requireValid()
+        val type = runCatching { SourceType.valueOf(request.type) }.getOrElse {
+            throw ValidationException(listOf("Unknown source type '${request.type}'"))
+        }
+        val date = request.date?.let { GedcomDateParser.parse(it) }
+
+        return withContext(DatabaseDispatcher) {
+            transaction {
+                val treeUuid = Uuid.parse(treeId.value)
+                val before = SourceRepository.findById(treeUuid, sourceUuid)
+                    ?: throw NotFoundException("No source with id $sourceUuid")
+                if (before.version != request.version) throw staleVersion("Source", before.id.value)
+                val after = SourceRepository.update(
+                    treeId = treeUuid,
+                    id = sourceUuid,
+                    expectedVersion = request.version,
+                    title = request.title,
+                    type = type,
+                    author = request.author,
+                    publisher = request.publisher,
+                    repository = request.repository,
+                    url = request.url,
+                    date = date,
+                ) ?: throw staleVersion("Source", before.id.value)
+                val dto = after.toDto()
+                AuditLogRepository.append(
+                    treeId = treeUuid,
+                    actorAccountId = Uuid.parse(callerAccountId.value),
+                    entityType = "Source",
+                    entityId = after.id.value,
+                    action = AuditAction.UPDATE,
+                    beforeJson = AuditJson.encodeToString(before.toDto()),
+                    afterJson = AuditJson.encodeToString(dto),
+                )
+                dto
+            }
+        }
+    }
+
+    /** FT-001: deletes a source no citation uses, owner only, at the current [version] (see `RecordDeletion`). */
+    suspend fun deleteSource(treeId: TreeId, sourceId: SourceId, callerAccountId: AccountId, version: List<String>?) {
+        TreeService.getTreeForWriter(treeId, callerAccountId)
+        val sourceUuid = parseUuidField("sourceId", sourceId.value)
+        val expected = parseVersionParam(version)
+        val treeUuid = Uuid.parse(treeId.value)
+        RecordDeletion.guarded("Source", sourceUuid.toString(), RecordDeletion.SOURCE_FOREIGN_KEYS) {
+            val before = SourceRepository.findById(treeUuid, sourceUuid)
+                ?: throw NotFoundException("No source with id $sourceUuid")
+            if (before.version != expected) throw staleVersion("Source", before.id.value)
+            if (RecordDeletion.sourceIsReferenced(treeUuid, sourceUuid)) throw referenced("Source", before.id.value)
+            if (SourceRepository.delete(treeUuid, sourceUuid, expected) == 0) throw staleVersion("Source", before.id.value)
+            AuditLogRepository.append(
+                treeId = treeUuid,
+                actorAccountId = Uuid.parse(callerAccountId.value),
+                entityType = "Source",
+                entityId = before.id.value,
+                action = AuditAction.DELETE,
+                beforeJson = AuditJson.encodeToString(before.toDto()),
+                afterJson = null,
+            )
         }
     }
 

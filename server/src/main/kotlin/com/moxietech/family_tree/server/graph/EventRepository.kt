@@ -14,9 +14,11 @@ import kotlinx.datetime.toKotlinLocalDate
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
+import org.jetbrains.exposed.v1.jdbc.update
 import kotlin.uuid.Uuid
 
 object EventRepository {
@@ -60,6 +62,46 @@ object EventRepository {
             it[EventTable.version] = 1
         }
         findById(treeId, id) ?: error("Event $id was just inserted but cannot be read back")
+    }
+
+    /**
+     * FT-001: replaces the fields of event [id] in [treeId] only while its stored
+     * version is still [expectedVersion], incrementing it in the same statement.
+     * Returns null, changing nothing, when no row matched (a concurrent writer
+     * committed first).
+     */
+    fun update(
+        treeId: Uuid,
+        id: Uuid,
+        expectedVersion: Long,
+        personId: Uuid?,
+        unionId: Uuid?,
+        type: EventType,
+        date: GedcomDate?,
+        placeId: Uuid?,
+        notes: String?,
+    ): Event? = transaction {
+        val updated = EventTable.update({
+            (EventTable.id eq id) and (EventTable.treeId eq treeId) and (EventTable.version eq expectedVersion)
+        }) {
+            it[EventTable.personId] = personId
+            it[EventTable.unionId] = unionId
+            it[EventTable.type] = type.name
+            it[EventTable.dateText] = date?.displayText
+            it[EventTable.dateEarliest] = date?.earliest?.toJavaLocalDate()
+            it[EventTable.dateLatest] = date?.latest?.toJavaLocalDate()
+            it[EventTable.placeId] = placeId
+            it[EventTable.notes] = notes
+            it[EventTable.version] = expectedVersion + 1
+        }
+        if (updated == 0) null else findById(treeId, id) ?: error("Event $id was just updated but cannot be read back")
+    }
+
+    /** FT-001: conditional delete of event [id]; see [PersonRepository.delete]. */
+    fun delete(treeId: Uuid, id: Uuid, expectedVersion: Long): Int = transaction {
+        EventTable.deleteWhere {
+            (EventTable.id eq id) and (EventTable.treeId eq treeId) and (EventTable.version eq expectedVersion)
+        }
     }
 
     private fun ResultRow.toEvent() = Event(

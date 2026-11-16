@@ -3,10 +3,14 @@ package com.moxietech.family_tree.server.graph
 import com.moxietech.family_tree.api.AddUnionChildRequest
 import com.moxietech.family_tree.api.CreateUnionRequest
 import com.moxietech.family_tree.api.UnionDto
+import com.moxietech.family_tree.api.UpdateUnionChildRequest
+import com.moxietech.family_tree.api.UpdateUnionRequest
 import com.moxietech.family_tree.domain.AccountId
 import com.moxietech.family_tree.domain.AuditAction
 import com.moxietech.family_tree.domain.ChildRelation
+import com.moxietech.family_tree.domain.PersonId
 import com.moxietech.family_tree.domain.TreeId
+import com.moxietech.family_tree.domain.UnionChild
 import com.moxietech.family_tree.domain.UnionId
 import com.moxietech.family_tree.domain.UnionType
 import com.moxietech.family_tree.format.GedcomDateParser
@@ -14,10 +18,14 @@ import com.moxietech.family_tree.server.collaboration.AuditJson
 import com.moxietech.family_tree.server.collaboration.AuditLogRepository
 import com.moxietech.family_tree.server.config.DatabaseDispatcher
 import com.moxietech.family_tree.server.errors.ConflictException
+import com.moxietech.family_tree.server.errors.NotFoundException
 import com.moxietech.family_tree.server.errors.ValidationException
 import com.moxietech.family_tree.server.errors.parseOptionalUuidField
 import com.moxietech.family_tree.server.errors.parseUuidField
+import com.moxietech.family_tree.server.errors.parseVersionParam
+import com.moxietech.family_tree.server.errors.referenced
 import com.moxietech.family_tree.server.errors.requireValid
+import com.moxietech.family_tree.server.errors.staleVersion
 import com.moxietech.family_tree.server.trees.TreeService
 import com.moxietech.family_tree.validation.Validation
 import kotlinx.coroutines.withContext
@@ -131,6 +139,192 @@ object UnionService {
                 dto
             }
         }
+
+    /**
+     * FT-001: replaces a union's fields, owner only, with the same validation as
+     * [createUnion]. The union is resolved inside [treeId] before the body's
+     * partner IDs are parsed, so a missing union stays a 404 (as in [addChild]);
+     * both partners must be in the same tree. A version that is no longer the
+     * stored one is a 409 that changes neither the union nor the audit log.
+     * Child links keep their own versions: the audit's before and after carry the
+     * same child list, read once in this transaction.
+     */
+    suspend fun updateUnion(
+        treeId: TreeId,
+        unionId: UnionId,
+        callerAccountId: AccountId,
+        request: UpdateUnionRequest,
+    ): UnionDto {
+        TreeService.getTreeForWriter(treeId, callerAccountId)
+        val unionUuid = parseUuidField("unionId", unionId.value)
+        val type = runCatching { UnionType.valueOf(request.type) }.getOrElse {
+            throw ValidationException(listOf("Unknown union type '${request.type}'"))
+        }
+        val startDate = request.startDate?.let { GedcomDateParser.parse(it) }
+        val endDate = request.endDate?.let { GedcomDateParser.parse(it) }
+        Validation.validateDateOrder(startDate, endDate).requireValid()
+
+        return withContext(DatabaseDispatcher) {
+            transaction {
+                val treeUuid = Uuid.parse(treeId.value)
+                val before = TreeScopedLookups.requireUnion(treeUuid, unionUuid)
+                val partner1Uuid = parseUuidField("partner1Id", request.partner1Id)
+                val partner2Uuid = parseOptionalUuidField("partner2Id", request.partner2Id)
+                if (partner1Uuid == partner2Uuid) {
+                    throw ValidationException(listOf("A union's two partners must be different people"))
+                }
+                TreeScopedLookups.requirePerson(treeUuid, partner1Uuid)
+                partner2Uuid?.let { TreeScopedLookups.requirePerson(treeUuid, it) }
+                if (before.version != request.version) throw staleVersion("Union", before.id.value)
+                val after = UnionRepository.update(
+                    treeId = treeUuid,
+                    id = unionUuid,
+                    expectedVersion = request.version,
+                    partner1Id = partner1Uuid,
+                    partner2Id = partner2Uuid,
+                    type = type,
+                    startDate = startDate,
+                    endDate = endDate,
+                ) ?: throw staleVersion("Union", before.id.value)
+                val children = UnionRepository.childrenOf(treeUuid, unionUuid)
+                val dto = after.toDto(children)
+                AuditLogRepository.append(
+                    treeId = treeUuid,
+                    actorAccountId = Uuid.parse(callerAccountId.value),
+                    entityType = "Union",
+                    entityId = after.id.value,
+                    action = AuditAction.UPDATE,
+                    beforeJson = AuditJson.encodeToString(before.toDto(children)),
+                    afterJson = AuditJson.encodeToString(dto),
+                )
+                dto
+            }
+        }
+    }
+
+    /**
+     * FT-001: changes how [childId] belongs to [unionId] (the relation), owner
+     * only. The union and child are the link's identity, taken from the path and
+     * resolved inside [treeId]; a link that doesn't exist there is a 404. A
+     * version that is no longer the link's stored one is a 409 that changes
+     * neither the link nor the audit log. Audited as "UnionChild" with the same
+     * entity ID and union-shaped snapshots as the link's creation.
+     */
+    suspend fun updateChild(
+        treeId: TreeId,
+        unionId: UnionId,
+        childId: PersonId,
+        callerAccountId: AccountId,
+        request: UpdateUnionChildRequest,
+    ): UnionDto {
+        TreeService.getTreeForWriter(treeId, callerAccountId)
+        val unionUuid = parseUuidField("unionId", unionId.value)
+        val childUuid = parseUuidField("childId", childId.value)
+        val relation = runCatching { ChildRelation.valueOf(request.relation) }.getOrElse {
+            throw ValidationException(listOf("Unknown child relation '${request.relation}'"))
+        }
+
+        return withContext(DatabaseDispatcher) {
+            transaction {
+                val treeUuid = Uuid.parse(treeId.value)
+                val union = TreeScopedLookups.requireUnion(treeUuid, unionUuid)
+                val link = UnionRepository.findChild(treeUuid, unionUuid, childUuid)
+                    ?: throw NotFoundException("No child $childUuid in union $unionUuid")
+                val entityId = "$unionUuid:$childUuid"
+                if (link.version != request.version) throw staleVersion("Child link", entityId)
+                if (!UnionRepository.updateChild(treeUuid, unionUuid, childUuid, request.version, relation)) {
+                    throw staleVersion("Child link", entityId)
+                }
+                val updated = UnionRepository.findChild(treeUuid, unionUuid, childUuid)
+                    ?: error("Child link $entityId was just updated but cannot be read back")
+                // One read of the sibling links, taken after this link's row lock is held,
+                // with only the targeted link swapped between its original and updated value.
+                // Two separate reads could straddle a sibling's commit and attribute that
+                // sibling's change to this entry (FT-001 review).
+                val siblings = UnionRepository.childrenOf(treeUuid, unionUuid)
+                fun withLink(value: UnionChild) = siblings.map { if (it.childId == value.childId) value else it }
+                val dto = union.toDto(withLink(updated))
+                AuditLogRepository.append(
+                    treeId = treeUuid,
+                    actorAccountId = Uuid.parse(callerAccountId.value),
+                    entityType = "UnionChild",
+                    entityId = entityId,
+                    action = AuditAction.UPDATE,
+                    beforeJson = AuditJson.encodeToString(union.toDto(withLink(link))),
+                    afterJson = AuditJson.encodeToString(dto),
+                )
+                dto
+            }
+        }
+    }
+
+    /**
+     * FT-001: deletes a union with no child links, events or citations, owner
+     * only, at the current [version] (see [RecordDeletion]). The audit's before
+     * is the union with its (necessarily empty) child list.
+     */
+    suspend fun deleteUnion(treeId: TreeId, unionId: UnionId, callerAccountId: AccountId, version: List<String>?) {
+        TreeService.getTreeForWriter(treeId, callerAccountId)
+        val unionUuid = parseUuidField("unionId", unionId.value)
+        val expected = parseVersionParam(version)
+        val treeUuid = Uuid.parse(treeId.value)
+        RecordDeletion.guarded("Union", unionUuid.toString(), RecordDeletion.UNION_FOREIGN_KEYS) {
+            val before = TreeScopedLookups.requireUnion(treeUuid, unionUuid)
+            if (before.version != expected) throw staleVersion("Union", before.id.value)
+            if (RecordDeletion.unionIsReferenced(treeUuid, unionUuid)) throw referenced("Union", before.id.value)
+            if (UnionRepository.delete(treeUuid, unionUuid, expected) == 0) throw staleVersion("Union", before.id.value)
+            if (RecordDeletion.isCited(treeUuid, RecordDeletion.UNION, unionUuid)) throw referenced("Union", before.id.value)
+            AuditLogRepository.append(
+                treeId = treeUuid,
+                actorAccountId = Uuid.parse(callerAccountId.value),
+                entityType = "Union",
+                entityId = before.id.value,
+                action = AuditAction.DELETE,
+                beforeJson = AuditJson.encodeToString(before.toDto(emptyList())),
+                afterJson = null,
+            )
+        }
+    }
+
+    /**
+     * FT-001: removes one child link, owner only, at the link's current
+     * [version]. Nothing references a link, so only a missing or stale link
+     * fails. Audited as "UnionChild" with a union-shaped before: one read of the
+     * remaining links, taken after the DELETE, plus the removed link as it was.
+     */
+    suspend fun deleteChild(
+        treeId: TreeId,
+        unionId: UnionId,
+        childId: PersonId,
+        callerAccountId: AccountId,
+        version: List<String>?,
+    ) {
+        TreeService.getTreeForWriter(treeId, callerAccountId)
+        val unionUuid = parseUuidField("unionId", unionId.value)
+        val childUuid = parseUuidField("childId", childId.value)
+        val expected = parseVersionParam(version)
+        val treeUuid = Uuid.parse(treeId.value)
+        val entityId = "$unionUuid:$childUuid"
+        RecordDeletion.guarded("Child link", entityId, emptySet()) {
+            val union = TreeScopedLookups.requireUnion(treeUuid, unionUuid)
+            val link = UnionRepository.findChild(treeUuid, unionUuid, childUuid)
+                ?: throw NotFoundException("No child $childUuid in union $unionUuid")
+            if (link.version != expected) throw staleVersion("Child link", entityId)
+            if (UnionRepository.deleteChild(treeUuid, unionUuid, childUuid, expected) == 0) {
+                throw staleVersion("Child link", entityId)
+            }
+            val remaining = UnionRepository.childrenOf(treeUuid, unionUuid)
+            AuditLogRepository.append(
+                treeId = treeUuid,
+                actorAccountId = Uuid.parse(callerAccountId.value),
+                entityType = "UnionChild",
+                entityId = entityId,
+                action = AuditAction.DELETE,
+                beforeJson = AuditJson.encodeToString(union.toDto(remaining + link)),
+                afterJson = null,
+            )
+        }
+    }
 
     suspend fun listUnions(treeId: TreeId, callerAccountId: AccountId): List<UnionDto> {
         val tree = TreeService.getTreeForReader(treeId, callerAccountId)

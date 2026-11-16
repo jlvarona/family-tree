@@ -14,6 +14,6 @@ fun Union.toDto(children: List<UnionChild>) = UnionDto(
     type = type.name,
     startDate = startDate?.toDto(),
     endDate = endDate?.toDto(),
-    children = children.map { UnionChildDto(childId = it.childId.value, relation = it.relation.name) },
+    children = children.map { UnionChildDto(childId = it.childId.value, relation = it.relation.name, version = it.version) },
     version = version,
 )

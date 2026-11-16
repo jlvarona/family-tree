@@ -9,6 +9,270 @@ up to date in place, not logged chronologically.
 
 ---
 
+## 2026-11-16 — FT-001 review fix: child-link versions are never reused
+
+**Finding (PR #17, reproduced with disposable Keycloak and PostgreSQL).** A child
+link is keyed by union and child. Deleting a link and creating the same key again
+gave both incarnations version 1, so a delayed `DELETE` (or `PUT`) carrying the first
+link's version changed the replacement and returned success.
+
+**Fix.** `V5__union_child_version_sequence.sql` adds `union_child_version_seq`, set to
+start above the highest existing `union_child.version`, and makes it the column
+default. `UnionRepository` takes a fresh value from the sequence for every link insert
+and for every successful relation update (the conditional `UPDATE … WHERE version = ?`
+is unchanged). Existing rows keep their versions; V4 is untouched. Child-link versions
+are now opaque change tokens: they increase, can skip numbers (a rolled-back update
+uses up a value), and are never issued twice. Clients send back what they read. JSON
+without a version still decodes as 1 (`VersionedDtoTest` unchanged). Person, union, event, place and
+source keep their per-record increment, since their IDs are never reused.
+
+**Regression coverage.**
+- `VersionedDeleteTest`: delete a link, recreate the same key with `STEP`; the new
+  version is higher; a `DELETE` and a `PUT` carrying the old version are stale `409`s
+  with every row and audit entry unchanged and the replacement still `STEP` at its own
+  version, which then deletes. The concurrent-delete and audit-rollback cases now send
+  the link's actual version.
+- `VersionColumnsMigrationTest`: a V4 link at version 7 keeps it; new links get 8, and
+  a deleted and recreated link gets 9.
+- `VersionedUpdateTest` reads child-link versions instead of assuming `1` or `+1`
+  (the other records still assert `+1`); the "future version" probe is now far above
+  any issued value.
+
+**Verification.** The final JVM suites passed with 49 core, 105 server and 112 shared
+tests. The opt-in live Keycloak server test was skipped. A separate real Keycloak and
+PostgreSQL run verified that recreated child links reject the previous version,
+successful deletes write one audit entry, and both concurrent foreign-key references
+and citation writers following the target lock contract lead to `409`. A concurrent
+event create that lost its place to an earlier delete returned `404`.
+
+## 2026-11-16 — FT-001 completed with versioned deletes
+
+The user decided the delete policy ("Deleting referenced records" in
+`concept-architecture.md`): an unreferenced record is deleted, a referenced one is a
+`409`. This completes the six delete routes on PR #17. V5 above protects versions
+when a child link is recreated.
+
+**Contract.**
+
+```
+DELETE /api/v1/trees/{treeId}/people/{personId}?version=N
+DELETE /api/v1/trees/{treeId}/unions/{unionId}?version=N
+DELETE /api/v1/trees/{treeId}/unions/{unionId}/children/{childId}?version=N
+DELETE /api/v1/trees/{treeId}/events/{eventId}?version=N
+DELETE /api/v1/trees/{treeId}/places/{placeId}?version=N
+DELETE /api/v1/trees/{treeId}/sources/{sourceId}?version=N
+```
+
+- `version` is required and given once. `N` is the record's current version as a
+  positive decimal integer with no sign, no leading zeros, and a value up to
+  9223372036854775807. Anything else (missing, empty, repeated, `0`, `-1`, `01`,
+  `1.5`, too large) is `400` "version query parameter must be a single positive
+  integer". No request body.
+- `204` with an empty body on success.
+- Checks in order: the owner write check, before the path ID or `version` is parsed
+  (`403` for anyone else, whatever they send). Then path IDs → `400`; the version →
+  `400`; the record in the URL's tree → the same generic `404` for a foreign or
+  missing ID (a child link not in the union is `404` "No child … in union …"). Then
+  the stored version → `409` stale, references → `409` "… is still referenced by
+  other records; remove those references first".
+- A conflict or any failure writes nothing and no audit entry. A success appends one
+  `DELETE` audit entry (actor, the entity's existing type and ID, before = the record
+  in its create/update snapshot shape, after = `null`) in the same transaction.
+  Earlier audit entries for the record are kept (`audit_log.entity_id` is text, not a
+  foreign key). A child link's before is its union with the remaining links, read once
+  after the DELETE, plus the removed link.
+
+**Reference inventory** (V1 + V2; since V2 every reference is same-tree):
+
+| Deleted | Blocked by |
+| --- | --- |
+| person | `union_record.partner1_id` / `partner2_id`, `union_child.child_id`, `event.person_id`, `membership.person_id` (any status); a citation with target `PERSON` |
+| union_record | `union_child.union_id`, `event.union_id`; a citation with target `UNION` |
+| event | a citation with target `EVENT` |
+| place | `event.place_id` |
+| source | `citation.source_id` |
+| union_child | nothing |
+
+Only references in the same tree count: a citation row in another tree that names the
+ID (which V2's preflight rejects as invalid data) neither blocks nor is revealed.
+Nothing is cascaded, unlinked or set to null.
+
+**How it holds under concurrency** (`graph/RecordDeletion.kt`). One transaction:
+resolve and compare the version, run the reference checks above, then
+`DELETE … WHERE id = ? AND tree_id = ? AND version = ?` (0 rows → `409` stale). Then,
+for person, union and event, check citations again, then audit.
+- **Foreign-key writers.** A writer that inserts a reference holds `FOR KEY SHARE` on
+  the target until it commits. The DELETE waits for it, and PostgreSQL then rejects the
+  DELETE with `23503`. `RecordDeletion.guarded` catches the exception after the
+  transaction has rolled back and maps it to the referenced `409` only when the
+  constraint is one that references the deleted table (both the V1 single-column and
+  the V2 same-tree constraint names). Every other database error, such as an audit
+  failure, propagates unchanged. A writer that comes after the DELETE waits for the
+  delete's commit and then fails its own foreign-key check.
+- **Citations** have no foreign key. Existing citations are found by the checks before
+  and after the DELETE, in the same transaction. **Lock contract for FT-002** (also in
+  the decisions table): a citation writer must, in the same transaction as the insert
+  or retarget, run
+  `SELECT … FROM person|union_record|event WHERE id = ? AND tree_id = ? FOR KEY SHARE`
+  and return `404` if no row comes back. Then a concurrent delete's DELETE waits for
+  the writer and its post-DELETE check sees the committed citation; a writer that
+  arrives later waits for the delete and finds no row. FT-002's implementation wasn't
+  changed.
+- **Competing updates and deletes** on one row serialize on its row lock. The loser's
+  conditional statement no longer matches the version and is a `409`; later requests
+  for a deleted record are `404`.
+
+A database-level design (triggers or a citation foreign key per target type) was not
+chosen: the polymorphic `target_type`/`target_id` can't carry one foreign key without a
+schema change and a backfill of existing citations, which FT-002 can still decide on.
+
+**Tests.** `server/.../graph/VersionedDeleteTest` (HTTP through the
+production `module` and token verifier on Testcontainers PostgreSQL 16; "nothing
+changed" is a fingerprint of every tenant row, citations and audit entries included):
+- Every route deletes an unreferenced record with `204` and an empty body, the row is
+  gone, one `DELETE` audit entry has the expected before and a null after, earlier
+  entries stay, and the read routes no longer return the record.
+- Each kind of reference gives `409` with nothing written: partner 1 only, partner 2
+  only, child link, event subject, membership link, cited (living, so private to
+  members) person; union with a child, an event or a citation; cited event; place used
+  by an event; source with citations.
+- Tree B's records give the same `404` body as random IDs on all six routes and leak
+  nothing; a tree B citation naming a tree A person doesn't block its deletion.
+- A stale (after an update) or future version is `409` with nothing written, the
+  current version deletes, and later updates or deletes are `404`.
+- A delete and an update from one version, parked behind a test-held row lock, leave
+  exactly one winner with matching rows and audit entries. Six concurrent deletes of
+  one link give one `204` and one audit entry.
+- **Concurrent foreign-key writer race**: an uncommitted insert of an event (for a
+  place and for a person) or a child link (for a union) holds its lock while the
+  DELETE waits (seen in `pg_stat_activity`); after the writer commits the delete is
+  `409`, the record stays and nothing is audited.
+- **Citation race under the FT-002 lock contract**: a writer locks an event or person
+  `FOR KEY SHARE` and inserts a citation; the parked delete is `409` after the commit.
+- A test trigger that rejects `DELETE` audit inserts rolls back all six deletes as a
+  database error (`P0001`), not a conflict; after it is dropped the same calls succeed,
+  and a referenced person still fails with a `ConflictException`.
+- The active non-owner gets `403` with valid, missing, malformed and zero versions and
+  malformed path IDs; the invitee and another tree's owner get "Not a member".
+- Malformed `version` values, malformed path IDs, missing records and an unlinked child
+  are `400` or `404` with nothing written.
+
+**Verification.** The final regression results are recorded in the V5 review entry
+above.
+
+## 2026-11-16 — FT-001 staged versioned updates (in progress)
+
+FT-001 stays **In progress**: this stage adds updates and the version strategy only.
+Delete routes and deletion semantics are untouched while the product decision on
+deleting records that other records reference is pending (now under "Still open" in
+`concept-architecture.md`). The changes are uncommitted; one pull request will cover
+the whole story.
+
+**Routes** (owner-only, like creates; `200` with the updated record):
+
+```
+PUT    /api/v1/trees/{treeId}/people/{personId}                       UpdatePersonRequest     → PersonDto
+PUT    /api/v1/trees/{treeId}/unions/{unionId}                        UpdateUnionRequest      → UnionDto
+PUT    /api/v1/trees/{treeId}/unions/{unionId}/children/{childId}     UpdateUnionChildRequest → UnionDto
+PUT    /api/v1/trees/{treeId}/events/{eventId}                        UpdateEventRequest      → EventDto
+PUT    /api/v1/trees/{treeId}/places/{placeId}                        UpdatePlaceRequest      → PlaceDto
+PUT    /api/v1/trees/{treeId}/sources/{sourceId}                      UpdateSourceRequest     → SourceDto
+```
+
+**Request shapes.** Each update request (in `:core` `api/`) has the matching create
+request's fields plus a required `version`; `UpdatePersonRequest` already existed. A
+child link is identified by its union and child in the path, so
+`UpdateUnionChildRequest` carries only `relation` and `version`. Person updates never
+change the ID, tree, creator or profile media.
+
+**Order of checks**, the same as the create routes:
+1. Authentication, then `requireTreeWriter` before the path ID or body is read, so a
+   non-owner gets `403` for any input, malformed JSON included (FT-068).
+2. Path IDs (`parseUuidField`) and field rules (`Validation`, enum names, date order,
+   two different partners, exactly one event subject) → structured `400`.
+3. Inside one transaction: the record is resolved in the URL's tree (another tree's ID
+   is the same generic `404` as a missing one), then the body's references (partners;
+   event person, union and place) are parsed and resolved in that tree. A missing
+   record therefore stays a `404` even when a body ID is malformed, as with child links.
+
+**Optimistic concurrency.** In the same transaction the service compares the stored
+version with the request's, then runs a conditional
+`UPDATE … WHERE id = ? AND tree_id = ? AND version = ?` that sets every field and
+`version + 1`. No matching row (a concurrent writer committed first) or a different
+stored version throws `staleVersion(...)` (a `ConflictException`, mapped to `409` with
+"… has been changed since you read it; reload it and try again"). The transaction
+rolls back, so neither the record nor the audit log changes. Under PostgreSQL's read
+committed isolation, a second writer blocked on the row lock re-checks the version
+after the first commits and fails.
+
+**Audit.** Each successful update appends one `UPDATE` entry in the same transaction,
+with the actor, the entity's existing type and ID (`Person`, `Union`, `UnionChild` as
+`union:child`, `Event`, `Place`, `Source`), and before/after snapshots in the same DTO
+shapes as their creation entries. Union snapshots carry the same child list before and
+after (child links have their own versions and entries). A child link entry is built
+from one read of the union's links, taken after the targeted row is locked, with only
+the targeted link swapped between its original and updated value. So a sibling link
+committed meanwhile appears identically in both (review finding on draft PR #17: two
+separate reads had attributed a sibling's change to the entry). An event that keeps its
+place reuses the place read for "before", so a concurrent place edit never appears as
+an event change.
+
+**Versions on place and child link (V4).**
+`V4__place_and_union_child_versions.sql` adds `version bigint not null default 1` to
+`place` and `union_child`. Existing rows start at 1, the value new rows get.
+`PlaceDto` and `UnionChildDto` gained `version` with a default of 1 marked
+`@EncodeDefault`: responses always include it, JSON without it (from before FT-001)
+still decodes, and existing Kotlin call sites compile unchanged. Create request bodies
+didn't change. The web client ignores unknown fields, so the extra field is harmless
+to it; it doesn't call the update routes yet.
+
+**Tests added.**
+- `server/.../graph/VersionedUpdateTest` (HTTP through the production `module` on
+  Testcontainers PostgreSQL 16, as in `AuthenticatedAccessTest`):
+  - Each route as owner: `200`, version + 1 in the response and the row, one `UPDATE`
+    audit whose before is the record as created and whose after is the response.
+  - Updates are visible through the person, bundle, events, places and sources reads.
+  - Create and list responses carry place and child link versions (1) in the raw JSON;
+    create bodies without a version are still accepted.
+  - Stale (already used) and unknown (future) versions → `409` on every route, with
+    an unchanged fingerprint of every tree row and audit entry.
+  - Two writers that read the same version are parked on a test-held row lock until
+    both wait in their conditional `UPDATE` (seen in `pg_stat_activity`); after
+    release exactly one gets `200` and the other `409`, with one audit entry. A
+    burst of six concurrent writers per route also yields one success and one entry.
+  - Review regressions under a test-held row lock: child 1's update waits while a
+    sibling's relation change commits, and child 1's entry shows the sibling
+    unchanged; an event update that keeps its place waits while the place is renamed,
+    and its entry shows the same place before and after. Child links are selected by
+    child ID, never by position.
+  - A test trigger that rejects `UPDATE` audit inserts rolls back all six service
+    updates (PostgreSQL `P0001` in the cause chain, no row changed); after the trigger
+    is dropped the same calls succeed at the original versions.
+  - The active non-owner gets `403` for valid, malformed, version-less and
+    malformed-path requests on every route; the invitee and another tree's owner get
+    "Not a member"; nothing changes.
+  - Tree B's records as targets, and tree B's partners, event person, union and place
+    as references, give the same `404` body as random IDs, leak none of tree B's IDs
+    or names, and change neither tree.
+  - Malformed path and body IDs, unknown enums, blank names and titles, the same
+    partner in two spellings, inverted union dates, zero or two event subjects and
+    missing versions are structured `400`s. Missing references and an unlinked child
+    are `404`s, and a missing record with a malformed body ID stays a `404`. No input
+    is echoed and nothing changes.
+- `server/.../db/VersionColumnsMigrationTest`: rows written at V3 get version 1 from
+  V4 and keep their other columns.
+- `core/.../api/VersionedDtoTest`: version-less place and child link JSON decodes,
+  the version is encoded even at its default, and every update request needs one.
+
+**Verification.** `:core:jvmTest`, `:server:test` and `:app:shared:jvmTest` passed
+with 49, 92 and 112 passing tests respectively. The opt-in Keycloak test was skipped
+by the server suite. A separate check with disposable Keycloak and PostgreSQL
+confirmed that competing person updates produce one write and one audit entry,
+stale and foreign-tree requests change neither, and an audit failure rolls back
+the write. Repeating the live sibling-link race confirmed that each audit shows
+only the link updated by the request. Delete routes remain pending the policy for
+referenced records.
+
 ## 2026-11-16 — FT-006 built the person page
 
 Opening a person from the tree (or a direct link or reload of
@@ -892,7 +1156,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 
 ### Status board
 
-**Done (25)** · **In progress (0)** · **To do (29)** · **Blocked (1)**
+**Done (26)** · **In progress (0)** · **To do (28)** · **Blocked (1)**
 
 | Order | ID | Story | Epic | Priority | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -921,36 +1185,36 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 | — | FT-004 | "Whole tree" bundle endpoint | E1 | P1 | Done |
 | — | FT-005 | Authenticated owner workflow and web tree views | E1 | P1 | Done |
 | — | FT-006 | Person page UI | E1 | P1 | Done |
-| 1 | FT-001 | Update & delete endpoints | E1 | P1 | To do |
-| 2 | FT-002 | Citation routes | E1 | P1 | To do |
-| 3 | FT-007 | Duplicate-merge workflow | E1 | P1 | To do |
-| 4 | FT-008 | Photo upload (S3 presigned URLs) | E1 | P1 | Blocked |
-| 5 | FT-064 | Make compose host ports configurable | E7 | P2 | To do |
-| 6 | FT-010 | `Grant` + `GrantScope` tables, branch resolution | E2 | P1 | To do |
-| 7 | FT-011 | Invitations + account-to-person linking | E2 | P1 | To do |
-| 8 | FT-012 | Grant-based authorization | E2 | P1 | To do |
-| 9 | FT-013 | Grant-based living-person redaction | E2 | P1 | To do |
-| 10 | FT-014 | `ChangeProposal` workflow | E2 | P1 | To do |
-| 11 | FT-015 | Maternal/paternal "side" views | E2 | P1 | To do |
-| 12 | FT-016 | Activity feed UI + revert | E2 | P1 | To do |
-| 13 | FT-062 | Decide which citation source types come first | E7 | P2 | To do |
-| 14 | FT-020 | Android Compose screens | E3 | P3 | To do |
-| 15 | FT-021 | iOS Compose screens | E3 | P3 | To do |
-| 16 | FT-022 | Offline cache (SQLDelight) | E3 | P3 | To do |
-| 17 | FT-023 | Camera upload | E3 | P3 | To do |
-| 18 | FT-030 | Stripe plans + usage limits | E4 | P3 | To do |
-| 19 | FT-031 | GEDCOM 7 import | E4 | P3 | To do |
-| 20 | FT-032 | GEDCOM 7 / PDF export | E4 | P3 | To do |
-| 21 | FT-040 | Comments | E5 | P3 | To do |
-| 22 | FT-041 | Live presence / WebSocket updates | E5 | P3 | To do |
-| 23 | FT-050 | "How are we related?" calculator | E6 | P3 | To do |
-| 24 | FT-051 | Memory prompts | E6 | P3 | To do |
-| 25 | FT-052 | Photo face-tagging suggestions | E6 | P3 | To do |
-| 26 | FT-053 | Birthday / anniversary reminders | E6 | P3 | To do |
-| 27 | FT-054 | Fan, hourglass, timeline, map views | E6 | P3 | To do |
-| 28 | FT-055 | Print/PDF charts and photo books | E6 | P3 | To do |
-| 29 | FT-017 | Row-level security on `tree_id` | E2 | P3 | To do |
-| 30 | FT-061 | `audit_log` JSON columns `text` → `jsonb` | E7 | P3 | To do |
+| — | FT-001 | Update & delete endpoints | E1 | P1 | Done |
+| 1 | FT-002 | Citation routes | E1 | P1 | To do |
+| 2 | FT-007 | Duplicate-merge workflow | E1 | P1 | To do |
+| 3 | FT-008 | Photo upload (S3 presigned URLs) | E1 | P1 | Blocked |
+| 4 | FT-064 | Make compose host ports configurable | E7 | P2 | To do |
+| 5 | FT-010 | `Grant` + `GrantScope` tables, branch resolution | E2 | P1 | To do |
+| 6 | FT-011 | Invitations + account-to-person linking | E2 | P1 | To do |
+| 7 | FT-012 | Grant-based authorization | E2 | P1 | To do |
+| 8 | FT-013 | Grant-based living-person redaction | E2 | P1 | To do |
+| 9 | FT-014 | `ChangeProposal` workflow | E2 | P1 | To do |
+| 10 | FT-015 | Maternal/paternal "side" views | E2 | P1 | To do |
+| 11 | FT-016 | Activity feed UI + revert | E2 | P1 | To do |
+| 12 | FT-062 | Decide which citation source types come first | E7 | P2 | To do |
+| 13 | FT-020 | Android Compose screens | E3 | P3 | To do |
+| 14 | FT-021 | iOS Compose screens | E3 | P3 | To do |
+| 15 | FT-022 | Offline cache (SQLDelight) | E3 | P3 | To do |
+| 16 | FT-023 | Camera upload | E3 | P3 | To do |
+| 17 | FT-030 | Stripe plans + usage limits | E4 | P3 | To do |
+| 18 | FT-031 | GEDCOM 7 import | E4 | P3 | To do |
+| 19 | FT-032 | GEDCOM 7 / PDF export | E4 | P3 | To do |
+| 20 | FT-040 | Comments | E5 | P3 | To do |
+| 21 | FT-041 | Live presence / WebSocket updates | E5 | P3 | To do |
+| 22 | FT-050 | "How are we related?" calculator | E6 | P3 | To do |
+| 23 | FT-051 | Memory prompts | E6 | P3 | To do |
+| 24 | FT-052 | Photo face-tagging suggestions | E6 | P3 | To do |
+| 25 | FT-053 | Birthday / anniversary reminders | E6 | P3 | To do |
+| 26 | FT-054 | Fan, hourglass, timeline, map views | E6 | P3 | To do |
+| 27 | FT-055 | Print/PDF charts and photo books | E6 | P3 | To do |
+| 28 | FT-017 | Row-level security on `tree_id` | E2 | P3 | To do |
+| 29 | FT-061 | `audit_log` JSON columns `text` → `jsonb` | E7 | P3 | To do |
 
 Start with the API security fixes. Complete FT-072 before
 using real family data or enabling invitations. FT-017 and FT-061 remain deferred
@@ -999,16 +1263,23 @@ desktop/shared build repair.
 
 ### E1 — Close out Phase 1 (Foundations)
 
-- **FT-001 Update & delete endpoints.** `To do · P1 · #1` — Person, Union, UnionChild,
+- **FT-001 Update & delete endpoints.** `Done · P1` — Person, Union, UnionChild,
   Event, Place, and Source currently support create/read. Reuse tree-scoped lookups,
   owner write checks, and transactional audits (FT-065, FT-068, FT-069). Use existing
   version columns for optimistic concurrency and define a version strategy for Place
   and UnionChild, which lack one. A stale mutation returns `409` with no changes
   to the domain record or audit log.
-- **FT-002 Citation routes.** `To do · P1 · #2` — use the current `citation` table
+
+  PR #17 adds versioned owner-only `PUT` updates and `DELETE …?version=N` for all six
+  records, V4 version columns and a V5 child-link version sequence. A referenced record
+  returns `409`; a successful deletion leaves a before-only audit entry. See the
+  2026-11-16 FT-001 entries for the contract and verification.
+- **FT-002 Citation routes.** `To do · P1 · #1` — use the current `citation` table
   and `:core`'s `CitationTarget` (person/event/union). Resolve both the source and
   the polymorphic target within the authorized tree, audit writes in the same
-  transaction, and enforce the target's visibility policy (FT-065, FT-066).
+  transaction, and enforce the target's visibility policy (FT-065, FT-066). Follow
+  the citation lock contract from FT-001 (decisions table): lock the target
+  `FOR KEY SHARE` before inserting or retargeting a citation.
 - **FT-003 Bind local accounts to OIDC issuer and subject.** `Done · P1`.
   Update `AuthConfig`, `CurrentAccount`, `AccountRoutes`, and
   `AccountService`/`AccountRepository`. Pass the verified `iss` and `sub` to
@@ -1081,71 +1352,71 @@ desktop/shared build repair.
   from the URL through the existing person, bundle and person-events routes. No
   server, schema or realm change. Citations (FT-002) and photos (FT-008) are not
   shown. See the session entry for tests and verification.
-- **FT-007 Duplicate-merge workflow.** `To do · P1 · #3` — `DuplicatePersonScorer` only
+- **FT-007 Duplicate-merge workflow.** `To do · P1 · #2` — `DuplicatePersonScorer` only
   returns a warning score today (`CreatePersonResponse.possibleDuplicates`); there's no
   UI or API path to actually merge two person records into one yet.
-- **FT-008 Photo upload** (S3 presigned URLs + a `media` table). `Blocked · P1 · #4` —
+- **FT-008 Photo upload** (S3 presigned URLs + a `media` table). `Blocked · P1 · #3` —
   waiting on an AWS bucket/credentials decision; not something to guess at.
   `person.profile_media_id` and `citation.media_id` are already typed `uuid` and
   FK-less, so the table can land later without a breaking migration.
 
 ### E2 — Phase 2: Branches and sharing
 
-- **FT-010 `Grant` + `GrantScope` tables and branch resolution.** `To do · P1 · #6` —
+- **FT-010 `Grant` + `GrantScope` tables and branch resolution.** `To do · P1 · #5` —
   the recursive CTE that turns an anchor + direction + depth + include-partners into a
   resolved person-id set (cached, rebuilt when the graph changes). `Branch` already
   exists in `:core` as the shared definition; nothing resolves it against real data yet.
 - **FT-011 Invitations** (email or link) **and account-to-person linking.**
-  `To do · P1 · #7` — derives each member's home branch automatically once linked.
+  `To do · P1 · #6` — derives each member's home branch automatically once linked.
   Enable invitations for users after FT-072 passes and FT-012 through FT-014 cover
   shared-tree authorization and proposals.
-- **FT-012 Real grant-based authorization.** `To do · P1 · #8` — replaces today's
+- **FT-012 Real grant-based authorization.** `To do · P1 · #7` — replaces today's
   Phase 1 owner-only write policy from FT-068 with resolution against `GrantScope`.
   Keep the active membership requirement and pair grant checks with FT-014.
-- **FT-013 Grant-based living-person redaction.** `To do · P1 · #9` — extend the
+- **FT-013 Grant-based living-person redaction.** `To do · P1 · #8` — extend the
   response policy from FT-066 to allow visibility when a grant covers the person.
-- **FT-014 `ChangeProposal` workflow.** `To do · P1 · #10` — out-of-branch edits become
+- **FT-014 `ChangeProposal` workflow.** `To do · P1 · #9` — out-of-branch edits become
   a proposal with a before/after diff, approved per field by the branch owner or the
   tree owner.
 - **FT-015 Maternal/paternal "side" views** (`Branch.direction = SIDE`).
-  `To do · P1 · #11` — ancestors of an anchor plus all of their descendants, nothing on
+  `To do · P1 · #10` — ancestors of an anchor plus all of their descendants, nothing on
   the other side.
-- **FT-016 Activity feed UI + revert.** `To do · P1 · #12` — reads `audit_log`, which
+- **FT-016 Activity feed UI + revert.** `To do · P1 · #11` — reads `audit_log`, which
   already carries `before_json`/`after_json` for exactly this; nothing reads them yet.
-- **FT-017 Row-level security on `tree_id`.** `To do · P3 · #29` — the defense-in-depth
+- **FT-017 Row-level security on `tree_id`.** `To do · P3 · #28` — the defense-in-depth
   backstop `ARCHITECTURE.md` describes, once there's a performance/operational reason to
   add it. FT-065 covers tenant isolation in the current API and foreign keys.
 
 ### E3 — Phase 3: Mobile
 
-- **FT-020 Android Compose screens.** `To do · P3 · #14`
-- **FT-021 iOS Compose screens.** `To do · P3 · #15`
-- **FT-022 Offline cache** (SQLDelight) on mobile. `To do · P3 · #16`
+- **FT-020 Android Compose screens.** `To do · P3 · #13`
+- **FT-021 iOS Compose screens.** `To do · P3 · #14`
+- **FT-022 Offline cache** (SQLDelight) on mobile. `To do · P3 · #15`
 - **FT-023 Camera upload**, straight into the presigned-URL flow from FT-008.
-  `To do · P3 · #17`
+  `To do · P3 · #16`
 
 ### E4 — Phase 4: Billing and import
 
 - **FT-030 Stripe plans + usage limits**, opening the product to the public.
-  `To do · P3 · #18`
-- **FT-031 GEDCOM 7 import.** `To do · P3 · #19`
-- **FT-032 GEDCOM 7 / PDF export.** `To do · P3 · #20`
+  `To do · P3 · #17`
+- **FT-031 GEDCOM 7 import.** `To do · P3 · #18`
+- **FT-032 GEDCOM 7 / PDF export.** `To do · P3 · #19`
 
 ### E5 — Phase 5: Collaboration depth
 
-- **FT-040 Comments** on a person, event, or photo. `To do · P3 · #21`
+- **FT-040 Comments** on a person, event, or photo. `To do · P3 · #20`
 - **FT-041 Live presence / WebSocket-pushed updates**, so collaborators see each
-  other's edits without refreshing. `To do · P3 · #22`
+  other's edits without refreshing. `To do · P3 · #21`
 
 ### E6 — Phase 6: Delight
 
-- **FT-050 "How are we related?" relationship calculator.** `To do · P3 · #23`
+- **FT-050 "How are we related?" relationship calculator.** `To do · P3 · #22`
 - **FT-051 Memory prompts** — text and voice answers added to a person's bio.
-  `To do · P3 · #24`
-- **FT-052 Photo face-tagging suggestions.** `To do · P3 · #25`
-- **FT-053 Birthday / anniversary reminders.** `To do · P3 · #26`
-- **FT-054 Fan chart, hourglass chart, timeline, and map views.** `To do · P3 · #27`
-- **FT-055 Print/PDF charts and photo books.** `To do · P3 · #28`
+  `To do · P3 · #23`
+- **FT-052 Photo face-tagging suggestions.** `To do · P3 · #24`
+- **FT-053 Birthday / anniversary reminders.** `To do · P3 · #25`
+- **FT-054 Fan chart, hourglass chart, timeline, and map views.** `To do · P3 · #26`
+- **FT-055 Print/PDF charts and photo books.** `To do · P3 · #27`
 
 ### E7 — Hardening & housekeeping
 
@@ -1156,9 +1427,9 @@ desktop/shared build repair.
   status without bearer tokens, request bodies, or SQL bind values containing
   names, dates, locations, or notes.
 - **FT-061 Migrate `audit_log.before_json`/`after_json` from `text` to `jsonb`.**
-  `To do · P3 · #30` — once something actually needs to query into them (deferred
+  `To do · P3 · #29` — once something actually needs to query into them (deferred
   deliberately, see "Deliberate omissions" below).
-- **FT-062 Decide which citation source types to prioritize.** `To do · P2 · #13` —
+- **FT-062 Decide which citation source types to prioritize.** `To do · P2 · #12` —
   beyond the 7 already modeled (vital records, census, church records, newspapers,
   family bibles, oral history, other); the one remaining "Still open" item in
   `concept-architecture.md`. Your decision, not an engineering task.
@@ -1167,7 +1438,7 @@ desktop/shared build repair.
   container on Docker Engine 29.7.2. Flyway applied the schema, the graph
   assertions passed, and teardown closed Hikari. The README has the Windows and
   Linux test commands.
-- **FT-064 Make compose host ports configurable.** `To do · P2 · #5` — this dev
+- **FT-064 Make compose host ports configurable.** `To do · P2 · #4` — this dev
   machine runs Postgres (5432) and Keycloak (8081) for another project on the same host
   ports `docker-compose.yml` claims. Worked around manually today (session entry 7);
   parameterizing the ports (or a per-developer override file) would let both projects'
@@ -1289,7 +1560,9 @@ Relationships go through `union_record` / `union_child`, never direct parent/chi
 columns on `person` (`AGENTS.md`: *"Union model"*). Source of truth, in order:
 [`V1__init.sql`](../server/src/main/resources/db/migration/V1__init.sql),
 [`V2__tree_scoped_references.sql`](../server/src/main/resources/db/migration/V2__tree_scoped_references.sql),
-[`V3__account_oidc_identity.sql`](../server/src/main/resources/db/migration/V3__account_oidc_identity.sql).
+[`V3__account_oidc_identity.sql`](../server/src/main/resources/db/migration/V3__account_oidc_identity.sql),
+[`V4__place_and_union_child_versions.sql`](../server/src/main/resources/db/migration/V4__place_and_union_child_versions.sql),
+[`V5__union_child_version_sequence.sql`](../server/src/main/resources/db/migration/V5__union_child_version_sequence.sql).
 
 ### Entity-relationship diagram
 
@@ -1337,6 +1610,7 @@ erDiagram
         text hierarchy
         double latitude
         double longitude
+        bigint version
     }
     UNION_RECORD {
         uuid id PK
@@ -1354,6 +1628,7 @@ erDiagram
         uuid union_id PK
         uuid child_id PK
         text relation
+        bigint version
     }
     EVENT {
         uuid id PK
@@ -1457,6 +1732,16 @@ indexes on the name columns backing the fuzzy duplicate-check.
 
 **`place`** — `tree_id → tree`; shared within a tree, referenced by `event.place_id`.
 
+**Versions (FT-001).** `person`, `union_record`, `event` and `source` have had
+`version` since V1; V4 added it to `place` and `union_child` (`not null default 1`, so
+existing rows start at 1). Since V5, `union_child.version` comes from
+`union_child_version_seq` on every insert and update, so a recreated link never reuses
+a version. Every update is a conditional `UPDATE … WHERE version = ?`
+that increments it in the same statement; a mismatch is a `409` with nothing written.
+Deletes are conditional on the version too, and a record that another row in its tree
+references (a foreign key, or a citation's polymorphic target) is not deleted (`409`);
+no foreign key cascades. `tree.version` is still unused.
+
 **`union_record`** (named to dodge the `UNION` SQL keyword) — `tree_id → tree`,
 `partner1_id → person` (required), `partner2_id → person` (nullable — a union can be
 recorded with one known partner). `type` constrained to
@@ -1493,7 +1778,9 @@ target FK. FT-002 adds application-level validation using `CitationTarget` in
 `:core`. `confidence` ranges from `0` to `3` (unreliable → primary evidence).
 `tree_id` (V2) is copied from the source, and a same-tree foreign key keeps the source
 in that tree. V2's preflight also checked existing targets; the target itself stays
-without a foreign key until FT-002.
+without a foreign key until FT-002. A same-tree citation blocks deleting its person,
+union or event (FT-001); citation writers must lock the target `FOR KEY SHARE` first
+(decisions table).
 
 **`membership`** — links an `account` to a `tree` and, once set, to that member's own
 `person` (drives the Phase 2 home-branch calculation). Composite PK

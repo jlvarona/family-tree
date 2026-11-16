@@ -24,4 +24,5 @@ fun Place.toDto() = PlaceDto(
     hierarchy = hierarchy,
     latitude = latitude,
     longitude = longitude,
+    version = version,
 )
