@@ -12,6 +12,7 @@ import com.moxietech.family_tree.server.graph.personRoutes
 import com.moxietech.family_tree.server.graph.placeRoutes
 import com.moxietech.family_tree.server.graph.unionRoutes
 import com.moxietech.family_tree.server.identity.accountRoutes
+import com.moxietech.family_tree.server.sources.citationRoutes
 import com.moxietech.family_tree.server.sources.sourceRoutes
 import com.moxietech.family_tree.server.trees.treeRoutes
 import io.ktor.serialization.kotlinx.json.json
@@ -56,6 +57,7 @@ fun Application.module(oidc: OidcSettings = OidcSettings()) {
         eventRoutes()
         placeRoutes()
         sourceRoutes()
+        citationRoutes()
         graphRoutes()
     }
 }
