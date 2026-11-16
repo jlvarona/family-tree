@@ -17,6 +17,19 @@ import kotlinx.datetime.Month
  */
 object GedcomDateParser {
 
+    /** Years of uncertainty added on each side of an "about" date. */
+    private const val APPROXIMATE_YEARS = 2
+
+    /**
+     * Inclusive range of the PostgreSQL `date` columns that store the bounds:
+     * 4714-11-24 BC (proleptic ISO -4713-11-24) to 5874897-12-31 AD, verified
+     * against PostgreSQL 16. kotlinx-datetime 0.7.1 accepts years
+     * ±999,999,999 on every target, so storage is the binding limit and parses
+     * the same on server and clients. Dates outside it keep display text only.
+     */
+    private val MIN_STORABLE_DATE = LocalDate(-4713, 11, 24)
+    private val MAX_STORABLE_DATE = LocalDate(5_874_897, 12, 31)
+
     private val monthsByAbbreviation: Map<String, Month> = buildMap {
         put("jan", Month.JANUARY); put("ene", Month.JANUARY)
         put("feb", Month.FEBRUARY)
@@ -55,18 +68,34 @@ object GedcomDateParser {
         val body = stripQualifier(text)
         val parts = Regex("(?i)\\s+and\\s+").split(body, limit = 2)
         if (parts.size != 2) return null to null
-        val start = parseSingle(parts[0].trim())
-        val end = parseSingle(parts[1].trim())
-        return start?.first to end?.second
+        // A range is only meaningful with both endpoints valid and in order; an
+        // invalid endpoint or a reversed "bet 1885 and 1880" keeps the text only.
+        val start = parseSingle(parts[0].trim())?.first ?: return null to null
+        val end = parseSingle(parts[1].trim())?.second ?: return null to null
+        if (start > end) return null to null
+        return start to end
     }
 
     private fun parseApproximate(text: String): Pair<LocalDate?, LocalDate?> {
         val bounds = parseSingle(text) ?: return null to null
         // "about" widens the window: treat as +/- 2 years of uncertainty around
         // whatever precision was given, rather than pretending to day-level accuracy.
-        val earliestYear = bounds.first.year - 2
-        val latestYear = bounds.second.year + 2
-        return LocalDate(earliestYear, 1, 1) to LocalDate(latestYear, 12, 31)
+        // Parsed years are already within the storable range (far from Int limits),
+        // so the arithmetic cannot overflow; a widened date outside the range drops the bounds.
+        val earliestYear = bounds.first.year - APPROXIMATE_YEARS
+        val latestYear = bounds.second.year + APPROXIMATE_YEARS
+        val earliest = date(earliestYear, Month.JANUARY, 1) ?: return null to null
+        val latest = date(latestYear, Month.DECEMBER, 31) ?: return null to null
+        return earliest to latest
+    }
+
+    /**
+     * Builds a date only if the platform can represent it and it lies inside the
+     * storable range, returning null instead of throwing (bad day, extreme year).
+     */
+    private fun date(year: Int, month: Month, day: Int): LocalDate? {
+        val date = runCatching { LocalDate(year, month, day) }.getOrNull() ?: return null
+        return date.takeIf { it >= MIN_STORABLE_DATE && it <= MAX_STORABLE_DATE }
     }
 
     /** Resolves one date token to its (earliest, latest) bound, at whatever precision it was given. */
@@ -77,8 +106,8 @@ object GedcomDateParser {
         // ISO: 1901-03-12
         Regex("^(\\d{4})-(\\d{2})-(\\d{2})$").matchEntire(trimmed)?.let { m ->
             val (y, mo, d) = m.destructured
-            return runCatching { LocalDate(y.toInt(), mo.toInt(), d.toInt()) }
-                .getOrNull()?.let { it to it }
+            val month = mo.toInt().takeIf { it in 1..12 }?.let { Month(it) } ?: return null
+            return date(y.toInt(), month, d.toInt())?.let { it to it }
         }
 
         // "12 Mar 1901" / "Mar 1901" / "March 1901" / "1901"
@@ -93,14 +122,16 @@ object GedcomDateParser {
 
     private fun yearOnly(yearText: String): Pair<LocalDate, LocalDate>? {
         val year = yearText.toIntOrNull() ?: return null
-        return LocalDate(year, 1, 1) to LocalDate(year, 12, 31)
+        val start = date(year, Month.JANUARY, 1) ?: return null
+        val end = date(year, Month.DECEMBER, 31) ?: return null
+        return start to end
     }
 
     private fun monthYear(monthText: String, yearText: String): Pair<LocalDate, LocalDate>? {
         val month = monthOf(monthText) ?: return null
         val year = yearText.toIntOrNull() ?: return null
-        val start = LocalDate(year, month, 1)
-        val end = LocalDate(year, month, daysInMonth(year, month))
+        val start = date(year, month, 1) ?: return null
+        val end = date(year, month, daysInMonth(year, month)) ?: return null
         return start to end
     }
 
@@ -108,7 +139,7 @@ object GedcomDateParser {
         val day = dayText.toIntOrNull() ?: return null
         val month = monthOf(monthText) ?: return null
         val year = yearText.toIntOrNull() ?: return null
-        val date = runCatching { LocalDate(year, month, day) }.getOrNull() ?: return null
+        val date = date(year, month, day) ?: return null
         return date to date
     }
 

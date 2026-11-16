@@ -22,9 +22,15 @@ object Validation {
     fun validateEmail(email: String): List<String> =
         if (!EMAIL_PATTERN.matches(email)) listOf("'$email' is not a valid email address") else emptyList()
 
+    /**
+     * Rejects only ranges that cannot possibly be in order: the earliest the
+     * start could be is still after the latest the end could be. Uncertain
+     * dates whose windows overlap (two "1900"s, "abt 1890" then "1891") and
+     * open-ended or unparsed dates are allowed.
+     */
     fun validateDateOrder(start: GedcomDate?, end: GedcomDate?): List<String> {
-        val startBound = start?.latest
-        val endBound = end?.earliest
+        val startBound = start?.earliest
+        val endBound = end?.latest
         if (startBound != null && endBound != null && startBound > endBound) {
             return listOf("Start date must not be after end date")
         }

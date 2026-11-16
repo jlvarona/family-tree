@@ -1,7 +1,6 @@
 package com.moxietech.family_tree.server.db
 
 import org.jetbrains.exposed.v1.core.Table
-import org.jetbrains.exposed.v1.javatime.date
 import org.jetbrains.exposed.v1.javatime.timestamp
 
 /**
@@ -66,11 +65,11 @@ object UnionTable : Table("union_record") {
     val partner2Id = (uuid("partner2_id") references PersonTable.id).nullable()
     val type = text("type")
     val startDateText = text("start_date_text").nullable()
-    val startDateEarliest = date("start_date_earliest").nullable()
-    val startDateLatest = date("start_date_latest").nullable()
+    val startDateEarliest = gedcomDate("start_date_earliest").nullable()
+    val startDateLatest = gedcomDate("start_date_latest").nullable()
     val endDateText = text("end_date_text").nullable()
-    val endDateEarliest = date("end_date_earliest").nullable()
-    val endDateLatest = date("end_date_latest").nullable()
+    val endDateEarliest = gedcomDate("end_date_earliest").nullable()
+    val endDateLatest = gedcomDate("end_date_latest").nullable()
     val version = long("version")
     override val primaryKey = PrimaryKey(id)
 }
@@ -90,8 +89,8 @@ object EventTable : Table("event") {
     val unionId = (uuid("union_id") references UnionTable.id).nullable()
     val type = text("type")
     val dateText = text("date_text").nullable()
-    val dateEarliest = date("date_earliest").nullable()
-    val dateLatest = date("date_latest").nullable()
+    val dateEarliest = gedcomDate("date_earliest").nullable()
+    val dateLatest = gedcomDate("date_latest").nullable()
     val placeId = (uuid("place_id") references PlaceTable.id).nullable()
     val notes = text("notes").nullable()
     val version = long("version")
@@ -108,8 +107,8 @@ object SourceTable : Table("source") {
     val repository = text("repository").nullable()
     val url = text("url").nullable()
     val dateText = text("date_text").nullable()
-    val dateEarliest = date("date_earliest").nullable()
-    val dateLatest = date("date_latest").nullable()
+    val dateEarliest = gedcomDate("date_earliest").nullable()
+    val dateLatest = gedcomDate("date_latest").nullable()
     val version = long("version")
     override val primaryKey = PrimaryKey(id)
 }
