@@ -24,6 +24,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import org.postgresql.util.PSQLException
+import java.sql.Connection
 import java.sql.SQLException
 import kotlin.uuid.Uuid
 
@@ -135,7 +136,9 @@ object UnionService {
         val tree = TreeService.getTreeForReader(treeId, callerAccountId)
         val policy = ViewerPolicy(tree, callerAccountId)
         return withContext(DatabaseDispatcher) {
-            transaction {
+            // One snapshot for people and unions, so a living partner committed between
+            // the two queries can't be missing from the hidden set (FT-004 review).
+            transaction(transactionIsolation = Connection.TRANSACTION_REPEATABLE_READ, readOnly = true) {
                 val treeUuid = Uuid.parse(treeId.value)
                 val hidden = policy.hiddenIds(PersonRepository.listByTree(treeUuid))
                 UnionRepository.listByTree(treeUuid).map { union ->
