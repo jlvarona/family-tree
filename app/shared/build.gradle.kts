@@ -6,6 +6,7 @@ plugins {
     alias(libs.plugins.androidMultiplatformLibrary)
     alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.composeCompiler)
+    alias(libs.plugins.kotlinSerialization)
 }
 
 kotlin {
@@ -62,9 +63,21 @@ kotlin {
             implementation(libs.compose.uiToolingPreview)
             implementation(libs.androidx.lifecycle.viewmodelCompose)
             implementation(libs.androidx.lifecycle.runtimeCompose)
+            implementation(libs.kotlinx.coroutinesCore)
+            implementation(libs.kotlinx.serializationJson)
+            // FT-005: the API client and the OIDC token calls. Bodies are (de)serialized
+            // with explicit kotlinx serializers. Engines are per platform; only the web
+            // targets wire one up so far (webMain below).
+            implementation(libs.ktor.clientCore)
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)
+            implementation(libs.kotlinx.coroutinesTest)
+            implementation(libs.ktor.clientMock)
+        }
+        // Shared by the js and wasmJs targets (Kotlin's default "web" hierarchy group).
+        webMain.dependencies {
+            implementation(libs.ktor.clientJs)
         }
         jsMain.dependencies {
             implementation(libs.wrappers.browser)

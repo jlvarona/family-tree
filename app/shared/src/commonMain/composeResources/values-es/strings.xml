@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Árbol familiar</string>
+
+    <!-- Inicio de sesión y sesión -->
+    <string name="sign_in_title">El árbol privado de tu familia</string>
+    <string name="sign_in_body">Inicia sesión para ver y construir tu árbol familiar.</string>
+    <string name="sign_in">Iniciar sesión</string>
+    <string name="sign_out">Cerrar sesión</string>
+    <string name="signing_in">Iniciando sesión…</string>
+    <string name="session_expired">Tu sesión ha caducado. Vuelve a iniciar sesión para continuar.</string>
+    <string name="sign_in_failed">No se pudo completar el inicio de sesión. Inténtalo de nuevo.</string>
+    <string name="sign_in_not_verified">No se pudo verificar la respuesta de inicio de sesión y se ha descartado. Vuelve a iniciar sesión.</string>
+    <string name="config_error">No se pudo cargar la configuración de la aplicación. Recarga la página para intentarlo de nuevo.</string>
+
+    <!-- Carga y errores -->
+    <string name="loading">Cargando…</string>
+    <string name="retry">Reintentar</string>
+    <string name="error_unavailable">No se puede conectar con el servidor. Comprueba tu conexión e inténtalo de nuevo.</string>
+    <string name="error_server">Algo ha fallado en el servidor. Inténtalo de nuevo en un momento.</string>
+    <string name="error_not_found">Esta página no existe o no tienes acceso a ella.</string>
+    <string name="error_forbidden">No tienes permiso para hacer esto.</string>
+    <string name="error_invalid">Se rechazó la solicitud. Revisa los valores e inténtalo de nuevo.</string>
+
+    <!-- Árboles -->
+    <string name="my_trees">Mis árboles</string>
+    <string name="trees_empty">Todavía no tienes ningún árbol. Crea uno para empezar.</string>
+    <string name="create_tree">Crear árbol</string>
+    <string name="tree_name">Nombre del árbol</string>
+
+    <!-- Vista del árbol -->
+    <string name="view_full">Árbol completo</string>
+    <string name="view_ancestors">Antepasados</string>
+    <string name="view_descendants">Descendientes</string>
+    <string name="centered_on">Centrado en</string>
+    <string name="choose_person">Elige una persona</string>
+    <string name="choose_root_prompt">Elige una persona en la que centrar el árbol.</string>
+    <string name="tree_empty">Este árbol aún no tiene personas.</string>
+    <string name="tree_empty_owner">Añade la primera persona para empezar tu árbol.</string>
+    <string name="branch_empty_ancestors">Aún no hay antepasados registrados para esta persona.</string>
+    <string name="branch_empty_descendants">Aún no hay descendientes registrados para esta persona.</string>
+    <string name="skipped_links">Algunas relaciones forman un ciclo y no se dibujan (%1$d).</string>
+    <string name="add_person">Añadir persona</string>
+    <string name="link_child">Vincular hijo/a</string>
+    <string name="zoom_in">Acercar</string>
+    <string name="zoom_out">Alejar</string>
+    <string name="zoom_reset">Restablecer zoom</string>
+
+    <!-- Personas -->
+    <string name="private_person">Privado</string>
+    <string name="private_detail">Persona viva · sin acceso</string>
+    <string name="living">En vida</string>
+    <string name="deceased">Fallecido/a</string>
+    <string name="select_person_hint">Selecciona una persona del árbol para ver su familia.</string>
+    <string name="open_page">Abrir ficha</string>
+    <string name="center_here">Centrar el árbol aquí</string>
+    <string name="parents">Padres</string>
+    <string name="partners">Parejas</string>
+    <string name="children">Hijos</string>
+    <string name="none_recorded">Ninguno registrado</string>
+    <string name="back_to_tree">Volver al árbol</string>
+
+    <!-- Añadir persona -->
+    <string name="given_names">Nombre(s)</string>
+    <string name="surname_paternal">Primer apellido (paterno)</string>
+    <string name="surname_maternal">Segundo apellido (materno)</string>
+    <string name="sex">Sexo</string>
+    <string name="sex_female">Femenino</string>
+    <string name="sex_male">Masculino</string>
+    <string name="sex_unknown">Desconocido</string>
+    <string name="is_living">Esta persona vive</string>
+    <string name="cancel">Cancelar</string>
+    <string name="save">Guardar</string>
+
+    <!-- Vincular hijo/a -->
+    <string name="parent">Progenitor</string>
+    <string name="other_parent">Otro progenitor (opcional)</string>
+    <string name="no_other_parent">Ninguno</string>
+    <string name="union_type">Relación entre los progenitores</string>
+    <string name="union_married">Casados</string>
+    <string name="union_divorced">Divorciados</string>
+    <string name="union_partners">Pareja</string>
+    <string name="union_unknown">Desconocida</string>
+    <string name="child">Hijo/a</string>
+    <string name="child_relation">Relación con los progenitores</string>
+    <string name="relation_birth">Biológica</string>
+    <string name="relation_adopted">Adopción</string>
+    <string name="relation_step">Hijastro/a</string>
+    <string name="relation_foster">Acogida</string>
+    <string name="link_child_hint">Si estos progenitores ya tienen una unión, el hijo/a se añade a ella.</string>
+
+    <!-- Errores de formulario y avisos -->
+    <string name="form_name_required">Introduce un nombre.</string>
+    <string name="form_parent_required">Elige un progenitor.</string>
+    <string name="form_child_required">Elige un hijo/a.</string>
+    <string name="form_same_parent">Elige dos progenitores distintos.</string>
+    <string name="form_child_is_parent">Una persona no puede ser su propio hijo/a.</string>
+    <string name="form_already_linked">Este hijo/a ya está vinculado a estos progenitores.</string>
+    <string name="notice_duplicates">Persona añadida. Puede que ya esté en el árbol:</string>
+    <string name="notice_child_linked">Hijo/a vinculado.</string>
+    <string name="dismiss">Cerrar</string>
+</resources>

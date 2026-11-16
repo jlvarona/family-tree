@@ -16,7 +16,8 @@ updates in the commit that changes the behavior.
 
 ## Project status
 
-The Phase 1 server foundation and shared domain model are implemented. The Compose clients still use
+The Phase 1 server foundation and shared domain model are implemented. The web client (FT-005)
+signs in with Keycloak and covers the owner workflow and tree views. Android, iOS and desktop still use
 the starter UI. See [the delivery log](docs/delivery-log.md) for the current backlog and verification.
 
 Current roadmap phase: **1. Foundations** — accounts, trees, people, unions, events, sources; full-tree and
@@ -27,7 +28,7 @@ ancestor/descendant views on web; photo upload.
 - Kotlin 2.4, Gradle (Kotlin DSL) with version catalog `gradle/libs.versions.toml`. Add every dependency there, never inline versions.
 - Server: Ktor 3 (Netty), logback, kotlinx.serialization, PostgreSQL, Exposed, Flyway, and Keycloak OIDC.
   Integration tests use Testcontainers. AWS SDK integrations are planned for S3, SES, and SQS.
-- Clients: Compose Multiplatform 1.12, Material 3, lifecycle view models. Planned: Ktor client, kotlinx.serialization, SQLDelight (mobile cache), Coil (images).
+- Clients: Compose Multiplatform 1.12, Material 3, Ktor client (JS engine on web), kotlinx.serialization. Planned: SQLDelight (mobile cache), Coil (images).
 - Targets: Android, iOS (arm64 + simulator), JVM desktop, JS + Wasm web, JVM server.
 
 ## Commands

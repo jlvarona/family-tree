@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Family Tree</string>
+
+    <!-- Sign-in and session -->
+    <string name="sign_in_title">Your family’s private tree</string>
+    <string name="sign_in_body">Sign in to see and build your family tree.</string>
+    <string name="sign_in">Sign in</string>
+    <string name="sign_out">Sign out</string>
+    <string name="signing_in">Signing you in…</string>
+    <string name="session_expired">Your session has expired. Sign in again to continue.</string>
+    <string name="sign_in_failed">Sign-in didn’t complete. Please try again.</string>
+    <string name="sign_in_not_verified">This sign-in response couldn’t be verified, so it was ignored. Please sign in again.</string>
+    <string name="config_error">The app’s configuration couldn’t be loaded. Reload the page to try again.</string>
+
+    <!-- Loading and errors -->
+    <string name="loading">Loading…</string>
+    <string name="retry">Try again</string>
+    <string name="error_unavailable">The server can’t be reached. Check your connection and try again.</string>
+    <string name="error_server">Something went wrong on the server. Try again in a moment.</string>
+    <string name="error_not_found">This page doesn’t exist or you don’t have access to it.</string>
+    <string name="error_forbidden">You don’t have permission to do this.</string>
+    <string name="error_invalid">The request was rejected. Check the values and try again.</string>
+
+    <!-- Trees -->
+    <string name="my_trees">My trees</string>
+    <string name="trees_empty">You don’t have any trees yet. Create one to get started.</string>
+    <string name="create_tree">Create tree</string>
+    <string name="tree_name">Tree name</string>
+
+    <!-- Tree view -->
+    <string name="view_full">Whole tree</string>
+    <string name="view_ancestors">Ancestors</string>
+    <string name="view_descendants">Descendants</string>
+    <string name="centered_on">Centered on</string>
+    <string name="choose_person">Choose a person</string>
+    <string name="choose_root_prompt">Choose a person to center the tree on.</string>
+    <string name="tree_empty">This tree has no people yet.</string>
+    <string name="tree_empty_owner">Add the first person to start your tree.</string>
+    <string name="branch_empty_ancestors">No ancestors are recorded for this person yet.</string>
+    <string name="branch_empty_descendants">No descendants are recorded for this person yet.</string>
+    <string name="skipped_links">Some relationships form a loop and aren’t drawn (%1$d).</string>
+    <string name="add_person">Add person</string>
+    <string name="link_child">Link child</string>
+    <string name="zoom_in">Zoom in</string>
+    <string name="zoom_out">Zoom out</string>
+    <string name="zoom_reset">Reset zoom</string>
+
+    <!-- People -->
+    <string name="private_person">Private</string>
+    <string name="private_detail">Living person · no access</string>
+    <string name="living">Living</string>
+    <string name="deceased">Deceased</string>
+    <string name="select_person_hint">Select a person in the tree to see their family.</string>
+    <string name="open_page">Open page</string>
+    <string name="center_here">Center tree here</string>
+    <string name="parents">Parents</string>
+    <string name="partners">Partners</string>
+    <string name="children">Children</string>
+    <string name="none_recorded">None recorded</string>
+    <string name="back_to_tree">Back to tree</string>
+
+    <!-- Add person -->
+    <string name="given_names">Given names</string>
+    <string name="surname_paternal">First surname (paternal)</string>
+    <string name="surname_maternal">Second surname (maternal)</string>
+    <string name="sex">Sex</string>
+    <string name="sex_female">Female</string>
+    <string name="sex_male">Male</string>
+    <string name="sex_unknown">Unknown</string>
+    <string name="is_living">This person is living</string>
+    <string name="cancel">Cancel</string>
+    <string name="save">Save</string>
+
+    <!-- Link child -->
+    <string name="parent">Parent</string>
+    <string name="other_parent">Other parent (optional)</string>
+    <string name="no_other_parent">None</string>
+    <string name="union_type">Relationship between the parents</string>
+    <string name="union_married">Married</string>
+    <string name="union_divorced">Divorced</string>
+    <string name="union_partners">Partners</string>
+    <string name="union_unknown">Unknown</string>
+    <string name="child">Child</string>
+    <string name="child_relation">Relation to the parents</string>
+    <string name="relation_birth">Birth</string>
+    <string name="relation_adopted">Adopted</string>
+    <string name="relation_step">Step</string>
+    <string name="relation_foster">Foster</string>
+    <string name="link_child_hint">If these parents already have a union, the child is added to it.</string>
+
+    <!-- Form errors and notices -->
+    <string name="form_name_required">Enter a name.</string>
+    <string name="form_parent_required">Choose a parent.</string>
+    <string name="form_child_required">Choose a child.</string>
+    <string name="form_same_parent">Choose two different parents.</string>
+    <string name="form_child_is_parent">A person can’t be their own child.</string>
+    <string name="form_already_linked">This child is already linked to these parents.</string>
+    <string name="notice_duplicates">Person added. They may already be in the tree:</string>
+    <string name="notice_child_linked">Child linked.</string>
+    <string name="dismiss">Dismiss</string>
+</resources>
