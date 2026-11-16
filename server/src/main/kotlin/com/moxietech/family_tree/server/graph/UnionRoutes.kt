@@ -14,6 +14,7 @@ import io.ktor.server.auth.authenticate
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
+import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
@@ -42,6 +43,14 @@ fun Route.unionRoutes() {
                 val request = call.receive<UpdateUnionRequest>()
                 call.respond(UnionService.updateUnion(treeId, unionId, account.id, request))
             }
+            delete("/{unionId}") {
+                val account = call.currentAccount()
+                val treeId = call.requireTreeId()
+                requireTreeWriter(treeId, account.id)
+                val unionId = UnionId(call.requirePathParam("unionId"))
+                UnionService.deleteUnion(treeId, unionId, account.id, call.versionParam())
+                call.respond(HttpStatusCode.NoContent)
+            }
             post("/{unionId}/children") {
                 val account = call.currentAccount()
                 val treeId = call.requireTreeId()
@@ -60,6 +69,15 @@ fun Route.unionRoutes() {
                 val childId = PersonId(call.requirePathParam("childId"))
                 val request = call.receive<UpdateUnionChildRequest>()
                 call.respond(UnionService.updateChild(treeId, unionId, childId, account.id, request))
+            }
+            delete("/{unionId}/children/{childId}") {
+                val account = call.currentAccount()
+                val treeId = call.requireTreeId()
+                requireTreeWriter(treeId, account.id)
+                val unionId = UnionId(call.requirePathParam("unionId"))
+                val childId = PersonId(call.requirePathParam("childId"))
+                UnionService.deleteChild(treeId, unionId, childId, account.id, call.versionParam())
+                call.respond(HttpStatusCode.NoContent)
             }
         }
     }

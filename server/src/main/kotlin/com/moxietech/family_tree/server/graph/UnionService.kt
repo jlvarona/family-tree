@@ -22,6 +22,8 @@ import com.moxietech.family_tree.server.errors.NotFoundException
 import com.moxietech.family_tree.server.errors.ValidationException
 import com.moxietech.family_tree.server.errors.parseOptionalUuidField
 import com.moxietech.family_tree.server.errors.parseUuidField
+import com.moxietech.family_tree.server.errors.parseVersionParam
+import com.moxietech.family_tree.server.errors.referenced
 import com.moxietech.family_tree.server.errors.requireValid
 import com.moxietech.family_tree.server.errors.staleVersion
 import com.moxietech.family_tree.server.trees.TreeService
@@ -253,6 +255,74 @@ object UnionService {
                 )
                 dto
             }
+        }
+    }
+
+    /**
+     * FT-001: deletes a union with no child links, events or citations, owner
+     * only, at the current [version] (see [RecordDeletion]). The audit's before
+     * is the union with its (necessarily empty) child list.
+     */
+    suspend fun deleteUnion(treeId: TreeId, unionId: UnionId, callerAccountId: AccountId, version: List<String>?) {
+        TreeService.getTreeForWriter(treeId, callerAccountId)
+        val unionUuid = parseUuidField("unionId", unionId.value)
+        val expected = parseVersionParam(version)
+        val treeUuid = Uuid.parse(treeId.value)
+        RecordDeletion.guarded("Union", unionUuid.toString(), RecordDeletion.UNION_FOREIGN_KEYS) {
+            val before = TreeScopedLookups.requireUnion(treeUuid, unionUuid)
+            if (before.version != expected) throw staleVersion("Union", before.id.value)
+            if (RecordDeletion.unionIsReferenced(treeUuid, unionUuid)) throw referenced("Union", before.id.value)
+            if (UnionRepository.delete(treeUuid, unionUuid, expected) == 0) throw staleVersion("Union", before.id.value)
+            if (RecordDeletion.isCited(treeUuid, RecordDeletion.UNION, unionUuid)) throw referenced("Union", before.id.value)
+            AuditLogRepository.append(
+                treeId = treeUuid,
+                actorAccountId = Uuid.parse(callerAccountId.value),
+                entityType = "Union",
+                entityId = before.id.value,
+                action = AuditAction.DELETE,
+                beforeJson = AuditJson.encodeToString(before.toDto(emptyList())),
+                afterJson = null,
+            )
+        }
+    }
+
+    /**
+     * FT-001: removes one child link, owner only, at the link's current
+     * [version]. Nothing references a link, so only a missing or stale link
+     * fails. Audited as "UnionChild" with a union-shaped before: one read of the
+     * remaining links, taken after the DELETE, plus the removed link as it was.
+     */
+    suspend fun deleteChild(
+        treeId: TreeId,
+        unionId: UnionId,
+        childId: PersonId,
+        callerAccountId: AccountId,
+        version: List<String>?,
+    ) {
+        TreeService.getTreeForWriter(treeId, callerAccountId)
+        val unionUuid = parseUuidField("unionId", unionId.value)
+        val childUuid = parseUuidField("childId", childId.value)
+        val expected = parseVersionParam(version)
+        val treeUuid = Uuid.parse(treeId.value)
+        val entityId = "$unionUuid:$childUuid"
+        RecordDeletion.guarded("Child link", entityId, emptySet()) {
+            val union = TreeScopedLookups.requireUnion(treeUuid, unionUuid)
+            val link = UnionRepository.findChild(treeUuid, unionUuid, childUuid)
+                ?: throw NotFoundException("No child $childUuid in union $unionUuid")
+            if (link.version != expected) throw staleVersion("Child link", entityId)
+            if (UnionRepository.deleteChild(treeUuid, unionUuid, childUuid, expected) == 0) {
+                throw staleVersion("Child link", entityId)
+            }
+            val remaining = UnionRepository.childrenOf(treeUuid, unionUuid)
+            AuditLogRepository.append(
+                treeId = treeUuid,
+                actorAccountId = Uuid.parse(callerAccountId.value),
+                entityType = "UnionChild",
+                entityId = entityId,
+                action = AuditAction.DELETE,
+                beforeJson = AuditJson.encodeToString(union.toDto(remaining + link)),
+                afterJson = null,
+            )
         }
     }
 

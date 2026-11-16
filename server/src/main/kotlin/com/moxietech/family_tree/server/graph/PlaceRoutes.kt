@@ -11,6 +11,7 @@ import io.ktor.server.auth.authenticate
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
+import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
@@ -38,6 +39,14 @@ fun Route.placeRoutes() {
                 val placeId = PlaceId(call.requirePathParam("placeId"))
                 val request = call.receive<UpdatePlaceRequest>()
                 call.respond(PlaceService.updatePlace(treeId, placeId, account.id, request))
+            }
+            delete("/{placeId}") {
+                val account = call.currentAccount()
+                val treeId = call.requireTreeId()
+                requireTreeWriter(treeId, account.id)
+                val placeId = PlaceId(call.requirePathParam("placeId"))
+                PlaceService.deletePlace(treeId, placeId, account.id, call.versionParam())
+                call.respond(HttpStatusCode.NoContent)
             }
         }
     }

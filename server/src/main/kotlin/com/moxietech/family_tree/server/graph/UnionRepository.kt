@@ -15,6 +15,7 @@ import kotlinx.datetime.toKotlinLocalDate
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
@@ -140,6 +141,21 @@ object UnionRepository {
             it[UnionChildTable.relation] = relation.name
             it[UnionChildTable.version] = expectedVersion + 1
         } > 0
+    }
+
+    /** FT-001: conditional delete of union [id]; see [PersonRepository.delete]. */
+    fun delete(treeId: Uuid, id: Uuid, expectedVersion: Long): Int = transaction {
+        UnionTable.deleteWhere {
+            (UnionTable.id eq id) and (UnionTable.treeId eq treeId) and (UnionTable.version eq expectedVersion)
+        }
+    }
+
+    /** FT-001: conditional delete of one child link; nothing references a link. */
+    fun deleteChild(treeId: Uuid, unionId: Uuid, childId: Uuid, expectedVersion: Long): Int = transaction {
+        UnionChildTable.deleteWhere {
+            (UnionChildTable.unionId eq unionId) and (UnionChildTable.childId eq childId) and
+                (UnionChildTable.treeId eq treeId) and (UnionChildTable.version eq expectedVersion)
+        }
     }
 
     private fun ResultRow.toUnionChild() = UnionChild(

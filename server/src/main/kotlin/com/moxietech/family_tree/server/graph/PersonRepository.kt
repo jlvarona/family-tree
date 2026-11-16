@@ -11,6 +11,7 @@ import com.moxietech.family_tree.server.db.PersonTable
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
@@ -92,6 +93,17 @@ object PersonRepository {
             it[PersonTable.updatedAt] = Instant.now()
         }
         if (updated == 0) null else findById(treeId, id) ?: error("Person $id was just updated but cannot be read back")
+    }
+
+    /**
+     * FT-001: deletes [id] in [treeId] only while its stored version is still
+     * [expectedVersion]. Returns the number of rows deleted (0 = stale or gone).
+     * A row still referenced through a foreign key makes PostgreSQL reject it.
+     */
+    fun delete(treeId: Uuid, id: Uuid, expectedVersion: Long): Int = transaction {
+        PersonTable.deleteWhere {
+            (PersonTable.id eq id) and (PersonTable.treeId eq treeId) and (PersonTable.version eq expectedVersion)
+        }
     }
 
     /**

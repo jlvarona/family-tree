@@ -15,7 +15,10 @@ import com.moxietech.family_tree.server.config.DatabaseDispatcher
 import com.moxietech.family_tree.server.errors.NotFoundException
 import com.moxietech.family_tree.server.errors.ValidationException
 import com.moxietech.family_tree.server.errors.parseUuidField
+import com.moxietech.family_tree.server.errors.parseVersionParam
+import com.moxietech.family_tree.server.errors.referenced
 import com.moxietech.family_tree.server.errors.requireValid
+import com.moxietech.family_tree.server.graph.RecordDeletion
 import com.moxietech.family_tree.server.errors.staleVersion
 import com.moxietech.family_tree.server.trees.TreeService
 import com.moxietech.family_tree.validation.Validation
@@ -111,6 +114,30 @@ object SourceService {
                 )
                 dto
             }
+        }
+    }
+
+    /** FT-001: deletes a source no citation uses, owner only, at the current [version] (see `RecordDeletion`). */
+    suspend fun deleteSource(treeId: TreeId, sourceId: SourceId, callerAccountId: AccountId, version: List<String>?) {
+        TreeService.getTreeForWriter(treeId, callerAccountId)
+        val sourceUuid = parseUuidField("sourceId", sourceId.value)
+        val expected = parseVersionParam(version)
+        val treeUuid = Uuid.parse(treeId.value)
+        RecordDeletion.guarded("Source", sourceUuid.toString(), RecordDeletion.SOURCE_FOREIGN_KEYS) {
+            val before = SourceRepository.findById(treeUuid, sourceUuid)
+                ?: throw NotFoundException("No source with id $sourceUuid")
+            if (before.version != expected) throw staleVersion("Source", before.id.value)
+            if (RecordDeletion.sourceIsReferenced(treeUuid, sourceUuid)) throw referenced("Source", before.id.value)
+            if (SourceRepository.delete(treeUuid, sourceUuid, expected) == 0) throw staleVersion("Source", before.id.value)
+            AuditLogRepository.append(
+                treeId = treeUuid,
+                actorAccountId = Uuid.parse(callerAccountId.value),
+                entityType = "Source",
+                entityId = before.id.value,
+                action = AuditAction.DELETE,
+                beforeJson = AuditJson.encodeToString(before.toDto()),
+                afterJson = null,
+            )
         }
     }
 

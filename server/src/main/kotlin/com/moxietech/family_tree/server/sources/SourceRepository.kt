@@ -11,6 +11,7 @@ import kotlinx.datetime.toKotlinLocalDate
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
@@ -89,6 +90,13 @@ object SourceRepository {
             it[SourceTable.version] = expectedVersion + 1
         }
         if (updated == 0) null else findById(treeId, id) ?: error("Source $id was just updated but cannot be read back")
+    }
+
+    /** FT-001: conditional delete of source [id]; see `PersonRepository.delete`. */
+    fun delete(treeId: Uuid, id: Uuid, expectedVersion: Long): Int = transaction {
+        SourceTable.deleteWhere {
+            (SourceTable.id eq id) and (SourceTable.treeId eq treeId) and (SourceTable.version eq expectedVersion)
+        }
     }
 
     private fun ResultRow.toSource() = Source(

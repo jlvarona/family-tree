@@ -7,6 +7,7 @@ import com.moxietech.family_tree.server.db.PlaceTable
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
@@ -64,6 +65,13 @@ object PlaceRepository {
             it[PlaceTable.version] = expectedVersion + 1
         }
         if (updated == 0) null else findById(treeId, id) ?: error("Place $id was just updated but cannot be read back")
+    }
+
+    /** FT-001: conditional delete of place [id]; see [PersonRepository.delete]. */
+    fun delete(treeId: Uuid, id: Uuid, expectedVersion: Long): Int = transaction {
+        PlaceTable.deleteWhere {
+            (PlaceTable.id eq id) and (PlaceTable.treeId eq treeId) and (PlaceTable.version eq expectedVersion)
+        }
     }
 
     private fun ResultRow.toPlace() = Place(

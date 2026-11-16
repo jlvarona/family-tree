@@ -7,6 +7,7 @@ import com.moxietech.family_tree.server.config.OIDC_AUTH_NAME
 import com.moxietech.family_tree.server.graph.requirePathParam
 import com.moxietech.family_tree.server.graph.requireTreeId
 import com.moxietech.family_tree.server.graph.requireTreeWriter
+import com.moxietech.family_tree.server.graph.versionParam
 import com.moxietech.family_tree.server.identity.currentAccount
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
@@ -14,6 +15,7 @@ import io.ktor.server.auth.authenticate
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
+import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
@@ -41,6 +43,14 @@ fun Route.sourceRoutes() {
                 val sourceId = SourceId(call.requirePathParam("sourceId"))
                 val request = call.receive<UpdateSourceRequest>()
                 call.respond(SourceService.updateSource(treeId, sourceId, account.id, request))
+            }
+            delete("/{sourceId}") {
+                val account = call.currentAccount()
+                val treeId = call.requireTreeId()
+                requireTreeWriter(treeId, account.id)
+                val sourceId = SourceId(call.requirePathParam("sourceId"))
+                SourceService.deleteSource(treeId, sourceId, account.id, call.versionParam())
+                call.respond(HttpStatusCode.NoContent)
             }
         }
     }

@@ -15,6 +15,8 @@ import com.moxietech.family_tree.server.collaboration.AuditLogRepository
 import com.moxietech.family_tree.server.config.DatabaseDispatcher
 import com.moxietech.family_tree.server.errors.ValidationException
 import com.moxietech.family_tree.server.errors.parseUuidField
+import com.moxietech.family_tree.server.errors.parseVersionParam
+import com.moxietech.family_tree.server.errors.referenced
 import com.moxietech.family_tree.server.errors.requireValid
 import com.moxietech.family_tree.server.errors.staleVersion
 import com.moxietech.family_tree.server.trees.TreeService
@@ -121,6 +123,35 @@ object PersonService {
                 )
                 dto
             }
+        }
+    }
+
+    /**
+     * FT-001: deletes an unreferenced person, owner only, at the current
+     * [version] (see [RecordDeletion] for the steps and references). Referenced
+     * or stale is a 409 that writes nothing; success audits before = the person,
+     * after = null, in the same transaction.
+     */
+    suspend fun deletePerson(treeId: TreeId, personId: PersonId, callerAccountId: AccountId, version: List<String>?) {
+        TreeService.getTreeForWriter(treeId, callerAccountId)
+        val personUuid = parseUuidField("personId", personId.value)
+        val expected = parseVersionParam(version)
+        val treeUuid = Uuid.parse(treeId.value)
+        RecordDeletion.guarded("Person", personUuid.toString(), RecordDeletion.PERSON_FOREIGN_KEYS) {
+            val before = TreeScopedLookups.requirePerson(treeUuid, personUuid)
+            if (before.version != expected) throw staleVersion("Person", before.id.value)
+            if (RecordDeletion.personIsReferenced(treeUuid, personUuid)) throw referenced("Person", before.id.value)
+            if (PersonRepository.delete(treeUuid, personUuid, expected) == 0) throw staleVersion("Person", before.id.value)
+            if (RecordDeletion.isCited(treeUuid, RecordDeletion.PERSON, personUuid)) throw referenced("Person", before.id.value)
+            AuditLogRepository.append(
+                treeId = treeUuid,
+                actorAccountId = Uuid.parse(callerAccountId.value),
+                entityType = "Person",
+                entityId = before.id.value,
+                action = AuditAction.DELETE,
+                beforeJson = AuditJson.encodeToString(before.toDto()),
+                afterJson = null,
+            )
         }
     }
 

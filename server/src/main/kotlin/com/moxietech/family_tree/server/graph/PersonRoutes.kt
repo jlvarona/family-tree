@@ -16,6 +16,7 @@ import io.ktor.server.auth.authenticate
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
+import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
@@ -53,6 +54,15 @@ fun Route.personRoutes() {
                 val request = call.receive<UpdatePersonRequest>()
                 call.respond(PersonService.updatePerson(treeId, personId, account.id, request))
             }
+            delete("/{personId}") {
+                val account = call.currentAccount()
+                val treeId = call.requireTreeId()
+                // Write check before the path ID or ?version= is parsed (FT-068, FT-001).
+                requireTreeWriter(treeId, account.id)
+                val personId = PersonId(call.requirePathParam("personId"))
+                PersonService.deletePerson(treeId, personId, account.id, call.versionParam())
+                call.respond(HttpStatusCode.NoContent)
+            }
             get("/{personId}/ancestors") {
                 val account = call.currentAccount()
                 val treeId = call.requireTreeId()
@@ -71,6 +81,10 @@ fun Route.personRoutes() {
 
 internal fun io.ktor.server.application.ApplicationCall.requireTreeId(): TreeId =
     TreeId(requirePathParam("treeId"))
+
+/** Every raw `version` query value of a DELETE; the service parses them after the write check. */
+internal fun io.ktor.server.application.ApplicationCall.versionParam(): List<String>? =
+    request.queryParameters.getAll("version")
 
 internal fun io.ktor.server.application.ApplicationCall.requirePathParam(name: String): String =
     parameters[name] ?: throw NotFoundException("Missing path parameter '$name'")

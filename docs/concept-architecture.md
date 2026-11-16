@@ -215,9 +215,10 @@ Launch is free and invitation-only; trees are private, with no linking between f
 | Unions with a private partner (FT-005, FT-006) | The union's type and its partner and child links stay visible next to the private placeholder; its start and end dates are hidden. Clients show union dates only when both partners are visible to the caller, matching the server's redaction |
 | Person page text (FT-006) | Bios, event notes and place names are untrusted: clients render them as plain text only (no HTML, Markdown or link parsing) after removing control characters and bidi override marks |
 | Updates and versions (FT-001) | Person, union, child link, event, place and source updates are `PUT` replacements with the create route's fields and validation plus the `version` the client last read. Person, union, event and source use their existing `version` columns; place and child link got one in V4 (existing rows start at 1). An update applies only if that version is still stored, and increments it in the same conditional `UPDATE`. Otherwise it is a `409` with no change and no audit entry. A child link is identified by its union and child, so only its relation can change. Phase 1 updates are owner-only, like creates |
+| Deleting referenced records (FT-001) | Delete an unreferenced record when the caller can write and has the current version. Return `409` if another record in the tree still references it, including through a citation. Keep the record, its references and its audit history intact on conflict. Audit a successful deletion in the same transaction |
+| Citation writers and deletes (FT-001, FT-002) | A citation's target has no foreign key, so a citation writer must, in the same transaction as the insert (or a retarget), lock the target row with `SELECT … FOR KEY SHARE` filtered by ID and `tree_id`, and return `404` if no row comes back. A delete's `DELETE` then waits for that writer, and the delete re-checks citations afterwards |
 
 ## Still open
 
-- [ ] Deleting records that other records reference (FT-001): what happens to a person, union, place or source that is still linked or cited. Delete routes wait for this decision.
 
 - [ ] Citations: which source types matter most (vital records, census, church records, newspapers, family bibles, oral history)?

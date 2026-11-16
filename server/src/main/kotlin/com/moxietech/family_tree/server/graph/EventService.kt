@@ -16,6 +16,8 @@ import com.moxietech.family_tree.server.config.DatabaseDispatcher
 import com.moxietech.family_tree.server.errors.ValidationException
 import com.moxietech.family_tree.server.errors.parseOptionalUuidField
 import com.moxietech.family_tree.server.errors.parseUuidField
+import com.moxietech.family_tree.server.errors.parseVersionParam
+import com.moxietech.family_tree.server.errors.referenced
 import com.moxietech.family_tree.server.errors.staleVersion
 import com.moxietech.family_tree.server.trees.TreeService
 import kotlinx.coroutines.withContext
@@ -133,6 +135,35 @@ object EventService {
                 )
                 dto
             }
+        }
+    }
+
+    /**
+     * FT-001: deletes an event no citation targets, owner only, at the current
+     * [version] (see [RecordDeletion]). The audit's before embeds its place.
+     */
+    suspend fun deleteEvent(treeId: TreeId, eventId: EventId, callerAccountId: AccountId, version: List<String>?) {
+        TreeService.getTreeForWriter(treeId, callerAccountId)
+        val eventUuid = parseUuidField("eventId", eventId.value)
+        val expected = parseVersionParam(version)
+        val treeUuid = Uuid.parse(treeId.value)
+        // Nothing references an event through a foreign key; only citations can block it.
+        RecordDeletion.guarded("Event", eventUuid.toString(), emptySet()) {
+            val before = TreeScopedLookups.requireEvent(treeUuid, eventUuid)
+            if (before.version != expected) throw staleVersion("Event", before.id.value)
+            if (RecordDeletion.isCited(treeUuid, RecordDeletion.EVENT, eventUuid)) throw referenced("Event", before.id.value)
+            val place = before.placeId?.let { PlaceRepository.findById(treeUuid, Uuid.parse(it.value)) }
+            if (EventRepository.delete(treeUuid, eventUuid, expected) == 0) throw staleVersion("Event", before.id.value)
+            if (RecordDeletion.isCited(treeUuid, RecordDeletion.EVENT, eventUuid)) throw referenced("Event", before.id.value)
+            AuditLogRepository.append(
+                treeId = treeUuid,
+                actorAccountId = Uuid.parse(callerAccountId.value),
+                entityType = "Event",
+                entityId = before.id.value,
+                action = AuditAction.DELETE,
+                beforeJson = AuditJson.encodeToString(before.toDto(place)),
+                afterJson = null,
+            )
         }
     }
 
