@@ -1,6 +1,9 @@
 package com.moxietech.family_tree
 
+import com.moxietech.family_tree.api.EventDto
+import com.moxietech.family_tree.api.GedcomDateDto
 import com.moxietech.family_tree.api.PersonDto
+import com.moxietech.family_tree.api.PlaceDto
 import com.moxietech.family_tree.api.TreeGraphDto
 import com.moxietech.family_tree.api.UnionChildDto
 import com.moxietech.family_tree.api.UnionDto
@@ -101,6 +104,28 @@ fun union(id: String, partner1: String, partner2: String?, vararg children: Stri
     startDate = null,
     endDate = null,
     children = children.map { UnionChildDto(it, "BIRTH") },
+    version = 0,
+)
+
+/** A person event; [date] is the display text, with [earliestIso] as its sortable bound. */
+fun event(
+    id: String,
+    personId: String,
+    type: String,
+    date: String? = null,
+    earliestIso: String? = null,
+    place: String? = null,
+    notes: String? = null,
+    treeId: String = TREE_ID,
+) = EventDto(
+    id = id,
+    treeId = treeId,
+    personId = personId,
+    unionId = null,
+    type = type,
+    date = date?.let { GedcomDateDto(it, earliestIso, earliestIso) },
+    place = place?.let { PlaceDto("place-$id", it, null, null, null) },
+    notes = notes,
     version = 0,
 )
 

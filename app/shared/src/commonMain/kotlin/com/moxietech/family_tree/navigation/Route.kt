@@ -24,7 +24,7 @@ enum class TreeViewKind(val token: String) {
  *
  * - `#/` — the tree list
  * - `#/trees/{treeId}?view=ancestors&root={personId}` — a tree view
- * - `#/trees/{treeId}/people/{personId}` — a person's page (FT-006 builds it out)
+ * - `#/trees/{treeId}/people/{personId}` — a person's page (FT-006)
  *
  * IDs are opaque here; the API validates them and answers `404` for anything
  * that isn't a person or tree the caller can read.

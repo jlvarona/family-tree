@@ -61,6 +61,37 @@
     <string name="none_recorded">Ninguno registrado</string>
     <string name="back_to_tree">Volver al árbol</string>
 
+    <!-- Ficha de persona -->
+    <string name="show_in_tree">Ver en el árbol</string>
+    <string name="photo_placeholder">Todavía sin foto</string>
+    <string name="life_story">Historia de vida</string>
+    <string name="story_empty">Todavía no se ha escrito su historia. ¿Qué recuerdas de %1$s?</string>
+    <string name="story_private">Los datos de las personas vivas solo se muestran a los miembros con acceso.</string>
+    <string name="timeline">Cronología</string>
+    <string name="timeline_empty">Todavía no hay eventos registrados.</string>
+    <string name="timeline_private">Los eventos de las personas vivas solo se muestran a los miembros con acceso.</string>
+    <string name="family">Familia</string>
+    <string name="family_empty">Todavía no hay vínculos familiares registrados.</string>
+    <string name="date_unknown">Fecha desconocida</string>
+    <string name="name_part">%1$s: %2$s</string>
+    <string name="fact_born">Nacimiento: %1$s</string>
+    <string name="fact_died">Defunción: %1$s</string>
+    <string name="fact_birthplace">Lugar de nacimiento: %1$s</string>
+    <string name="date_range">%1$s – %2$s</string>
+    <string name="date_from">desde %1$s</string>
+    <string name="date_until">hasta %1$s</string>
+    <string name="event_birth">Nacimiento</string>
+    <string name="event_death">Defunción</string>
+    <string name="event_marriage">Matrimonio</string>
+    <string name="event_divorce">Divorcio</string>
+    <string name="event_baptism">Bautismo</string>
+    <string name="event_burial">Entierro</string>
+    <string name="event_immigration">Inmigración</string>
+    <string name="event_emigration">Emigración</string>
+    <string name="event_residence">Residencia</string>
+    <string name="event_occupation">Ocupación</string>
+    <string name="event_other">Otro evento</string>
+
     <!-- Añadir persona -->
     <string name="given_names">Nombre(s)</string>
     <string name="surname_paternal">Primer apellido (paterno)</string>
