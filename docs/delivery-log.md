@@ -9,13 +9,9 @@ up to date in place, not logged chronologically.
 
 ---
 
-## 2026-11-16 — FT-007 duplicate-person merge (in progress, unverified)
+## 2026-11-16 — FT-007 duplicate-person merge
 
-FT-007 is **In progress**. The implementation, tests and docs are uncommitted
-on `claude/FT-007-duplicate-merge`. No Gradle, Docker or browser run has happened yet, so
-nothing below is verified. The user decided the product rule ("Duplicate person merge"
-in `concept-architecture.md`). The integrity rules this session settled are in
-"Merge integrity" in the same table.
+PR #19 adds an owner-only duplicate merge. The owner chooses the surviving record and each conflicting profile value. The server verifies both reviewed versions and moves the references and audit entries in one transaction.
 
 **Contract.**
 
@@ -105,8 +101,9 @@ and their union keeps its type and links without dates. Citations follow `citati
 - The owner opens it from "Review merge" on the duplicate notice, the toolbar ("Merge
   duplicates") or the selected person ("Merge with another record"). The UI hides these controls from non-owners
   and the controller refuses to open a merge for them.
-- `MergePeoplePane` shows both records' values side by side, plain text after
-  `PersonProfile.cleanText`. Equal fields are shown as kept. A difference, including blank against a value, needs a chip
+- `MergePeoplePane` shows both records' complete values side by side under numbered
+  record labels, plain text after `PersonProfile.cleanText` (see the review fixes below).
+  Equal fields are shown as kept. A difference, including blank against a value, needs a chip
   choice. The pane previews the formatted name and lists `relationshipConflicts` blockers.
 - `submitMerge` checks everything before sending. On success it drops the merge and the duplicate
   notice, selects the survivor, replaces a retired root (the tree route too, so "back"
@@ -146,9 +143,38 @@ and their union keeps its type and links without dates. Citations follow `citati
   - Leaving the tree drops the merge.
 - `HttpFamilyTreeApiTest`: merge path, body and `409`.
 
-**Verification.** Not run. Next: `:core:jvmTest`, `:server:test`,
-`:app:shared:jvmTest` (also JS and Wasm), then a browser check of the notice, toolbar
-and panel entry points.
+
+
+**Review fixes in PR #19.**
+- **Full values before choosing.** The comparison clipped each choice to three lines and
+  collapsed whitespace, so two bios with the same opening and different endings looked
+  identical. Each differing value is now shown in full above its choice, in the page
+  (no dialog or popup, so the browser's canvas controls stay keyboard reachable), as plain
+  text after `PersonProfile.cleanText`. Line breaks and inner spacing are kept. If
+  two stored values still render the same (they differ only in spacing or in removed
+  control characters), a note says so. The choice chips read "Keep record 1's value"
+  and "Keep record 2's value".
+- **Records with the same name.** The keep controls, column headers and confirmation
+  now use numbered labels ("Record 1: Ana", "Record 2: Ana").
+- **Accessible confirmation.** The confirmation row is now one `toggleable` element with
+  the checkbox role. Its text is the checkbox's accessible name, and clicking the text or
+  pressing Space toggles it.
+- **Stale reads of the same pair.** The record load was matched only by merge ID and the
+  two selected IDs. So A/B, then A/C, then A/B again let a delayed first A/B answer
+  overwrite the newer one. Each read now takes a new generation (`MergeState.recordsLoad`),
+  and only the latest read may fill the records. The controller regression
+  `delayedReadFromTheSamePairCannotOverwriteANewerComparison` holds the first read,
+  supplies a newer version for the final comparison and releases the old answer last.
+- EN and ES strings were added for the record labels, the keep-value chips and the spacing note.
+
+**Verification.** Gradle passed 59 core tests, 127 PostgreSQL-backed server and
+other server tests, and 124 shared tests on each of JVM, JS and Wasm. The Gradle
+run skipped the opt-in Keycloak test. Live Ktor, PostgreSQL and Keycloak API
+checks covered unauthorized and cross-tree requests, stale versions, audit
+rollback, concurrent merges, citation retargeting and late child-link writes.
+The English JS and Spanish Wasm builds both completed the merge in a browser.
+The browser checks also covered full biography comparisons, explicit choices,
+survivor navigation and the duplicate notice with matching names.
 
 ## 2026-11-16 — FT-002 citation creation and target-scoped reads
 
@@ -1401,7 +1427,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 
 ### Status board
 
-**Done (27)** · **In progress (1)** · **To do (26)** · **Blocked (1)**
+**Done (28)** · **In progress (0)** · **To do (26)** · **Blocked (1)**
 
 | Order | ID | Story | Epic | Priority | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -1432,7 +1458,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 | — | FT-006 | Person page UI | E1 | P1 | Done |
 | — | FT-001 | Update & delete endpoints | E1 | P1 | Done |
 | — | FT-002 | Citation routes | E1 | P1 | Done |
-| 2 | FT-007 | Duplicate-merge workflow | E1 | P1 | In progress |
+| — | FT-007 | Duplicate-merge workflow | E1 | P1 | Done |
 | 3 | FT-008 | Photo upload (S3 presigned URLs) | E1 | P1 | Blocked |
 | 4 | FT-064 | Make compose host ports configurable | E7 | P2 | To do |
 | 5 | FT-010 | `Grant` + `GrantScope` tables, branch resolution | E2 | P1 | To do |
@@ -1599,14 +1625,10 @@ desktop/shared build repair.
   from the URL through the existing person, bundle and person-events routes. No
   server, schema or realm change. Citations (FT-002) and photos (FT-008) are not
   shown. See the session entry for tests and verification.
-- **FT-007 Duplicate-merge workflow.** `In progress · P1 · #2` — `DuplicatePersonScorer` only
-  returned a warning score (`CreatePersonResponse.possibleDuplicates`), with no UI or API
-  path to merge two person records into one.
-
-  Implemented, awaiting verification and review: owner-only
-  `POST /api/v1/trees/{treeId}/people/merge` (`PersonMergeService`) with the shared
-  `:core` `PersonMerge` rules, and the web merge pane opened from the duplicate notice,
-  the toolbar and the selected person. No migration. See the 2026-11-16 FT-007 entry.
+- **FT-007 Duplicate-merge workflow.** `Done · P1` — PR #19 adds an owner-only
+  merge API and a web comparison from the duplicate notice, toolbar, and selected
+  person. It preserves relationships, events, membership and citations on the
+  selected survivor and audits the merge. See the FT-007 delivery entry.
 - **FT-008 Photo upload** (S3 presigned URLs + a `media` table). `Blocked · P1 · #3` —
   waiting on an AWS bucket/credentials decision; not something to guess at.
   `person.profile_media_id` and `citation.media_id` are already typed `uuid` and

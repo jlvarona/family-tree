@@ -377,7 +377,9 @@ class FamilyTreeController(
         val first = merge.firstId ?: return
         val second = merge.secondId ?: return
         if (first == second) return
-        updateMerge(instance, mergeId) { it.copy(records = Loadable.Loading) }
+        // A fresh generation per read: the IDs alone don't tell two reads of the same pair apart.
+        val load = nextInstance++
+        updateMerge(instance, mergeId) { it.copy(records = Loadable.Loading, recordsLoad = load) }
         inSession { owner ->
             val records = load {
                 fun checked(person: PersonDto, id: String) = person.also {
@@ -388,7 +390,7 @@ class FamilyTreeController(
             }
             if (!isCurrent(owner)) return@inSession
             updateMerge(instance, mergeId) { current ->
-                if (current.firstId == first && current.secondId == second) current.copy(records = records) else current
+                if (current.recordsLoad == load) current.copy(records = records) else current
             }
         }
     }

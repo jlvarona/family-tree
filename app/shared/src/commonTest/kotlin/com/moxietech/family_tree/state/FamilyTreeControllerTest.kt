@@ -102,6 +102,7 @@ class FamilyTreeControllerTest {
 
         /** Replaces the person record returned, e.g. one from another tree. */
         var personOverride: PersonDto? = null
+        val personReadGates = mutableMapOf<String, CompletableDeferred<Unit>>()
         var events: List<EventDto> = listOf(birthOf("kid"))
 
         /** Each events call takes the next gate / failure, if any. */
@@ -111,7 +112,9 @@ class FamilyTreeControllerTest {
         override suspend fun person(treeId: String, personId: String): PersonDto {
             calls += "person:$personId"
             personOverride?.let { return it }
-            return graph.people.firstOrNull { it.id == personId } ?: throw ApiException(ApiFailure.NOT_FOUND)
+            val person = graph.people.firstOrNull { it.id == personId } ?: throw ApiException(ApiFailure.NOT_FOUND)
+            personReadGates.remove(personId)?.await()
+            return person
         }
 
         override suspend fun events(treeId: String, personId: String): List<EventDto> {
@@ -909,6 +912,27 @@ class FamilyTreeControllerTest {
 
         controller.cancelMerge()
         assertNull(controller.merge)
+    }
+
+    @Test
+    fun delayedReadFromTheSamePairCannotOverwriteANewerComparison() = runTest {
+        val oldRead = CompletableDeferred<Unit>()
+        api.personReadGates["ana2"] = oldRead
+        val controller = openMerge()
+        val latestVersion = api.graph.people.first { it.id == "ana2" }.version + 1
+        api.graph = api.graph.copy(people = api.graph.people.map {
+            if (it.id == "ana2") it.copy(givenNames = "Ana Lucía", version = latestVersion) else it
+        })
+
+        controller.chooseSecondForMerge("mum")
+        runCurrent()
+        controller.chooseSecondForMerge("ana2")
+        runCurrent()
+        assertEquals(latestVersion, controller.merge?.records?.valueOrNull?.second?.version)
+
+        oldRead.complete(Unit)
+        runCurrent()
+        assertEquals(latestVersion, controller.merge?.records?.valueOrNull?.second?.version)
     }
 
     @Test

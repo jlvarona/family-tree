@@ -63,6 +63,12 @@ data class MergeState(
     val firstId: String? = null,
     val secondId: String? = null,
     val records: Loadable<MergeRecords>? = null,
+    /**
+     * Identifies the latest read of [records]. Only that read may fill them, so a
+     * delayed answer from an earlier comparison of the same pair (A/B, A/C, back to
+     * A/B) can't replace the newer one.
+     */
+    val recordsLoad: Long = 0,
     val survivorId: String? = null,
     val choices: Map<MergeField, String> = emptyMap(),
     val retiredConfirmed: Boolean = false,

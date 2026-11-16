@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
@@ -24,10 +25,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.moxietech.family_tree.api.PersonDto
@@ -67,7 +68,10 @@ import family_tree.app.shared.generated.resources.merge_error_changed
 import family_tree.app.shared.generated.resources.merge_error_choices
 import family_tree.app.shared.generated.resources.merge_error_confirm
 import family_tree.app.shared.generated.resources.merge_error_same
+import family_tree.app.shared.generated.resources.merge_differs_invisibly
 import family_tree.app.shared.generated.resources.merge_error_survivor
+import family_tree.app.shared.generated.resources.merge_keep_value
+import family_tree.app.shared.generated.resources.merge_record_label
 import family_tree.app.shared.generated.resources.merge_first_record
 import family_tree.app.shared.generated.resources.merge_intro
 import family_tree.app.shared.generated.resources.merge_keep_record
@@ -178,6 +182,11 @@ private fun Review(
     val differing = FamilyTreeController.differingFields(first, second)
     val survivor = records.byId(merge.survivorId)
     val retired = records.other(merge.survivorId)
+    // Numbered labels ("Record 1: Ana") tell the two records apart even when their names match.
+    val firstLabel = stringResource(Res.string.merge_record_label, 1, label(first))
+    val secondLabel = stringResource(Res.string.merge_record_label, 2, label(second))
+    fun recordLabel(person: PersonDto) = if (person.id == first.id) firstLabel else secondLabel
+    fun recordNumber(person: PersonDto) = if (person.id == first.id) 1 else 2
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(stringResource(Res.string.merge_keep_record), fontWeight = FontWeight.SemiBold)
@@ -187,32 +196,35 @@ private fun Review(
                     selected = merge.survivorId == person.id,
                     onClick = { controller.chooseSurvivor(person.id) },
                     enabled = !merge.submitting,
-                    label = { Text(label(person), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    label = { Text(recordLabel(person)) },
                 )
             }
         }
     }
 
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(stringResource(Res.string.merge_values), fontWeight = FontWeight.SemiBold)
         Row {
             Spacer(Modifier.width(FIELD_WIDTH))
-            Text(label(first), Modifier.weight(1f), fontSize = 13.sp, color = Palette.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(label(second), Modifier.weight(1f), fontSize = 13.sp, color = Palette.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(firstLabel, Modifier.weight(1f).padding(end = 12.dp), fontSize = 13.sp, color = Palette.muted)
+            Text(secondLabel, Modifier.weight(1f), fontSize = 13.sp, color = Palette.muted)
         }
         HorizontalDivider(color = Palette.border)
         MergeField.entries.forEach { field ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(verticalAlignment = Alignment.Top) {
                 Text(stringResource(fieldLabel(field)), Modifier.width(FIELD_WIDTH), fontSize = 13.sp)
                 if (field in differing) {
                     // Every difference needs a deliberate choice, including blank against a value.
+                    // Each value is shown in full, as plain text in the page, above its choice:
+                    // long bios that start alike are told apart by their endings.
                     listOf(first, second).forEach { person ->
-                        Box(Modifier.weight(1f).padding(end = 8.dp)) {
+                        Column(Modifier.weight(1f).padding(end = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(valueText(person, field), fontSize = 13.sp)
                             FilterChip(
                                 selected = merge.choices[field] == person.id,
                                 onClick = { controller.chooseMergeValue(field, person.id) },
                                 enabled = !merge.submitting,
-                                label = { Text(valueText(person, field), maxLines = 3, overflow = TextOverflow.Ellipsis) },
+                                label = { Text(stringResource(Res.string.merge_keep_value, recordNumber(person))) },
                             )
                         }
                     }
@@ -222,11 +234,19 @@ private fun Review(
                         Modifier.weight(2f),
                         fontSize = 13.sp,
                         color = Palette.muted,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
+            if (field in differing && valueText(first, field) == valueText(second, field)) {
+                // Stored values that differ only in spacing or removed control characters.
+                Text(
+                    stringResource(Res.string.merge_differs_invisibly),
+                    Modifier.padding(start = FIELD_WIDTH),
+                    fontSize = 12.sp,
+                    color = Palette.muted,
+                )
+            }
+            HorizontalDivider(color = Palette.subtle)
         }
     }
 
@@ -242,9 +262,19 @@ private fun Review(
             }
         }
 
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(checked = merge.retiredConfirmed, onCheckedChange = controller::confirmRetired, enabled = !merge.submitting)
-            Text(stringResource(Res.string.merge_confirm, label(retired), label(survivor)))
+        // The whole row is one checkbox whose accessible name is the confirmation text:
+        // clicking or pressing Space on the text toggles it, and screen readers announce both.
+        Row(
+            Modifier.fillMaxWidth().toggleable(
+                value = merge.retiredConfirmed,
+                enabled = !merge.submitting,
+                role = Role.Checkbox,
+                onValueChange = controller::confirmRetired,
+            ).padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Checkbox(checked = merge.retiredConfirmed, onCheckedChange = null, enabled = !merge.submitting)
+            Text(stringResource(Res.string.merge_confirm, recordLabel(retired), recordLabel(survivor)))
         }
     }
 }
@@ -271,7 +301,8 @@ private fun resultName(survivor: PersonDto, retired: PersonDto, merge: MergeStat
 @Composable
 private fun valueText(person: PersonDto, field: MergeField): String {
     val blank = stringResource(Res.string.merge_blank)
-    fun text(value: String?) = PersonProfile.cleanText(value)?.replace(Regex("\\s+"), " ") ?: blank
+    // Plain text with its line breaks and inner spacing kept, so both complete values can be read.
+    fun text(value: String?) = PersonProfile.cleanText(value) ?: blank
     return when (field) {
         MergeField.GIVEN_NAMES -> text(person.givenNames)
         MergeField.SURNAME_PATERNAL -> text(person.surnamePaternal)

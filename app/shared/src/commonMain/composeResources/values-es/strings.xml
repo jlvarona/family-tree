@@ -148,6 +148,9 @@
     <string name="merge_keep_record">Ficha que se conserva</string>
     <string name="merge_values">Valores que se conservan</string>
     <string name="merge_same_value">Igual en ambas: %1$s</string>
+    <string name="merge_record_label">Ficha %1$d: %2$s</string>
+    <string name="merge_keep_value">Conservar el valor de la ficha %1$d</string>
+    <string name="merge_differs_invisibly">Estos valores solo difieren en espacios o caracteres ocultos.</string>
     <string name="merge_blank">(vacío)</string>
     <string name="merge_living_status">Estado vital</string>
     <string name="merge_result_name">La ficha conservada se llamará %1$s.</string>
