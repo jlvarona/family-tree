@@ -538,7 +538,11 @@ class CitationRoutesTest {
             Case("malformed targetId", encode(valid.copy(targetId = "nope")), bad, "targetId must be a UUID"),
             Case("confidence 4", encode(valid.copy(confidence = 4)), bad, CITATION_CONFIDENCE_MESSAGE),
             Case("confidence -1", encode(valid.copy(confidence = -1)), bad, CITATION_CONFIDENCE_MESSAGE),
-            Case("media ID", encode(valid.copy(mediaId = UUID.randomUUID().toString())), bad, CITATION_MEDIA_MESSAGE),
+            Case("malformed mediaId", encode(valid.copy(mediaId = "nope")), bad, "mediaId must be a UUID"),
+            // FT-008: a media ID is resolved in the tree like any reference (see MediaRoutesTest).
+            UUID.randomUUID().toString().let { unknown ->
+                Case("unknown mediaId", encode(valid.copy(mediaId = unknown)), HttpStatusCode.NotFound, "No media with id $unknown")
+            },
         )
         for (case in cases) assertError(client.post(url, Actor.OWNER, case.body), case.status, case.message, case.name)
 

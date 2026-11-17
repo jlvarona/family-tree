@@ -245,6 +245,72 @@ nothing to set for local dev, only for pointing at something else:
 | `OIDC_ISSUER` | `http://localhost:8081/realms/family-tree` |
 | `OIDC_JWKS_URI` | `${OIDC_ISSUER}/protocol/openid-connect/certs` |
 | `OIDC_AUDIENCE` | `family-tree-server` (the value an access token's `aud` must contain) |
+| `MEDIA_S3_ENDPOINT` | `http://127.0.0.1:8333` (the local `s3` service). Set it to an empty value for Amazon S3 |
+| `MEDIA_S3_PUBLIC_ENDPOINT` | `MEDIA_S3_ENDPOINT` (the host presigned URLs name; the browser must reach it) |
+| `MEDIA_S3_BUCKET` / `MEDIA_S3_REGION` | `family-tree-media` / `us-east-1` |
+| `MEDIA_S3_PATH_STYLE` | `true` when an endpoint is set, otherwise `false` |
+| `MEDIA_S3_CREATE_BUCKET` | `false`. Local only: at startup, create the bucket and put `MEDIA_S3_CORS_ORIGINS` as its CORS rules. Requires an explicit `MEDIA_S3_ENDPOINT` |
+| `MEDIA_S3_CORS_ORIGINS` | none (comma-separated browser origins, e.g. `http://localhost:3000`; `*` is refused) |
+| `MEDIA_MAX_CONCURRENT_VERIFICATIONS` | `2` (finalizations holding image buffers at once: upload read, verification and cleaned write) |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | none. Read by the AWS SDK's default credential chain; in AWS the task role is used instead |
+
+## Photo storage
+
+FT-008 photo uploads never pass through the API. The owner's browser asks the API for a
+presigned `PUT`, sends the file straight to the object store, then asks the API to
+finalize it. The server reads the upload, checks it is exactly the declared size and a
+complete JPEG or PNG (every pixel decoded), removes location and other hidden metadata
+(Exif and GPS, XMP, IPTC, comments, JFIF/JFXX thumbnails, PNG text chunks; the Exif
+orientation is kept), stores the cleaned file under a server-generated key and only then
+marks it readable. Readers get a 5-minute presigned `GET`, only for images whose person
+or citation they may see. Unverified uploads (`uploads/…`) are never presigned for
+reading.
+
+**Locally** the `s3` service in `docker-compose.yml` (SeaweedFS `weed mini`,
+`ghcr.io/chrislusf/seaweedfs:4.54`, on `127.0.0.1:8333`) stands in for S3. It checks
+signatures and keeps the bucket private. It is **opt-in** through the `media` Compose
+profile, so `docker compose up -d` still starts only Postgres and Keycloak. Choose any
+local-only credentials; they live only in your shell. Without both of them SeaweedFS
+would accept unsigned requests, so the service's entry point refuses to start and exits
+with `family-tree-s3: set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY …` (see
+`docker compose logs s3`). The check runs inside the container, so the missing
+variables never stop the other services.
+
+```powershell
+# PowerShell (bash: export VAR=value)
+$env:AWS_ACCESS_KEY_ID = "local-dev-only"
+$env:AWS_SECRET_ACCESS_KEY = "<any random string>"
+docker compose --profile media up -d s3   # creates the private bucket family-tree-media
+$env:MEDIA_S3_CREATE_BUCKET = "true"
+$env:MEDIA_S3_CORS_ORIGINS = "http://localhost:3000"
+.\gradlew.bat :server:run                 # same shell: puts the bucket's CORS rules, then serves
+```
+
+After changing the credentials, recreate the store with
+`docker compose --profile media up -d --force-recreate s3`. `MEDIA_S3_CREATE_BUCKET=true`
+only works with an explicit `MEDIA_S3_ENDPOINT` (the default is the local store): with
+the endpoint empty (Amazon S3) the server refuses to start rather than create buckets
+or replace CORS rules in AWS.
+
+**Checking the guard.** With the credentials unset in a fresh shell, `docker compose
+--profile media up -d s3` must leave the container exited with the message above, and
+`curl -X PUT --data x http://127.0.0.1:8333/family-tree-media/probe` must fail to
+connect. With them set, the same unsigned `PUT` must get `403`.
+
+**Browser CORS.** The browser `PUT`s and `GET`s across origins (page on
+`http://localhost:3000`, store on `http://127.0.0.1:8333`), so the bucket needs CORS
+rules. The server bootstraps them through the S3 API (`PutBucketCors`) when
+`MEDIA_S3_CREATE_BUCKET=true`: origins from `MEDIA_S3_CORS_ORIGINS`, methods `PUT` and
+`GET`, header `content-type`, `ETag` exposed, 600 s max age. The API itself still has no
+CORS. If the page shows "The photo couldn't be sent to photo storage", check the
+browser console for a CORS error first.
+
+**Deployment (not set up by this story).** Use a private S3 bucket with Block Public
+Access, default encryption, the same CORS rules for the production origin, and a
+lifecycle rule expiring `uploads/` after one day (it removes uploads that were never
+finalized or whose cleanup failed). The task role needs `s3:PutObject`,
+`s3:GetObject` and `s3:DeleteObject` on the bucket's objects. Set `MEDIA_S3_ENDPOINT`
+empty, `MEDIA_S3_BUCKET` and `MEDIA_S3_REGION`; never set `MEDIA_S3_CREATE_BUCKET`.
 
 ## Running a local copy end to end
 
@@ -360,9 +426,12 @@ language settings and reload.
 3. Select the child, choose *Center tree here*, then *Ancestors*; select a parent and
    switch to *Descendants*. Reload in each view and confirm it comes back.
 4. Select a person and *Open page*; reload the page, then *Back to tree*.
-5. Empty and failure states: a new tree shows the empty state; stopping the server shows
+5. Photos (FT-008, needs [Photo storage](#photo-storage)): on a person page choose
+   *Add photo*, pick a JPEG or PNG, and check it appears (also after reload), then
+   *Change photo* and *Remove photo*.
+6. Empty and failure states: a new tree shows the empty state; stopping the server shows
    the "can't be reached" message with *Try again*.
-6. Expiry: end the session in the Keycloak admin console (Users → dev user → Sessions →
+7. Expiry: end the session in the Keycloak admin console (Users → dev user → Sessions →
    Sign out) and wait for the next refresh (up to 15 minutes), or reload. The app returns
    to sign-in with the expired message and shows no tree data.
 
@@ -398,7 +467,17 @@ and owner-only writes over HTTP, through the production module and verifier with
 test-signed access tokens for two owners, an active non-owner and an invitee) and
 `PersonMergeTest` (FT-007: duplicate-person merges over HTTP, including authorization,
 cross-tree IDs, versions, graph conflicts, audit rollback and races with event and
-citation writers).
+citation writers), `MediaMigrationTest` (V6 on existing data and its preflight, FT-008)
+and `MediaRoutesTest` (FT-008: presign, direct upload, finalize, retry, rejection,
+privacy-scoped downloads, citation scans, merge photo choice and lock order).
+
+`MediaRoutesTest` also starts a disposable `ghcr.io/chrislusf/seaweedfs:4.54`
+(`weed mini`) on a random loopback port with random credentials, so presigned
+signatures, private-bucket denial and the CORS preflight are checked against a real
+S3-compatible service. Try another image with `-PobjectStoreImage=<image:tag>`.
+`ImageSanitizerTest` and `MediaSettingsTest` (the bootstrap endpoint guard) need no
+containers. The Compose guard on the local store is checked by hand (see "Checking the
+guard" under [Photo storage](#photo-storage)).
 
 `KeycloakBrowserTokenTest` is opt-in. It starts a disposable Keycloak 26 and Postgres
 on random ports (nothing already running is touched), imports

@@ -12,6 +12,10 @@ import com.moxietech.family_tree.server.graph.personRoutes
 import com.moxietech.family_tree.server.graph.placeRoutes
 import com.moxietech.family_tree.server.graph.unionRoutes
 import com.moxietech.family_tree.server.identity.accountRoutes
+import com.moxietech.family_tree.server.media.MediaService
+import com.moxietech.family_tree.server.media.MediaSettings
+import com.moxietech.family_tree.server.media.S3ObjectStore
+import com.moxietech.family_tree.server.media.mediaRoutes
 import com.moxietech.family_tree.server.sources.citationRoutes
 import com.moxietech.family_tree.server.sources.sourceRoutes
 import com.moxietech.family_tree.server.trees.treeRoutes
@@ -25,6 +29,7 @@ import io.ktor.server.plugins.calllogging.CallLogging
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.routing.routing
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 
 fun main() {
@@ -33,11 +38,29 @@ fun main() {
     DatabaseConfig.connectExposed(dataSource)
     AppDatabase.init(dataSource)
 
-    embeddedServer(Netty, port = 8080, host = "0.0.0.0") { module() }
+    val mediaSettings = MediaSettings()
+    val store = S3ObjectStore(mediaSettings)
+    if (mediaSettings.createBucket) {
+        // Local development only (README "Photo storage"): bucket and browser CORS rules.
+        runBlocking {
+            store.ensureBucket()
+            store.putLocalCors(mediaSettings.localCorsOrigins)
+        }
+    }
+    val media = MediaService(lazyOf(store), mediaSettings)
+
+    embeddedServer(Netty, port = 8080, host = "0.0.0.0") { module(media = media) }
         .start(wait = true)
 }
 
-fun Application.module(oidc: OidcSettings = OidcSettings()) {
+/**
+ * [media] defaults to a store built from the environment only when a media route first
+ * needs it, so modules that never touch photos (most tests) open no S3 client.
+ */
+fun Application.module(
+    oidc: OidcSettings = OidcSettings(),
+    media: MediaService = MediaService(lazy { S3ObjectStore(MediaSettings()) }),
+) {
     install(ContentNegotiation) {
         json(Json { ignoreUnknownKeys = true })
     }
@@ -59,5 +82,6 @@ fun Application.module(oidc: OidcSettings = OidcSettings()) {
         sourceRoutes()
         citationRoutes()
         graphRoutes()
+        mediaRoutes(media)
     }
 }

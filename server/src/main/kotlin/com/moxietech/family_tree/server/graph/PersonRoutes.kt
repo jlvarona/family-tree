@@ -3,6 +3,7 @@ package com.moxietech.family_tree.server.graph
 import com.moxietech.family_tree.api.CreatePersonRequest
 import com.moxietech.family_tree.api.CreatePersonResponse
 import com.moxietech.family_tree.api.MergePeopleRequest
+import com.moxietech.family_tree.api.SetProfilePhotoRequest
 import com.moxietech.family_tree.api.UpdatePersonRequest
 import com.moxietech.family_tree.domain.AccountId
 import com.moxietech.family_tree.domain.PersonId
@@ -63,6 +64,16 @@ fun Route.personRoutes() {
                 val personId = PersonId(call.requirePathParam("personId"))
                 val request = call.receive<UpdatePersonRequest>()
                 call.respond(PersonService.updatePerson(treeId, personId, account.id, request))
+            }
+            // FT-008: set or remove the profile photo. Owner check before the path ID or
+            // body is looked at, like every write (FT-068).
+            put("/{personId}/profile-photo") {
+                val account = call.currentAccount()
+                val treeId = call.requireTreeId()
+                requireTreeWriter(treeId, account.id)
+                val personId = PersonId(call.requirePathParam("personId"))
+                val request = call.receive<SetProfilePhotoRequest>()
+                call.respond(PersonService.setProfilePhoto(treeId, personId, account.id, request))
             }
             delete("/{personId}") {
                 val account = call.currentAccount()

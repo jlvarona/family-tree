@@ -2,7 +2,10 @@ package com.moxietech.family_tree.web
 
 import com.moxietech.family_tree.auth.BrowserBridge
 import com.moxietech.family_tree.auth.BrowserFeatureException
+import com.moxietech.family_tree.auth.PickedFile
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -32,6 +35,16 @@ internal expect fun cryptoRandomHex(count: Int): String
  * hex, or [onError] (insecure context, no SubtleCrypto, rejected promise).
  */
 internal expect fun cryptoSha256Hex(text: String, onDone: (String) -> Unit, onError: (String) -> Unit)
+
+/**
+ * Opens a one-off `<input type=file accept=…>`. When a file is chosen it checks
+ * `File.size` and `File.type` first: only a file of at most [maxBytes] bytes whose type
+ * is in the comma-separated [accept] list is read (`FileReader.readAsDataURL`), and
+ * [onDone] gets (type, size, true, base64). Any other file is never opened and [onDone]
+ * gets (type, size, false, ""). Nothing is called if the user cancels or reading fails.
+ * The size travels as a Double (exact for any real file size).
+ */
+internal expect fun pickFileBase64(accept: String, maxBytes: Double, onDone: (String, Double, Boolean, String) -> Unit)
 
 /** [BrowserBridge] over the page's `window`. */
 internal class WindowBridge : BrowserBridge {
@@ -71,6 +84,14 @@ internal class WindowBridge : BrowserBridge {
             )
         }
         return hexToBytes(hex, 32, "crypto.subtle.digest")
+    }
+
+    @OptIn(ExperimentalEncodingApi::class)
+    override fun pickFile(accept: List<String>, maxBytes: Long, onPicked: (PickedFile) -> Unit) {
+        pickFileBase64(accept.joinToString(","), maxBytes.toDouble()) { type, size, read, base64 ->
+            val bytes = if (read) runCatching { Base64.decode(base64) }.getOrNull() ?: return@pickFileBase64 else null
+            onPicked(PickedFile(type, size.toLong(), bytes))
+        }
     }
 
     private fun hexToBytes(hex: String, count: Int, feature: String): ByteArray {

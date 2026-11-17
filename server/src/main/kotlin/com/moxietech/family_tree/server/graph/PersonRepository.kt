@@ -23,6 +23,13 @@ import java.util.UUID
 import kotlin.uuid.Uuid
 import kotlin.uuid.toJavaUuid
 
+/** Whether [PersonRepository.update] also changes the profile photo (FT-007 merge, FT-008). */
+sealed interface ProfileMediaUpdate {
+    data object Keep : ProfileMediaUpdate
+
+    data class Set(val mediaId: Uuid?) : ProfileMediaUpdate
+}
+
 object PersonRepository {
 
     /** Null when [id] doesn't exist or belongs to another tree; callers treat both as not found. */
@@ -79,7 +86,8 @@ object PersonRepository {
      * stored version is still [expectedVersion], and increments the version in
      * the same statement. Returns null, changing nothing, when no row matched:
      * a concurrent writer committed first and the caller must report a conflict.
-     * Identity, tree, creator and profile media are never changed here.
+     * Identity, tree and creator are never changed here; the profile photo only
+     * when [profileMedia] says so (a merge's explicit photo choice).
      */
     fun update(
         treeId: Uuid,
@@ -91,6 +99,7 @@ object PersonRepository {
         sex: Sex,
         isLiving: Boolean,
         bio: String?,
+        profileMedia: ProfileMediaUpdate = ProfileMediaUpdate.Keep,
     ): Person? = transaction {
         val updated = PersonTable.update({
             (PersonTable.id eq id) and (PersonTable.treeId eq treeId) and (PersonTable.version eq expectedVersion)
@@ -101,10 +110,33 @@ object PersonRepository {
             it[PersonTable.sex] = sex.name
             it[PersonTable.isLiving] = isLiving
             it[PersonTable.bio] = bio
+            if (profileMedia is ProfileMediaUpdate.Set) it[PersonTable.profileMediaId] = profileMedia.mediaId
             it[PersonTable.version] = expectedVersion + 1
             it[PersonTable.updatedAt] = Instant.now()
         }
         if (updated == 0) null else findById(treeId, id) ?: error("Person $id was just updated but cannot be read back")
+    }
+
+    /**
+     * FT-008: sets (or, with null, clears) the profile photo of [id] in [treeId] while its
+     * version is still [expectedVersion], advancing the version. Null when no row matched
+     * (stale). The caller has checked the media under its lock ([com.moxietech.family_tree.server.media.MediaAttachments]).
+     */
+    fun setProfileMedia(treeId: Uuid, id: Uuid, expectedVersion: Long, mediaId: Uuid?): Person? = transaction {
+        val updated = PersonTable.update({
+            (PersonTable.id eq id) and (PersonTable.treeId eq treeId) and (PersonTable.version eq expectedVersion)
+        }) {
+            it[PersonTable.profileMediaId] = mediaId
+            it[PersonTable.version] = expectedVersion + 1
+            it[PersonTable.updatedAt] = Instant.now()
+        }
+        if (updated == 0) null else findById(treeId, id) ?: error("Person $id was just updated but cannot be read back")
+    }
+
+    /** FT-008: the person in [treeId] whose profile photo is [mediaId], if any (at most one, V6). */
+    fun findByProfileMedia(treeId: Uuid, mediaId: Uuid): Person? = transaction {
+        PersonTable.selectAll().where { (PersonTable.profileMediaId eq mediaId) and (PersonTable.treeId eq treeId) }
+            .firstOrNull()?.toPerson()
     }
 
     /**

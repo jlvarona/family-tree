@@ -101,6 +101,10 @@ object PersonMergeService {
             if (e.isForeignKeyViolation(RecordDeletion.PERSON_FOREIGN_KEYS)) {
                 throw ConflictException("Person $retiredUuid is still referenced by other records; reload and try again")
             }
+            // Equally unreachable (the photo moves from the deleted retired row); a 409, never a 500.
+            if (e.isUniqueViolation(PROFILE_MEDIA_UNIQUE)) {
+                throw ConflictException("The chosen profile photo is attached to another person; reload and try again")
+            }
             throw e
         }
     }
@@ -140,11 +144,9 @@ object PersonMergeService {
             val survivorProfile = PersonMerge.profileOf(survivor)
             val retiredProfile = PersonMerge.profileOf(retired)
             val differing = PersonMerge.differingFields(survivorProfile, retiredProfile)
+            // FT-008: the profile photo is one of these fields. Different photos, or a photo
+            // against none, need the owner's explicit choice like any other difference.
             PersonMerge.choiceErrors(differing, choices).requireValid()
-            if (survivor.profileMediaId != retired.profileMediaId) {
-                // No route sets profile media until FT-008, which will add it as a choice.
-                throw ConflictException("These people have different profile photos; a merge can't keep both yet")
-            }
 
             // 3. Every reference to either person, locked in a fixed order.
             val both = listOf(survivorId, retiredId)
@@ -193,6 +195,11 @@ object PersonMergeService {
                 sex = merged.sex,
                 isLiving = merged.isLiving,
                 bio = merged.bio,
+                // The chosen photo, already in this tree (V6 foreign key) and verified when it was
+                // attached. Taking the retired person's photo is checked against the one-person-
+                // per-photo constraint at commit, after the retired row is deleted below. The
+                // photo not chosen stays stored as unattached media (owner-readable only).
+                profileMedia = ProfileMediaUpdate.Set(merged.profileMediaId?.let(Uuid::parse)),
             ) ?: throw staleVersion("Person", survivor.id.value)
             val survivorDto = updated.toDto()
             audit("Person", survivor.id.value, AuditAction.UPDATE, AuditJson.encodeToString(survivor.toDto()), AuditJson.encodeToString(survivorDto))

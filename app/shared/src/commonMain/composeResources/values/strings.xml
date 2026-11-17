@@ -166,4 +166,20 @@
     <string name="merge_error_choices">Choose a value for every field that differs.</string>
     <string name="merge_error_confirm">Confirm which record will be removed.</string>
     <string name="merge_error_changed">These records changed, or can’t be merged as shown. They were reloaded: review the values and try again.</string>
+
+    <!-- Profile photos (FT-008) -->
+    <string name="photo_alt">Photo of %1$s</string>
+    <string name="photo_add">Add photo</string>
+    <string name="photo_change">Change photo</string>
+    <string name="photo_remove">Remove photo</string>
+    <string name="photo_saving">Saving photo…</string>
+    <string name="photo_hint">JPEG or PNG, up to 20 MB. Location and other hidden details are removed from the file.</string>
+    <string name="photo_error_type">Choose a JPEG or PNG image.</string>
+    <string name="photo_error_size">That image is larger than 20 MB.</string>
+    <string name="photo_error_invalid">That file couldn’t be read as an image. Choose another one.</string>
+    <string name="photo_error_changed">This person was changed meanwhile. The page has been updated; try again.</string>
+    <string name="photo_error_upload">The photo couldn’t be sent to photo storage. Check your connection and try again.</string>
+    <string name="photo_load_failed">The photo couldn’t be loaded.</string>
+    <string name="merge_photo">Profile photo</string>
+    <string name="merge_no_photo">No photo</string>
 </resources>

@@ -25,6 +25,9 @@ flyway = "11.9.1"
 postgresql = "42.7.5"
 hikaricp = "6.3.0"
 testcontainers = "1.21.4"
+# FT-008: S3 client and presigner for photo storage (AWS S3 in production, an
+# S3-compatible service locally and in tests).
+awssdk = "2.58.0"
 
 [libraries]
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
@@ -74,6 +77,7 @@ postgresql = { module = "org.postgresql:postgresql", version.ref = "postgresql" 
 hikaricp = { module = "com.zaxxer:HikariCP", version.ref = "hikaricp" }
 testcontainers = { module = "org.testcontainers:testcontainers", version.ref = "testcontainers" }
 testcontainers-postgresql = { module = "org.testcontainers:postgresql", version.ref = "testcontainers" }
+awssdk-s3 = { module = "software.amazon.awssdk:s3", version.ref = "awssdk" }
 
 [plugins]
 androidApplication = { id = "com.android.application", version.ref = "agp" }

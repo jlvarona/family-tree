@@ -127,3 +127,11 @@ internal fun SQLException.isForeignKeyViolation(constraints: Set<String>): Boole
     generateSequence<Throwable>(this) { it.cause }
         .filterIsInstance<PSQLException>()
         .any { it.sqlState == FOREIGN_KEY_VIOLATION && it.serverErrorMessage?.constraint in constraints }
+
+private const val UNIQUE_KEY_VIOLATION = "23505"
+
+/** PostgreSQL's unique violation on [constraint] (FT-008 media attachments), anywhere in the cause chain. */
+internal fun SQLException.isUniqueViolation(constraint: String): Boolean =
+    generateSequence<Throwable>(this) { it.cause }
+        .filterIsInstance<PSQLException>()
+        .any { it.sqlState == UNIQUE_KEY_VIOLATION && it.serverErrorMessage?.constraint == constraint }

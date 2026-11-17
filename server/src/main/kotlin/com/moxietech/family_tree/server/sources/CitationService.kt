@@ -8,14 +8,18 @@ import com.moxietech.family_tree.domain.Confidence
 import com.moxietech.family_tree.domain.Person
 import com.moxietech.family_tree.domain.TreeId
 import com.moxietech.family_tree.domain.Union
+import com.moxietech.family_tree.media.MediaPurpose
 import com.moxietech.family_tree.server.collaboration.AuditJson
 import com.moxietech.family_tree.server.collaboration.AuditLogRepository
 import com.moxietech.family_tree.server.config.DatabaseDispatcher
 import com.moxietech.family_tree.server.errors.NotFoundException
 import com.moxietech.family_tree.server.errors.ValidationException
+import com.moxietech.family_tree.server.errors.parseOptionalUuidField
 import com.moxietech.family_tree.server.errors.parseUuidField
 import com.moxietech.family_tree.server.graph.TreeScopedLookups
 import com.moxietech.family_tree.server.graph.ViewerPolicy
+import com.moxietech.family_tree.server.media.MediaAttachments
+import com.moxietech.family_tree.server.media.mediaInUse
 import com.moxietech.family_tree.server.trees.TreeService
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
@@ -27,13 +31,6 @@ import kotlin.uuid.Uuid
 const val CITATION_CONFIDENCE_MESSAGE = "Citation confidence must be 0, 1, 2 or 3"
 
 /**
- * FT-002: 400 for a non-null `mediaId`. There is no media table or upload flow yet
- * (FT-008), so a media ID can't be resolved inside the tree; accepting one would
- * store an unchecked reference that a later signed-URL route could follow.
- */
-const val CITATION_MEDIA_MESSAGE = "mediaId is not supported yet; attach citation scans once photo upload exists"
-
-/**
  * FT-002 citation routes. A citation ties one person, event or union to a source.
  *
  * Writes are owner-only (FT-068) and run in one READ COMMITTED transaction that
@@ -41,6 +38,11 @@ const val CITATION_MEDIA_MESSAGE = "mediaId is not supported yet; attach citatio
  * `FOR KEY SHARE`, filtered by ID and `tree_id`, before the insert, and the audit
  * entry is written in the same transaction. A row that is missing, in another
  * tree, or deleted by a delete that committed first is the same generic 404.
+ *
+ * FT-008: an optional `mediaId` (a scan of the source) must be a `READY`
+ * `CITATION_SCAN` upload of the same tree, not yet on another citation. It is locked
+ * `FOR UPDATE` after the source and target, and checked in the same transaction
+ * (404 missing or foreign, 409 not verified, 400 another purpose, 409 in use).
  *
  * Reads are target-scoped and follow [ViewerPolicy.citationsOn]: the citations of a
  * fact are returned only when the caller can see every person the fact is about,
@@ -58,7 +60,7 @@ object CitationService {
         val target = CitationTargetRef(kind, parseUuidField("targetId", request.targetId))
         val confidence = Confidence.entries.firstOrNull { it.level == request.confidence }
             ?: throw ValidationException(listOf(CITATION_CONFIDENCE_MESSAGE))
-        if (request.mediaId != null) throw ValidationException(listOf(CITATION_MEDIA_MESSAGE))
+        val mediaUuid = parseOptionalUuidField("mediaId", request.mediaId)
 
         return withContext(DatabaseDispatcher) {
             // READ COMMITTED (stated, not assumed): a lock that waited for a delete must
@@ -70,6 +72,10 @@ object CitationService {
                     throw NotFoundException("No source with id $sourceUuid")
                 }
                 if (!CitationRepository.lockTarget(treeUuid, target)) throw target.kind.notFound(target.id)
+                if (mediaUuid != null) {
+                    MediaAttachments.lockForAttaching(treeUuid, mediaUuid, MediaPurpose.CITATION_SCAN)
+                    if (CitationRepository.findByMedia(treeUuid, mediaUuid) != null) throw mediaInUse(mediaUuid)
+                }
                 val citation = CitationRepository.insert(
                     treeId = treeUuid,
                     sourceId = sourceUuid,
@@ -77,6 +83,7 @@ object CitationService {
                     page = request.page,
                     confidence = confidence,
                     note = request.note,
+                    mediaId = mediaUuid,
                 )
                 val dto = citation.toDto()
                 AuditLogRepository.append(
@@ -128,8 +135,11 @@ object CitationService {
         }
     }
 
-    /** The people [target] is about; 404 when the target isn't in [treeId]. */
-    private fun subjectsOf(treeId: Uuid, target: CitationTargetRef): List<Person> = when (target.kind) {
+    /**
+     * The people [target] is about; 404 when the target isn't in [treeId]. Also decides
+     * who may read a citation's scan (FT-008, `MediaService`). Call inside a transaction.
+     */
+    internal fun subjectsOf(treeId: Uuid, target: CitationTargetRef): List<Person> = when (target.kind) {
         CitationTargetKind.PERSON -> listOf(TreeScopedLookups.requirePerson(treeId, target.id))
         CitationTargetKind.UNION -> partnersOf(treeId, TreeScopedLookups.requireUnion(treeId, target.id))
         CitationTargetKind.EVENT -> {

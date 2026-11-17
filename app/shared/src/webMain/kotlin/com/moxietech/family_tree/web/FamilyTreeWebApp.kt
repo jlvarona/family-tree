@@ -15,6 +15,7 @@ import com.moxietech.family_tree.auth.UrlParts
 import com.moxietech.family_tree.auth.SessionManager
 import com.moxietech.family_tree.auth.WebAppConfig
 import com.moxietech.family_tree.client.HttpFamilyTreeApi
+import com.moxietech.family_tree.client.HttpMediaTransfer
 import com.moxietech.family_tree.state.FamilyTreeController
 import com.moxietech.family_tree.ui.FamilyTreeApp
 import com.moxietech.family_tree.ui.FamilyTreeTheme
@@ -51,7 +52,10 @@ fun FamilyTreeWebApp() {
         } else {
             val session = SessionManager(config, bridge, http, scope)
             val api = HttpFamilyTreeApi(http, config.apiBaseUrl.ifBlank { bridge.origin }, session)
-            controller = FamilyTreeController(session, api, bridge, scope).also { it.start() }
+            // FT-008: image bytes go straight to the object store's presigned URLs, on a
+            // client that never carries the session token.
+            val transfer = HttpMediaTransfer(HttpClient(Js))
+            controller = FamilyTreeController(session, api, bridge, scope, transfer).also { it.start() }
         }
     }
 

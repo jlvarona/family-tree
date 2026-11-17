@@ -21,6 +21,9 @@ tasks.test {
     // Opt-in live check against a disposable Keycloak container (KeycloakBrowserTokenTest):
     // ./gradlew :server:test --tests "*KeycloakBrowserTokenTest" -PkeycloakIt=true
     systemProperty("family_tree.keycloakIt", providers.gradleProperty("keycloakIt").getOrElse("false"))
+    // FT-008: the S3-compatible image used by the media round-trip tests (MediaTestStore).
+    // Override with -PobjectStoreImage=<image:tag> to try another release.
+    providers.gradleProperty("objectStoreImage").orNull?.let { systemProperty("family_tree.objectStoreImage", it) }
 }
 
 dependencies {
@@ -46,6 +49,7 @@ dependencies {
     implementation(libs.flyway.postgresql)
     implementation(libs.postgresql)
     implementation(libs.hikaricp)
+    implementation(libs.awssdk.s3)
 
     testImplementation(libs.ktor.serverTestHost)
     testImplementation(libs.kotlin.testJunit)

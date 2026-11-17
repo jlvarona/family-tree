@@ -17,6 +17,12 @@ enum class MergeField {
     SEX,
     IS_LIVING,
     BIO,
+
+    /**
+     * The profile photo (FT-008), compared by media ID. A photo against no photo is a
+     * difference too, so a merge never keeps or drops a photo without the owner's choice.
+     */
+    PROFILE_PHOTO,
 }
 
 /** Whose value of a differing field is kept: the surviving record's or the retired one's. */
@@ -33,6 +39,8 @@ data class MergeProfile(
     val sex: Sex,
     val isLiving: Boolean,
     val bio: String?,
+    /** The profile photo's media ID (FT-008), or null for none. */
+    val profileMediaId: String? = null,
 )
 
 /**
@@ -66,6 +74,7 @@ object PersonMerge {
         sex = person.sex,
         isLiving = person.isLiving,
         bio = person.bio,
+        profileMediaId = person.profileMediaId?.value,
     )
 
     /**
@@ -80,6 +89,8 @@ object PersonMerge {
         MergeField.SEX -> profile.sex
         MergeField.IS_LIVING -> profile.isLiving
         MergeField.BIO -> profile.bio.emptyAsNull()
+        // Media IDs are canonical UUIDs from the server; compared case-insensitively anyway.
+        MergeField.PROFILE_PHOTO -> profile.profileMediaId?.lowercase()
     }
 
     /** The fields whose values differ, in [MergeField] order; each needs an explicit choice. */
@@ -114,6 +125,7 @@ object PersonMerge {
             sex = pick(MergeField.SEX, survivor.sex, retired.sex),
             isLiving = pick(MergeField.IS_LIVING, survivor.isLiving, retired.isLiving),
             bio = pick(MergeField.BIO, survivor.bio, retired.bio),
+            profileMediaId = pick(MergeField.PROFILE_PHOTO, survivor.profileMediaId, retired.profileMediaId),
         )
     }
 
