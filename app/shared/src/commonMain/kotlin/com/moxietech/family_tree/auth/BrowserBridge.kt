@@ -52,14 +52,21 @@ interface BrowserBridge {
     /**
      * FT-008: opens the browser's file chooser for one file of the [accept] MIME types.
      * Must be called straight from a click handler (browsers require a user gesture).
-     * [onPicked] runs later with the file, or not at all if the user cancels. The
+     * [onPicked] runs later with the file, or not at all if the user cancels.
+     *
+     * The file's bytes are read only when its reported size is at most [maxBytes] and its
+     * type is one of [accept]; otherwise [PickedFile.bytes] is null and nothing of the
+     * file is opened, so an oversized selection is refused without allocating it. The
      * default (non-browser platforms) never offers a file.
      */
-    fun pickFile(accept: List<String>, onPicked: (PickedFile) -> Unit) = Unit
+    fun pickFile(accept: List<String>, maxBytes: Long, onPicked: (PickedFile) -> Unit) = Unit
 }
 
-/** A file the user chose: its browser-reported MIME type and its bytes. */
-class PickedFile(val contentType: String, val bytes: ByteArray)
+/**
+ * A file the user chose: its browser-reported MIME type and size, and its bytes when
+ * they were read (within the size cap and an accepted type), else null.
+ */
+class PickedFile(val contentType: String, val size: Long, val bytes: ByteArray?)
 
 class BrowserFeatureException(feature: String) : Exception("Browser feature unavailable: $feature")
 

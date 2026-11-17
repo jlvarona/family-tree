@@ -57,9 +57,10 @@ const val MEDIA_TOO_LARGE_IMAGE_MESSAGE = "The image has too many pixels"
  *      overlapping finalization won and removed the upload) is returned, otherwise 409
  *      (still `PENDING`: retry after uploading);
  *   3. outside any transaction, check the exact declared size, then verify, strip
- *      metadata ([ImageSanitizer]) and decode every pixel, at most
- *      [MediaSettings.maxConcurrentVerifications] at once;
- *   4. write the cleaned image under a key holding its SHA-256;
+ *      metadata ([ImageSanitizer]) and decode every pixel;
+ *   4. write the cleaned image under a key holding its SHA-256. Steps 2-4 hold one of
+ *      [MediaSettings.maxConcurrentVerifications] permits, so that bounds the image
+ *      buffers held at once;
  *   5. one transaction: lock the row, and only if still `PENDING` mark it `READY`
  *      with the stored key and details (or `REJECTED` after step 3), with its audit;
  *   6. delete the upload object, best effort (a bucket lifecycle rule backs it up).
@@ -122,38 +123,42 @@ class MediaService(
             MediaStatus.PENDING -> Unit
         }
 
-        val bytes = when (val read = store.read(media.uploadKey, maxBytes = media.uploadByteSize)) {
-            // Not uploaded yet, or an overlapping finalization finished and removed it:
-            // the row decides which.
-            StoredBytes.Missing -> {
-                val current = withContext(DatabaseDispatcher) { MediaRepository.find(treeUuid, mediaId) } ?: throw mediaNotFound(mediaId)
-                when (current.status) {
-                    MediaStatus.READY -> return current.toDto()
-                    MediaStatus.REJECTED -> throw ConflictException(MEDIA_REJECTED_MESSAGE)
-                    MediaStatus.PENDING -> throw ConflictException(MEDIA_UPLOAD_INCOMPLETE_MESSAGE)
+        // One permit covers every image buffer this request holds: the upload read (up to
+        // 20 MiB), the verification and the write of the cleaned copy. Only the stored
+        // image's details leave the block, so the buffers are unreachable once the permit
+        // is released and at most maxConcurrentVerifications sets exist at once.
+        val stored = verifications.withPermit {
+            val bytes = when (val read = store.read(media.uploadKey, maxBytes = media.uploadByteSize)) {
+                // Not uploaded yet, or an overlapping finalization finished and removed it:
+                // the row decides which.
+                StoredBytes.Missing -> {
+                    val current = withContext(DatabaseDispatcher) { MediaRepository.find(treeUuid, mediaId) } ?: throw mediaNotFound(mediaId)
+                    when (current.status) {
+                        MediaStatus.READY -> return current.toDto()
+                        MediaStatus.REJECTED -> throw ConflictException(MEDIA_REJECTED_MESSAGE)
+                        MediaStatus.PENDING -> throw ConflictException(MEDIA_UPLOAD_INCOMPLETE_MESSAGE)
+                    }
                 }
+                StoredBytes.TooLarge -> return reject(treeUuid, callerAccountId, media, MEDIA_SIZE_MISMATCH_MESSAGE)
+                is StoredBytes.Found -> read.bytes
             }
-            StoredBytes.TooLarge -> return reject(treeUuid, callerAccountId, media, MEDIA_SIZE_MISMATCH_MESSAGE)
-            is StoredBytes.Found -> read.bytes
-        }
-        if (bytes.size.toLong() != media.uploadByteSize) return reject(treeUuid, callerAccountId, media, MEDIA_SIZE_MISMATCH_MESSAGE)
+            if (bytes.size.toLong() != media.uploadByteSize) return reject(treeUuid, callerAccountId, media, MEDIA_SIZE_MISMATCH_MESSAGE)
 
-        val result = verifications.withPermit {
-            withContext(Dispatchers.Default) { ImageSanitizer.sanitize(bytes, media.format) }
+            val image = when (val result = withContext(Dispatchers.Default) { ImageSanitizer.sanitize(bytes, media.format) }) {
+                is SanitizeResult.Invalid -> return reject(
+                    treeUuid,
+                    callerAccountId,
+                    media,
+                    if (result.reason == InvalidImage.TOO_LARGE) MEDIA_TOO_LARGE_IMAGE_MESSAGE else MEDIA_INVALID_IMAGE_MESSAGE,
+                )
+                is SanitizeResult.Clean -> result.image
+            }
+            val sha256 = sha256Hex(image.bytes)
+            val key = MediaKeys.stored(treeUuid, mediaId, sha256)
+            store.write(key, image.bytes, image.format.contentType)
+            StoredImage(key, sha256, image.bytes.size.toLong(), image.width, image.height)
         }
-        val image = when (result) {
-            is SanitizeResult.Invalid -> return reject(
-                treeUuid,
-                callerAccountId,
-                media,
-                if (result.reason == InvalidImage.TOO_LARGE) MEDIA_TOO_LARGE_IMAGE_MESSAGE else MEDIA_INVALID_IMAGE_MESSAGE,
-            )
-            is SanitizeResult.Clean -> result.image
-        }
-
-        val sha256 = sha256Hex(image.bytes)
-        val storageKey = MediaKeys.stored(treeUuid, mediaId, sha256)
-        store.write(storageKey, image.bytes, image.format.contentType)
+        val storageKey = stored.key
 
         val ready = withContext(DatabaseDispatcher) {
             transaction(transactionIsolation = Connection.TRANSACTION_READ_COMMITTED) {
@@ -168,10 +173,10 @@ class MediaService(
                             id = mediaId,
                             expectedVersion = locked.version,
                             storageKey = storageKey,
-                            byteSize = image.bytes.size.toLong(),
-                            width = image.width,
-                            height = image.height,
-                            sha256 = sha256,
+                            byteSize = stored.byteSize,
+                            width = stored.width,
+                            height = stored.height,
+                            sha256 = stored.sha256,
                         ) ?: error("Media $mediaId was locked PENDING but could not be marked READY")
                         audit(treeUuid, callerAccountId, updated, AuditAction.UPDATE, before = locked)
                         updated
@@ -254,6 +259,9 @@ class MediaService(
             log.warn("Could not delete an unreadable media object; the bucket lifecycle rule will remove it")
         }
     }
+
+    /** What finalization keeps of a stored image once its buffers are released. */
+    private class StoredImage(val key: String, val sha256: String, val byteSize: Long, val width: Int, val height: Int)
 
     private fun sha256Hex(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }

@@ -46,10 +46,26 @@ services:
   # only. The credentials come from your shell (README "Photo storage"); nothing is
   # stored in this file. With S3_BUCKET set the bucket is created on start; the API
   # server puts the browser CORS rules on it when MEDIA_S3_CREATE_BUCKET=true.
+  #
+  # Opt-in: only `docker compose --profile media up -d s3` starts it, so the usual
+  # `docker compose up -d` (Postgres, Keycloak) doesn't. Without credentials SeaweedFS
+  # would run with no authentication at all, so the entry point below refuses to start
+  # unless both are set. The check runs in the container (`$$` keeps Compose from
+  # interpolating it), so a missing variable never breaks the other services.
   s3:
     image: ghcr.io/chrislusf/seaweedfs:4.54
     container_name: family-tree-s3
-    command: mini -dir=/data
+    profiles: ["media"]
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        if [ -z "$${AWS_ACCESS_KEY_ID}" ] || [ -z "$${AWS_SECRET_ACCESS_KEY}" ]; then
+          echo "family-tree-s3: set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (local-only values) before starting; refusing to run without authentication" >&2
+          exit 1
+        fi
+        exec /entrypoint.sh mini -dir=/data
+    restart: "no"
     environment:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}

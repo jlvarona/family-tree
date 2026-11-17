@@ -435,6 +435,42 @@ class MediaRoutesTest {
         assertEquals("REJECTED", status(sized.media.id))
     }
 
+    /**
+     * Review fix: the verification permit covers the upload read and the cleaned write, not
+     * only the pixel check, so with one permit a second finalization doesn't even read its
+     * upload (no second 20 MiB buffer) until the first has released its buffers.
+     */
+    @Test
+    fun `with one permit a second finalization doesn't read its upload until the first is done`() = testApplication {
+        val gated = FaultInjectingStore(store)
+        val reads = java.util.concurrent.atomic.AtomicInteger()
+        val counting = object : ObjectStore by gated {
+            override suspend fun read(key: String, maxBytes: Long): StoredBytes {
+                reads.incrementAndGet()
+                return gated.read(key, maxBytes)
+            }
+        }
+        val single = MediaService(lazyOf(counting), objectStore.settings.copy(maxConcurrentVerifications = 1))
+        application { module(settings(), single) }
+
+        val first = client.uploaded(treeA, TestImages.jpeg())
+        val second = client.uploaded(treeA, TestImages.png(), type = "image/png")
+        val gate = gated.delayNextRead()
+        withTimeout(20_000) {
+            coroutineScope {
+                val a = async { client.finalize(treeA, first.media.id) }
+                gate.waiting.await()
+                val b = async { client.finalize(treeA, second.media.id) }
+                delay(500)
+                assertEquals(1, reads.get(), "the second finalization waits for the permit before reading")
+                gate.resume.complete(Unit)
+                assertEquals("READY", a.await().decoded<MediaDto>().status)
+                assertEquals("READY", b.await().decoded<MediaDto>().status)
+            }
+        }
+        assertEquals(2, reads.get())
+    }
+
     // --- Authorization, validation, tenancy ------------------------------------------------
 
     @Test

@@ -35,7 +35,11 @@ data class MediaSettings(
     /** Browser origins allowed to `PUT` uploads and `GET` images (with [createBucket]), e.g. `http://localhost:3000`. */
     val localCorsOrigins: List<String> = env("MEDIA_S3_CORS_ORIGINS").orEmpty()
         .split(',').map { it.trim() }.filter { it.isNotEmpty() },
-    /** How many image verifications may run at once; each decodes a whole image. */
+    /**
+     * How many finalizations may hold image buffers at once. The limit covers reading
+     * the upload (up to 20 MiB), verifying it and writing the cleaned copy, so at most
+     * this many uploads and cleaned images are in memory together.
+     */
     val maxConcurrentVerifications: Int = env("MEDIA_MAX_CONCURRENT_VERIFICATIONS")?.toIntOrNull()?.coerceAtLeast(1) ?: 2,
     /** How long a presigned upload stays valid. */
     val uploadUrlTtl: Duration = Duration.ofMinutes(10),
@@ -46,6 +50,11 @@ data class MediaSettings(
         require(bucket.isNotBlank()) { "MEDIA_S3_BUCKET must not be blank" }
         require(region.isNotBlank()) { "MEDIA_S3_REGION must not be blank" }
         require(localCorsOrigins.none { it == "*" }) { "MEDIA_S3_CORS_ORIGINS must name origins, not *" }
+        // The bootstrap creates buckets and replaces CORS rules: only against an explicit
+        // local endpoint, never the AWS default endpoint the SDK falls back to.
+        require(!createBucket || endpoint != null) {
+            "MEDIA_S3_CREATE_BUCKET is for a local S3-compatible store; set MEDIA_S3_ENDPOINT, or unset MEDIA_S3_CREATE_BUCKET for AWS"
+        }
     }
 }
 

@@ -57,6 +57,8 @@ class FamilyTreeController(
     private val scope: CoroutineScope,
     /** FT-008: presigned transfers to and from photo storage (no session token). */
     private val transfer: MediaTransfer = NoMediaTransfer,
+    /** FT-008: encoded bytes [AppState.photos] may hold; older, unused images are dropped first. */
+    private val photoCacheBytes: Long = DEFAULT_PHOTO_CACHE_BYTES,
 ) {
     private val _state = MutableStateFlow(AppState())
     val state: StateFlow<AppState> = _state.asStateFlow()
@@ -429,7 +431,8 @@ class FamilyTreeController(
      */
     fun choosePhoto() {
         val page = editablePhotoPage() ?: return
-        bridge.pickFile(MediaRules.SUPPORTED_CONTENT_TYPES) { file -> onPhotoPicked(page.instance, file) }
+        // The cap goes to the browser, which checks File.size before opening the file.
+        bridge.pickFile(MediaRules.SUPPORTED_CONTENT_TYPES, MediaRules.MAX_UPLOAD_BYTES) { file -> onPhotoPicked(page.instance, file) }
     }
 
     /** Retries the failed step of the last photo change, reusing what already succeeded. */
@@ -473,7 +476,11 @@ class FamilyTreeController(
     fun loadPhoto(treeId: String, mediaId: String) {
         val key = PhotoKey(treeId, mediaId)
         val existing = _state.value.photos[key]
-        if (existing is Loadable.Ready || existing == Loadable.Loading) return
+        if (existing is Loadable.Ready) {
+            putPhoto(key, existing) // most recently used again
+            return
+        }
+        if (existing == Loadable.Loading) return
         putPhoto(key, Loadable.Loading)
         inSession { owner ->
             val result = load {
@@ -489,16 +496,19 @@ class FamilyTreeController(
         val page = currentPersonScreen(instance) ?: return
         if (page.photo?.busy == true) return
         val format = MediaRules.formatOf(file.contentType)
+        val bytes = file.bytes
+        // The reported size decides first: an oversized file was never read (bytes null).
         val error = when {
             format == null -> PhotoError.UNSUPPORTED_TYPE
-            !MediaRules.isSizeAllowed(file.bytes.size.toLong()) -> PhotoError.TOO_LARGE
+            file.size <= 0 || bytes?.isEmpty() == true -> PhotoError.INVALID_IMAGE
+            !MediaRules.isSizeAllowed(file.size) || bytes == null || !MediaRules.isSizeAllowed(bytes.size.toLong()) -> PhotoError.TOO_LARGE
             else -> null
         }
-        if (error != null || format == null) {
+        if (error != null || format == null || bytes == null) {
             updatePersonScreen(instance) { it.copy(photo = PhotoUpload(error = error)) }
             return
         }
-        runPhotoChange(instance, PendingPhoto(format.contentType, file.bytes))
+        runPhotoChange(instance, PendingPhoto(format.contentType, bytes))
     }
 
     private enum class PhotoStep { UPLOAD, VERIFY, ATTACH }
@@ -586,12 +596,35 @@ class FamilyTreeController(
         return page.takeIf { viewer.canWrite && viewer.canSeeDetails(person) }
     }
 
+    /**
+     * Stores [value] as the most recently used image, then evicts least recently used
+     * entries until the cache is within [photoCacheBytes] of encoded data and
+     * [MAX_CACHED_PHOTOS] entries. Images on screen (the person page's photo, both
+     * records of an open merge) and the one just stored are never evicted, so the
+     * previews in use stay; an evicted image is fetched again when it's next shown.
+     */
     private fun putPhoto(key: PhotoKey, value: Loadable<ByteArray>) = _state.update { state ->
         val photos = LinkedHashMap(state.photos)
         photos.remove(key)
         photos[key] = value
-        while (photos.size > MAX_CACHED_PHOTOS) photos.remove(photos.keys.first())
+        val pinned = photosOnScreen(state) + key
+        fun bytes() = photos.values.sumOf { (it as? Loadable.Ready)?.value?.size?.toLong() ?: 0L }
+        val candidates = photos.keys.filter { it !in pinned }.iterator()
+        while ((bytes() > photoCacheBytes || photos.size > MAX_CACHED_PHOTOS) && candidates.hasNext()) {
+            photos.remove(candidates.next())
+        }
         state.copy(photos = photos)
+    }
+
+    private fun photosOnScreen(state: AppState): Set<PhotoKey> = buildSet {
+        state.personScreen?.let { page ->
+            page.person.valueOrNull?.profileMediaId?.let { add(PhotoKey(page.treeId, it)) }
+        }
+        state.treeScreen?.let { screen ->
+            screen.merge?.records?.valueOrNull?.let { pair ->
+                listOfNotNull(pair.first.profileMediaId, pair.second.profileMediaId).forEach { add(PhotoKey(screen.treeId, it)) }
+            }
+        }
     }
 
     private fun onAuth(auth: AuthState) {
@@ -854,8 +887,14 @@ class FamilyTreeController(
         }
 
     companion object {
-        /** Images kept for display at once (FT-008); the oldest is dropped first. */
+        /** Images kept for display at once (FT-008); the least recently used is dropped first. */
         internal const val MAX_CACHED_PHOTOS = 40
+
+        /**
+         * Encoded image bytes kept for display (FT-008). Room for the three images a screen
+         * can show at the 20 MiB upload limit, plus recently viewed ones.
+         */
+        const val DEFAULT_PHOTO_CACHE_BYTES: Long = 64L * 1024 * 1024
 
         /** People in name order, so the layout and pickers are stable between reloads. */
         internal fun sortedGraph(graph: TreeGraphDto): TreeGraphDto =

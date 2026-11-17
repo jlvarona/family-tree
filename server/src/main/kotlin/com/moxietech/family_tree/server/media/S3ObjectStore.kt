@@ -145,6 +145,7 @@ class S3ObjectStore(
      * it doesn't exist. Deployed buckets are created and configured outside the app.
      */
     suspend fun ensureBucket() = io {
+        requireLocalEndpoint()
         try {
             client.headBucket(HeadBucketRequest.builder().bucket(settings.bucket).build())
         } catch (e: S3Exception) {
@@ -161,6 +162,7 @@ class S3ObjectStore(
      */
     suspend fun putLocalCors(origins: List<String>) = io {
         if (origins.isEmpty()) return@io
+        requireLocalEndpoint()
         val rule = CORSRule.builder()
             .allowedOrigins(origins)
             .allowedMethods("PUT", "GET")
@@ -176,6 +178,10 @@ class S3ObjectStore(
         )
         Unit
     }
+
+    /** Bootstrap calls must never reach AWS's default endpoint (see [MediaSettings.createBucket]). */
+    private fun requireLocalEndpoint() =
+        check(settings.endpoint != null) { "Local bucket bootstrap needs an explicit MEDIA_S3_ENDPOINT" }
 
     override fun close() {
         presigner.close()

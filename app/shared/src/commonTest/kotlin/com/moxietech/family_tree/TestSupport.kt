@@ -87,11 +87,14 @@ class FakeBridge(var url: String = "http://localhost:3000/") : BrowserBridge {
 
     /** FT-008: the file the "user" picks next; null simulates cancelling the chooser. */
     var pickedFile: PickedFile? = null
-    val pickRequests = mutableListOf<List<String>>()
+    val pickRequests = mutableListOf<Pair<List<String>, Long>>()
 
-    override fun pickFile(accept: List<String>, onPicked: (PickedFile) -> Unit) {
-        pickRequests += accept
-        pickedFile?.let(onPicked)
+    /** Like the browser bridge: a file over [maxBytes] or of another type is handed over unread. */
+    override fun pickFile(accept: List<String>, maxBytes: Long, onPicked: (PickedFile) -> Unit) {
+        pickRequests += accept to maxBytes
+        val file = pickedFile ?: return
+        val readable = file.size <= maxBytes && file.contentType in accept
+        onPicked(if (readable) file else PickedFile(file.contentType, file.size, null))
     }
 }
 

@@ -35,10 +35,11 @@ private fun jsRandomHex(count: Int): String =
 private fun jsSha256Hex(text: String, onDone: (String) -> Unit, onError: (String) -> Unit): Unit =
     js("(function () { try { window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)).then(function (buffer) { onDone(Array.prototype.map.call(new Uint8Array(buffer), function (b) { return ('0' + b.toString(16)).slice(-2); }).join('')); }, function () { onError('digest'); }); } catch (e) { onError('digest'); } })()")
 
-private fun jsPickFile(accept: String, onDone: (String, String) -> Unit): Unit =
-    js("(function () { try { var input = document.createElement('input'); input.type = 'file'; input.accept = accept; input.style.display = 'none'; input.addEventListener('change', function () { var file = input.files && input.files[0]; if (input.parentNode) { input.parentNode.removeChild(input); } if (!file) { return; } var reader = new FileReader(); reader.onload = function () { var url = String(reader.result); var comma = url.indexOf(','); if (comma >= 0) { onDone(file.type || '', url.substring(comma + 1)); } }; reader.readAsDataURL(file); }); document.body.appendChild(input); input.click(); } catch (e) { } })()")
+private fun jsPickFile(accept: String, maxBytes: Double, onDone: (String, Double, Boolean, String) -> Unit): Unit =
+    js("(function () { try { var input = document.createElement('input'); input.type = 'file'; input.accept = accept; input.style.display = 'none'; input.addEventListener('change', function () { var file = input.files && input.files[0]; if (input.parentNode) { input.parentNode.removeChild(input); } if (!file) { return; } var type = file.type || ''; var size = file.size; if (size > maxBytes || accept.split(',').indexOf(type) < 0) { onDone(type, size, false, ''); return; } var reader = new FileReader(); reader.onload = function () { var url = String(reader.result); var comma = url.indexOf(','); if (comma >= 0) { onDone(type, size, true, url.substring(comma + 1)); } }; reader.readAsDataURL(file); }); document.body.appendChild(input); input.click(); } catch (e) { } })()")
 
-internal actual fun pickFileBase64(accept: String, onDone: (String, String) -> Unit) = jsPickFile(accept, onDone)
+internal actual fun pickFileBase64(accept: String, maxBytes: Double, onDone: (String, Double, Boolean, String) -> Unit) =
+    jsPickFile(accept, maxBytes, onDone)
 
 internal actual fun windowOrigin(): String = jsOrigin()
 internal actual fun windowHref(): String = jsHref()

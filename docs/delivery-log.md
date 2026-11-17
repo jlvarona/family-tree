@@ -100,7 +100,7 @@ mobile (FT-023).
 first considered were no longer pullable at review; the reviewer verified the
 SeaweedFS image. README "Photo storage" has the steps and the deployment checklist.
 
-**Tests added (not yet run).**
+**Tests.**
 - `core` `MediaRulesTest`; `PersonMergeTest` photo choice cases.
 - `server` `ImageSanitizerTest` (no containers, images built in code by
   `TestImages`): Exif GPS removed with orientation kept and pixels unchanged; a
@@ -125,12 +125,45 @@ SeaweedFS image. README "Photo storage" has the steps and the deployment checkli
   rejected image, failed transfer, removal, owner-only, photo loading and retry, merge
   photo choice; API client photo routes; the transfer client sends no token.
 
-**Verification.** Not run in this session (builds, Docker and tests are left to the
-user).
+**Review fixes in PR #20.**
+- **Local store private by default.** The `s3` service is in the opt-in `media` Compose
+  profile, and its entry point exits unless both `AWS_ACCESS_KEY_ID` and
+  `AWS_SECRET_ACCESS_KEY` are set (the reviewer had reproduced unsigned `PUT`/`GET`
+  succeeding when they were empty). The check runs in the container, so Postgres and
+  Keycloak start as before; the port stays on loopback. `MEDIA_S3_CREATE_BUCKET=true`
+  now requires an explicit `MEDIA_S3_ENDPOINT` (startup fails otherwise), and the
+  store's bootstrap calls refuse to run without one, so they can never reach AWS's
+  default endpoint (`MediaSettingsTest`).
+- **Oversized selections aren't read.** `BrowserBridge.pickFile` takes the size cap.
+  The JS and Wasm pickers check `File.size` and `File.type` before `FileReader`, and
+  hand over an over-limit or unsupported file without its bytes; the controller shows
+  the same localized error and sends nothing. An empty file is reported as invalid.
+- **Bounded server buffers.** The verification permit now covers the upload read,
+  the pixel check and the cleaned write; only the stored image's key, hash, size and
+  dimensions leave it (`MediaRoutesTest`: with one permit a second finalization
+  doesn't read its upload until the first is done).
+- **Browser cache byte budget.** `AppState.photos` is now least recently used within
+  64 MiB of encoded bytes as well as 40 entries. Images on screen (the person page's
+  photo, both merge records) and the one just loaded are never evicted
+  (`FamilyTreeControllerTest`).
+- AWS SDK for Java v2 updated to 2.58.0 (released 2026-11-11).
+- The reviewer verified in a browser that an orientation-6 JPEG displays upright, and
+  that the overlapping-finalization regression passes.
+
+**Verification.** Gradle passed 63 core tests, 152 server tests, and 136 shared tests
+on each of JVM, JS and Wasm. One opt-in Keycloak test was skipped in Gradle.
+Live English JS and Spanish Wasm runs used Ktor, Keycloak, PostgreSQL, and SeaweedFS
+with the app's bucket CORS setup. Both rejected an oversized file before reading
+it or requesting an upload, displayed an orientation-6 JPEG upright, and verified
+photo removal and living-person privacy. Live API checks covered signature tampering,
+upload replay, corrupted pixels, nested GPS, citation scan visibility, and a photo
+assignment racing with a merge. The disposable Compose test verified the default
+profile skips S3, an explicit start without credentials exits, and an authenticated
+loopback store denies anonymous reads.
 
 ## 2026-11-16 — FT-007 duplicate-person merge
 
-PR #19 adds an owner-only duplicate merge. The owner chooses the surviving record and each conflicting profile value. The server verifies both reviewed versions and moves the references and audit entries in one transaction.
+PR #19 adds an owner-only duplicate merge. The owner chooses the surviving record and each conflicting profile value. The server verifies both reviewed versions and moves the references and records the audit entries in one transaction.
 
 **Contract.**
 
@@ -231,7 +264,7 @@ and their union keeps its type and links without dates. Citations follow `citati
   Other failures keep the review. Results apply only to the same session, tree screen
   and merge. EN and ES strings were added.
 
-**Tests added (not yet run).**
+**Tests.**
 - `core/.../merge/PersonMergeTest` (10): differences (blank against a value, living status), null
   equals blank, exact choice coverage, merged values, refusing incomplete choices, each
   conflict in both directions, and unrelated families and loops elsewhere.
@@ -1547,7 +1580,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 
 ### Status board
 
-**Done (28)** · **In progress (1)** · **To do (26)** · **Blocked (0)**
+**Done (29)** · **In progress (0)** · **To do (26)** · **Blocked (0)**
 
 | Order | ID | Story | Epic | Priority | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -1579,7 +1612,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 | — | FT-001 | Update & delete endpoints | E1 | P1 | Done |
 | — | FT-002 | Citation routes | E1 | P1 | Done |
 | — | FT-007 | Duplicate-merge workflow | E1 | P1 | Done |
-| 3 | FT-008 | Photo upload (S3 presigned URLs) | E1 | P1 | In progress |
+| — | FT-008 | Photo upload (S3 presigned URLs) | E1 | P1 | Done |
 | 4 | FT-064 | Make compose host ports configurable | E7 | P2 | To do |
 | 5 | FT-010 | `Grant` + `GrantScope` tables, branch resolution | E2 | P1 | To do |
 | 6 | FT-011 | Invitations + account-to-person linking | E2 | P1 | To do |
@@ -1743,13 +1776,13 @@ desktop/shared build repair.
   Implemented: the person page in `app/shared` (`state/PersonProfile.kt`,
   `ui/PersonPage.kt`) with header, life story, timeline and family links, loaded
   from the URL through the existing person, bundle and person-events routes. No
-  server, schema or realm change. Citations (FT-002) and photos (FT-008) are not
-  shown. See the session entry for tests and verification.
+  server, schema or realm change. FT-008 supplies profile photos. The FT-006 follow-up
+  covers web citation display.
 - **FT-007 Duplicate-merge workflow.** `Done · P1` — PR #19 adds an owner-only
   merge API and a web comparison from the duplicate notice, toolbar, and selected
   person. It preserves relationships, events, membership and citations on the
   selected survivor and audits the merge. See the FT-007 delivery entry.
-- **FT-008 Photo upload** (S3 presigned URLs + a `media` table). `In progress · P1 · #3` — the
+- **FT-008 Photo upload** (S3 presigned URLs + a `media` table). `Done · P1` — the
   user chose local S3-compatible verification and deferred AWS deployment
   configuration (decisions table). V6 adds `media` and same-tree, attach-once
   references from `person.profile_media_id` and `citation.media_id`. Owner-only

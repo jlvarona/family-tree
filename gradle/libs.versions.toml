@@ -27,7 +27,7 @@ hikaricp = "6.3.0"
 testcontainers = "1.21.4"
 # FT-008: S3 client and presigner for photo storage (AWS S3 in production, an
 # S3-compatible service locally and in tests).
-awssdk = "2.31.0"
+awssdk = "2.58.0"
 
 [libraries]
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }

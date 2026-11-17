@@ -37,11 +37,14 @@ internal expect fun cryptoRandomHex(count: Int): String
 internal expect fun cryptoSha256Hex(text: String, onDone: (String) -> Unit, onError: (String) -> Unit)
 
 /**
- * Opens a one-off `<input type=file accept=…>` and, when a file is chosen, reads it
- * with `FileReader.readAsDataURL`; calls [onDone] with the file's MIME type and the
- * base64 payload. Nothing is called if the user cancels or reading fails.
+ * Opens a one-off `<input type=file accept=…>`. When a file is chosen it checks
+ * `File.size` and `File.type` first: only a file of at most [maxBytes] bytes whose type
+ * is in the comma-separated [accept] list is read (`FileReader.readAsDataURL`), and
+ * [onDone] gets (type, size, true, base64). Any other file is never opened and [onDone]
+ * gets (type, size, false, ""). Nothing is called if the user cancels or reading fails.
+ * The size travels as a Double (exact for any real file size).
  */
-internal expect fun pickFileBase64(accept: String, onDone: (String, String) -> Unit)
+internal expect fun pickFileBase64(accept: String, maxBytes: Double, onDone: (String, Double, Boolean, String) -> Unit)
 
 /** [BrowserBridge] over the page's `window`. */
 internal class WindowBridge : BrowserBridge {
@@ -84,10 +87,10 @@ internal class WindowBridge : BrowserBridge {
     }
 
     @OptIn(ExperimentalEncodingApi::class)
-    override fun pickFile(accept: List<String>, onPicked: (PickedFile) -> Unit) {
-        pickFileBase64(accept.joinToString(",")) { type, base64 ->
-            val bytes = runCatching { Base64.decode(base64) }.getOrNull() ?: return@pickFileBase64
-            onPicked(PickedFile(type, bytes))
+    override fun pickFile(accept: List<String>, maxBytes: Long, onPicked: (PickedFile) -> Unit) {
+        pickFileBase64(accept.joinToString(","), maxBytes.toDouble()) { type, size, read, base64 ->
+            val bytes = if (read) runCatching { Base64.decode(base64) }.getOrNull() ?: return@pickFileBase64 else null
+            onPicked(PickedFile(type, size.toLong(), bytes))
         }
     }
 

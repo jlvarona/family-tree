@@ -236,8 +236,10 @@ class FamilyTreeControllerTest {
     private val api = FakeApi()
     private val transfer = FakeTransfer()
 
-    private fun TestScope.controller(): FamilyTreeController =
-        FamilyTreeController(session, api, bridge, backgroundScope, transfer).also {
+    private fun TestScope.controller(
+        photoCacheBytes: Long = FamilyTreeController.DEFAULT_PHOTO_CACHE_BYTES,
+    ): FamilyTreeController =
+        FamilyTreeController(session, api, bridge, backgroundScope, transfer, photoCacheBytes).also {
             it.start()
             runCurrent()
         }
@@ -1036,7 +1038,7 @@ class FamilyTreeControllerTest {
 
     private val FamilyTreeController.page get() = state.value.personScreen!!
 
-    private fun jpegFile(size: Int = 100) = PickedFile("image/jpeg", ByteArray(size) { it.toByte() })
+    private fun jpegFile(size: Int = 100) = PickedFile("image/jpeg", size.toLong(), ByteArray(size) { it.toByte() })
 
     @Test
     fun ownerUploadsStraightToStorageThenFinalizesAttachesAndShowsThePhoto() = runTest {
@@ -1046,7 +1048,7 @@ class FamilyTreeControllerTest {
         controller.choosePhoto()
         runCurrent()
 
-        assertEquals(listOf(MediaRules.SUPPORTED_CONTENT_TYPES), bridge.pickRequests)
+        assertEquals(listOf(MediaRules.SUPPORTED_CONTENT_TYPES to MediaRules.MAX_UPLOAD_BYTES), bridge.pickRequests)
         assertTrue("presign:m1:PROFILE_PHOTO:image/jpeg:100" in api.calls)
         assertEquals(listOf("https://store.test/uploads/m1?X-Amz-Signature=x" to 100), transfer.uploads, "bytes go to the presigned URL")
         assertEquals(
@@ -1062,13 +1064,19 @@ class FamilyTreeControllerTest {
     @Test
     fun unsupportedOrOversizedFilesAreRefusedBeforeAnyRequest() = runTest {
         val controller = openPersonPage()
-        bridge.pickedFile = PickedFile("image/gif", ByteArray(10))
+        bridge.pickedFile = PickedFile("image/gif", 10, ByteArray(10))
         controller.choosePhoto()
         assertEquals(PhotoError.UNSUPPORTED_TYPE, controller.page.photo?.error)
 
-        bridge.pickedFile = PickedFile("image/png", ByteArray((MediaRules.MAX_UPLOAD_BYTES + 1).toInt()))
+        // Over the cap by its reported size: the bridge hands it over unread (no bytes).
+        bridge.pickedFile = PickedFile("image/png", MediaRules.MAX_UPLOAD_BYTES + 1, ByteArray(1))
         controller.choosePhoto()
         assertEquals(PhotoError.TOO_LARGE, controller.page.photo?.error)
+        assertEquals(MediaRules.MAX_UPLOAD_BYTES, bridge.pickRequests.last().second, "the cap is passed to the browser")
+
+        bridge.pickedFile = PickedFile("image/png", 0, ByteArray(0))
+        controller.choosePhoto()
+        assertEquals(PhotoError.INVALID_IMAGE, controller.page.photo?.error, "an empty file")
         runCurrent()
         assertTrue(api.calls.none { it.startsWith("presign") })
         assertTrue(transfer.uploads.isEmpty())
@@ -1171,6 +1179,31 @@ class FamilyTreeControllerTest {
 
         assertIs<Loadable.Ready<*>>(controller.state.value.photos[PhotoKey(TREE_ID, "m9")])
         assertEquals(listOf("https://store.test/media/m9?X-Amz-Signature=y"), transfer.downloads)
+    }
+
+    @Test
+    fun thePhotoCacheKeepsAByteBudgetAndNeverDropsThePreviewOnScreen() = runTest {
+        // 4-byte images in a 10-byte cache: at most two fit.
+        transfer.image = byteArrayOf(1, 2, 3, 4)
+        api.replacePerson(personOf("kid").copy(profileMediaId = "m0"))
+        bridge.url = "http://localhost:3000/#/trees/$TREE_ID/people/kid"
+        val controller = controller(photoCacheBytes = 10).also { signIn() }
+        fun cached() = controller.state.value.photos.keys.map { it.mediaId }
+
+        assertEquals(listOf("m0"), cached())
+        controller.loadPhoto(TREE_ID, "m1")
+        runCurrent()
+        controller.loadPhoto(TREE_ID, "m2")
+        runCurrent()
+        assertEquals(listOf("m0", "m2"), cached(), "the oldest unused image went; the page's photo stayed")
+
+        controller.loadPhoto(TREE_ID, "m3")
+        controller.loadPhoto(TREE_ID, "m0") // used again before m3 arrives
+        runCurrent()
+        assertEquals(listOf("m0", "m3"), cached(), "m2 was the least recently used")
+        val total = controller.state.value.photos.values.sumOf { (it as? Loadable.Ready)?.value?.size ?: 0 }
+        assertTrue(total <= 10)
+        assertEquals(1, transfer.downloads.count { it.contains("/m0?") }, "the preview on screen was never fetched again")
     }
 
     @Test
