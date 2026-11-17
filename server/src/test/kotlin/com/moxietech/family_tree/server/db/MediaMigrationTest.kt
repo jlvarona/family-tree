@@ -39,7 +39,7 @@ class MediaMigrationTest {
             val source = c.string("insert into source (tree_id, title, type) values ('$tree', 'Register', 'CENSUS') returning id")!!
             c.exec("insert into citation (tree_id, source_id, target_type, target_id, confidence) values ('$tree', '$source', 'PERSON', '$person', 2)")
 
-            migrate(db)
+            migrate(db, target = "6")
 
             assertEquals("6", c.string("select max(version) from flyway_schema_history where success"))
             assertEquals("Ana|1", c.string("select given_names || '|' || version from person where id = '$person'"))

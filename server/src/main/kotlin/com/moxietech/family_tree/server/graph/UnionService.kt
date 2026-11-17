@@ -26,6 +26,7 @@ import com.moxietech.family_tree.server.errors.parseVersionParam
 import com.moxietech.family_tree.server.errors.referenced
 import com.moxietech.family_tree.server.errors.requireValid
 import com.moxietech.family_tree.server.errors.staleVersion
+import com.moxietech.family_tree.server.permissions.GraphGeneration
 import com.moxietech.family_tree.server.trees.TreeService
 import com.moxietech.family_tree.validation.Validation
 import kotlinx.coroutines.withContext
@@ -68,6 +69,8 @@ object UnionService {
                     startDate = startDate,
                     endDate = endDate,
                 )
+                // New partners change branches that include partners (FT-010).
+                GraphGeneration.advance(treeUuid)
                 val dto = union.toDto(children = emptyList())
                 AuditLogRepository.append(
                     treeId = treeUuid,
@@ -129,6 +132,7 @@ object UnionService {
                     childId = childUuid,
                     relation = relation,
                 )
+                GraphGeneration.advance(treeUuid)
                 val children = UnionRepository.childrenOf(treeUuid, unionUuid)
                 val dto = union.toDto(children)
                 AuditLogRepository.append(
@@ -192,6 +196,8 @@ object UnionService {
                     startDate = startDate,
                     endDate = endDate,
                 ) ?: throw staleVersion("Union", before.id.value)
+                // Partners can change (FT-010).
+                GraphGeneration.advance(treeUuid)
                 val children = UnionRepository.childrenOf(treeUuid, unionUuid)
                 val dto = after.toDto(children)
                 AuditLogRepository.append(
@@ -233,6 +239,9 @@ object UnionService {
         return withContext(DatabaseDispatcher) {
             transaction {
                 val treeUuid = Uuid.parse(treeId.value)
+                // Not for a merge (that holds its links already) but for a grant-scope
+                // rebuild, which must not run while the edge changes (FT-010).
+                GraphWriteLock.shared(treeUuid)
                 val union = TreeScopedLookups.requireUnion(treeUuid, unionUuid)
                 val link = UnionRepository.findChild(treeUuid, unionUuid, childUuid)
                     ?: throw NotFoundException("No child $childUuid in union $unionUuid")
@@ -241,6 +250,8 @@ object UnionService {
                 if (!UnionRepository.updateChild(treeUuid, unionUuid, childUuid, request.version, relation)) {
                     throw staleVersion("Child link", entityId)
                 }
+                // Every relation counts today, but the relation is part of the edge (FT-010).
+                GraphGeneration.advance(treeUuid)
                 val updated = UnionRepository.findChild(treeUuid, unionUuid, childUuid)
                     ?: error("Child link $entityId was just updated but cannot be read back")
                 // One read of the sibling links, taken after this link's row lock is held,
@@ -275,11 +286,13 @@ object UnionService {
         val expected = parseVersionParam(version)
         val treeUuid = Uuid.parse(treeId.value)
         RecordDeletion.guarded("Union", unionUuid.toString(), RecordDeletion.UNION_FOREIGN_KEYS) {
+            GraphWriteLock.shared(treeUuid)
             val before = TreeScopedLookups.requireUnion(treeUuid, unionUuid)
             if (before.version != expected) throw staleVersion("Union", before.id.value)
             if (RecordDeletion.unionIsReferenced(treeUuid, unionUuid)) throw referenced("Union", before.id.value)
             if (UnionRepository.delete(treeUuid, unionUuid, expected) == 0) throw staleVersion("Union", before.id.value)
             if (RecordDeletion.isCited(treeUuid, RecordDeletion.UNION, unionUuid)) throw referenced("Union", before.id.value)
+            GraphGeneration.advance(treeUuid)
             AuditLogRepository.append(
                 treeId = treeUuid,
                 actorAccountId = Uuid.parse(callerAccountId.value),
@@ -312,6 +325,7 @@ object UnionService {
         val treeUuid = Uuid.parse(treeId.value)
         val entityId = "$unionUuid:$childUuid"
         RecordDeletion.guarded("Child link", entityId, emptySet()) {
+            GraphWriteLock.shared(treeUuid)
             val union = TreeScopedLookups.requireUnion(treeUuid, unionUuid)
             val link = UnionRepository.findChild(treeUuid, unionUuid, childUuid)
                 ?: throw NotFoundException("No child $childUuid in union $unionUuid")
@@ -319,6 +333,7 @@ object UnionService {
             if (UnionRepository.deleteChild(treeUuid, unionUuid, childUuid, expected) == 0) {
                 throw staleVersion("Child link", entityId)
             }
+            GraphGeneration.advance(treeUuid)
             val remaining = UnionRepository.childrenOf(treeUuid, unionUuid)
             AuditLogRepository.append(
                 treeId = treeUuid,

@@ -507,9 +507,15 @@ and owner-only writes over HTTP, through the production module and verifier with
 test-signed access tokens for two owners, an active non-owner and an invitee) and
 `PersonMergeTest` (FT-007: duplicate-person merges over HTTP, including authorization,
 cross-tree IDs, versions, graph conflicts, audit rollback and races with event and
-citation writers), `MediaMigrationTest` (V6 on existing data and its preflight, FT-008)
-and `MediaRoutesTest` (FT-008: presign, direct upload, finalize, retry, rejection,
-privacy-scoped downloads, citation scans, merge photo choice and lock order).
+citation writers), `MediaMigrationTest` (V6 on existing data and its preflight, FT-008),
+`MediaRoutesTest` (FT-008: presign, direct upload, finalize, retry, rejection,
+privacy-scoped downloads, citation scans, merge photo choice and lock order),
+`GrantsMigrationTest` (V6 data through V7 and V8: generation backfill, same-tree grant
+and scope constraints, anchors versus cache rows, FT-010) and `GrantScopeTest`
+(FT-010: branch resolution against the `:core` rules for every direction, side
+branches, cycles including `Int.MAX_VALUE` depth under a local statement timeout,
+tenant isolation, snapshot reads, cache invalidation after graph changes and merges,
+grant writes and races between rebuilds, graph writers, deletes and merges).
 
 `MediaRoutesTest` also starts a disposable `ghcr.io/chrislusf/seaweedfs:4.54`
 (`weed mini`) on a random loopback port with random credentials, so presigned

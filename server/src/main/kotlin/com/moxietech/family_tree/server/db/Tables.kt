@@ -159,6 +159,27 @@ object MembershipTable : Table("membership") {
     override val primaryKey = PrimaryKey(treeId, accountId)
 }
 
+/**
+ * FT-010 (V7): a branch grant held by one membership; real data, its anchor a real
+ * reference. The derived tables (`grant_scope`, `grant_scope_state`,
+ * `tree_graph_generation`) are read and written only by reviewed raw SQL in the
+ * `permissions` package, so they have no Exposed declaration.
+ */
+object TreeGrantTable : Table("tree_grant") {
+    val id = uuid("id")
+    val treeId = uuid("tree_id") references TreeTable.id
+    val accountId = uuid("account_id")
+    val role = text("role")
+    val anchorPersonId = uuid("anchor_person_id")
+    val direction = text("direction")
+    val depth = integer("depth").nullable()
+    val includePartners = bool("include_partners")
+    val version = long("version")
+    val createdByAccountId = uuid("created_by_account_id") references AccountTable.id
+    val createdAt = timestamp("created_at")
+    override val primaryKey = PrimaryKey(id)
+}
+
 object AuditLogTable : Table("audit_log") {
     val id = uuid("id")
     val treeId = uuid("tree_id") references TreeTable.id

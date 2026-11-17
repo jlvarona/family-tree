@@ -9,6 +9,70 @@ up to date in place, not logged chronologically.
 
 ---
 
+## 2026-11-16 — FT-010 grants, grant scopes and branch resolution
+
+Grants are stored and resolved for all four branch directions but not enforced yet.
+Phase 1 authorization (FT-068) is unchanged, and grant routes come with FT-011 and
+FT-012. The schema is under "Database design".
+
+- **Rules.** `:core` `BranchResolution` holds the shared rules, and the server's
+  recursive CTE (`GrantScopeRepository`) matches them.
+  - The anchor is always in.
+  - Ancestors and descendants go up to the depth.
+  - `SIDE` takes the ancestors up to the depth, then every descendant of them and of
+    the anchor (decisions table, "Side branches").
+  - Whole tree is everyone in the tree.
+  - Direct partners are added last and never extended.
+- **Bounded work.** Unlimited legs deduplicate by person. A depth of at least
+  people − 1 runs as unlimited, so `Int.MAX_VALUE` on a cycle ends at once. Every
+  step filters by `tree_id`, and a grant resolves only for its own tree. The core
+  resolver indexes links by child, union and partner.
+- **Cache.**
+  - Graph writers take `GraphWriteLock` shared and advance the tree's generation
+    before their audit entry. Those are person create and delete, union and
+    child-link create, update and delete, and merges.
+  - Grant updates advance the grant version.
+  - A cached scope is used only while both stamps match.
+  - `GrantScopeService.scopeInSnapshot` and `scopesInSnapshot` require a caller
+    transaction at `REPEATABLE READ` or `SERIALIZABLE`. They use a current cache or
+    compute a miss without writing.
+  - `refreshScope` stores a current scope under `GraphWriteLock` exclusive. It is a
+    `404` for a missing grant or tree.
+- **References.**
+  - A grant anchor is a real reference: deleting the anchor person is a `409`.
+  - Cache rows cascade and never block a delete.
+  - Grant writes lock the anchor `FOR KEY SHARE`, so a race with a person delete
+    ends in a `404` or a `409`, with no partial write or audit.
+  - A merge whose retired person anchors a grant is a `409`.
+- **Grant writes** (`GrantService`) are owner-only and versioned, and audited as
+  `Grant`. They reject only unknown role or direction names and a non-positive
+  depth (`400`). Roles get no authority before FT-012.
+
+**Schema.** V7 adds the tables. V8 accepts `SIDE` and drops V7's rule against a
+depth on whole-tree grants, since the depth is ignored there.
+
+**Verification.** On Windows, 74 core JVM tests, 74 core Wasm tests and 172 server
+tests passed. The opt-in Keycloak test was skipped. All 11 branch-rule tests also
+passed in Kotlin/JS. The broader Kotlin/JS suite failed eight date-range cases.
+Running the compiled Kotlin/JS suites from the preceding main commit and from
+FT-010 reproduced the same eight failures in `GedcomDateParser` and `Validation`.
+- `BranchResolutionTest` covers each direction, `SIDE` at and beyond the cap,
+  partner limits, cycles and `Int.MAX_VALUE` on a two-person cycle.
+- `GrantsMigrationTest` runs V6 data through V7 and V8.
+- `GrantScopeTest` checks:
+  - the CTE against `BranchResolution` for every direction, depth and partner
+    setting;
+  - `SIDE` cousins and the partner's own family;
+  - the `Int.MAX_VALUE` cycle under a 5 s local statement timeout;
+  - tenant isolation, including a foreign grant;
+  - rebuilds after every graph change and after merges;
+  - snapshot hits, stale misses without writes, and snapshot coherence;
+  - a missing tree;
+  - grant writes;
+  - races of rebuilds, writes, deletes and merges, with both outcomes of grant
+    against person delete.
+- `MediaMigrationTest` now targets V6.
+
 ## 2026-11-16 — FT-064 configurable Compose host ports
 
 Compose reads `FAMILY_TREE_POSTGRES_PORT` and `FAMILY_TREE_KEYCLOAK_PORT` from the
@@ -1714,7 +1778,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 
 ### Status board
 
-**Done (30)** · **In progress (0)** · **To do (25)** · **Blocked (0)**
+**Done (31)** · **In progress (0)** · **To do (24)** · **Blocked (0)**
 
 | Order | ID | Story | Epic | Priority | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -1748,7 +1812,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 | — | FT-007 | Duplicate-merge workflow | E1 | P1 | Done |
 | — | FT-008 | Photo upload (S3 presigned URLs) | E1 | P1 | Done |
 | — | FT-064 | Make compose host ports configurable | E7 | P2 | Done |
-| 5 | FT-010 | `Grant` + `GrantScope` tables, branch resolution | E2 | P1 | To do |
+| — | FT-010 | `Grant` + `GrantScope` tables, branch resolution | E2 | P1 | Done |
 | 6 | FT-011 | Invitations + account-to-person linking | E2 | P1 | To do |
 | 7 | FT-012 | Grant-based authorization | E2 | P1 | To do |
 | 8 | FT-013 | Grant-based living-person redaction | E2 | P1 | To do |
@@ -1930,10 +1994,11 @@ desktop/shared build repair.
 
 ### E2 — Phase 2: Branches and sharing
 
-- **FT-010 `Grant` + `GrantScope` tables and branch resolution.** `To do · P1 · #5` —
-  the recursive CTE that turns an anchor + direction + depth + include-partners into a
-  resolved person-id set (cached, rebuilt when the graph changes). `Branch` already
-  exists in `:core` as the shared definition; nothing resolves it against real data yet.
+- **FT-010 `Grant` + `GrantScope` tables and branch resolution.** `Done · P1` —
+  V7/V8 grants and the derived scope cache. `:core` `BranchResolution` and a matching
+  server CTE resolve all four directions. Generation stamps keep cached scopes
+  consistent with committed changes, and a read-only snapshot API serves FT-012/FT-013.
+  Grant writes are owner-only and audited. See the FT-010 entry.
 - **FT-011 Invitations** (email or link) **and account-to-person linking.**
   `To do · P1 · #6` — derives each member's home branch automatically once linked.
   Enable invitations for users after FT-072 passes and FT-012 through FT-014 cover
@@ -1948,7 +2013,8 @@ desktop/shared build repair.
   tree owner.
 - **FT-015 Maternal/paternal "side" views** (`Branch.direction = SIDE`).
   `To do · P1 · #10` — ancestors of an anchor plus all of their descendants, nothing on
-  the other side.
+  the other side. The resolution rule (depth caps only the ascent) is in `:core`
+  `BranchResolution` since FT-010; this story adds the views.
 - **FT-016 Activity feed UI + revert.** `To do · P1 · #11` — reads `audit_log`, which
   already carries `before_json`/`after_json` for exactly this; nothing reads them yet.
 - **FT-017 Row-level security on `tree_id`.** `To do · P3 · #28` — the defense-in-depth
@@ -2137,7 +2203,9 @@ columns on `person` (`AGENTS.md`: *"Union model"*). Source of truth, in order:
 [`V3__account_oidc_identity.sql`](../server/src/main/resources/db/migration/V3__account_oidc_identity.sql),
 [`V4__place_and_union_child_versions.sql`](../server/src/main/resources/db/migration/V4__place_and_union_child_versions.sql),
 [`V5__union_child_version_sequence.sql`](../server/src/main/resources/db/migration/V5__union_child_version_sequence.sql),
-[`V6__media.sql`](../server/src/main/resources/db/migration/V6__media.sql).
+[`V6__media.sql`](../server/src/main/resources/db/migration/V6__media.sql),
+[`V7__grants.sql`](../server/src/main/resources/db/migration/V7__grants.sql),
+[`V8__grant_side_direction.sql`](../server/src/main/resources/db/migration/V8__grant_side_direction.sql).
 
 ### Entity-relationship diagram
 
@@ -2272,6 +2340,35 @@ erDiagram
         text resolved_by
         timestamptz resolved_at
     }
+    TREE_GRANT {
+        uuid id PK
+        uuid tree_id FK
+        uuid account_id FK
+        text role
+        uuid anchor_person_id FK
+        text direction
+        int depth
+        boolean include_partners
+        bigint version
+        uuid created_by_account_id FK
+        timestamptz created_at
+    }
+    TREE_GRAPH_GENERATION {
+        uuid tree_id PK
+        bigint generation
+    }
+    GRANT_SCOPE {
+        uuid grant_id PK
+        uuid person_id PK
+        uuid tree_id FK
+    }
+    GRANT_SCOPE_STATE {
+        uuid grant_id PK
+        uuid tree_id FK
+        bigint grant_version
+        bigint graph_generation
+        timestamptz built_at
+    }
 
     ACCOUNT ||--o{ ACCOUNT_IDENTITY_RESOLUTION : resolved_by
     ACCOUNT ||--o{ TREE : owns
@@ -2299,6 +2396,12 @@ erDiagram
     ACCOUNT ||--o{ MEDIA : uploaded
     MEDIA |o--o| PERSON : profile_photo_of
     MEDIA |o--o| CITATION : scan_of
+    MEMBERSHIP ||--o{ TREE_GRANT : holds
+    PERSON ||--o{ TREE_GRANT : anchors
+    TREE ||--|| TREE_GRAPH_GENERATION : versioned_by
+    TREE_GRANT ||--o{ GRANT_SCOPE : resolves_to
+    TREE_GRANT ||--o| GRANT_SCOPE_STATE : stamped_by
+    PERSON ||--o{ GRANT_SCOPE : covered_by
 ```
 
 ### Table reference
@@ -2336,7 +2439,8 @@ a version. Every update is a conditional `UPDATE … WHERE version = ?`
 that increments it in the same statement; a mismatch is a `409` with nothing written.
 Deletes are conditional on the version too, and a record that another row in its tree
 references (a foreign key, or a citation's polymorphic target) is not deleted (`409`);
-no foreign key cascades. `tree.version` is still unused.
+no foreign key between real records cascades. The only cascades are V7's derived
+grant-scope cache rows, which go with their person or grant. `tree.version` is still unused.
 
 **`union_record`** (named to dodge the `UNION` SQL keyword) — `tree_id → tree`,
 `partner1_id → person` (required), `partner2_id → person` (nullable — a union can be
@@ -2403,6 +2507,33 @@ either column already had a value (none could, since no route set them).
 inserts the owner's row, at tree-creation time. A linked `person_id` must be in the same
 tree (V2).
 
+**`tree_grant`** (V7, V8; FT-010) is a branch grant held by one membership. Named
+`tree_grant` because `GRANT` is an SQL keyword.
+- `(tree_id, account_id) → membership` makes it same-tree by construction. The
+  membership can have any status.
+- `role` is `ADMIN`/`BRANCH_OWNER`/`CONTRIBUTOR`/`VIEWER` (names only until FT-012).
+  `direction` is `ANCESTORS`/`DESCENDANTS`/`SIDE`/`WHOLE_TREE` (`SIDE` since V8).
+- `depth` is null (unlimited) or positive. It caps the generations of an ancestor or
+  descendant branch, only the ascent of a side, and is ignored for a whole tree.
+  `include_partners` is the fourth part of the branch.
+- `(anchor_person_id, tree_id) → person (id, tree_id)` is a real reference. It blocks
+  a person delete (`409`) and a merge that would retire the anchor (`409`).
+- `version` advances on every update, which makes the cached scope stale.
+- Written only by `GrantService` (owner-only, audited as `Grant`). No route yet.
+
+**`tree_graph_generation`** (V7, FT-010) has one row per tree (backfilled, inserted
+with each new tree). `generation` advances in the same transaction as every write
+that can change a branch: people created or deleted, unions, child links and merges.
+
+**`grant_scope`** / **`grant_scope_state`** (V7, FT-010) are the derived cache of a
+grant's resolved person IDs. The state row records the `grant_version` and
+`graph_generation` the scope was built from. A scope is served only while both are
+still current; otherwise a snapshot read computes it without writing and
+`GrantScopeService.refreshScope` rebuilds it. Both tables reference
+`tree_grant (id, tree_id)`, and `grant_scope` also references `person (id, tree_id)`,
+all `on delete cascade`. A scope person is therefore always in the grant's tree, and
+cache rows never block a delete or count as a reference.
+
 **`audit_log`** — immutable, append-only, written in the same transaction as the
 mutation it describes. `before_json`/`after_json` are plain `text` holding
 JSON-*encoded* snapshots, not Postgres `jsonb` — nothing queries into them yet, so
@@ -2416,9 +2547,8 @@ migration if that changes.
   the caller to be the tree owner (FT-068). Repositories filter every lookup by
   `tree_id`, and V2's same-tree foreign keys enforce referential isolation in the
   database (FT-065). FT-017 tracks RLS as a later defense-in-depth measure.
-- **No `grant` / `change_proposal` tables yet.** Those belong to Phase 2
-  (branches and sharing) per the roadmap in `concept-architecture.md`, and adding them
-  speculatively now would mean designing branch-scope resolution before any UI or API
-  needs it.
+- **No `change_proposal` or `invitation` table yet.** They come with FT-014 and
+  FT-011. Grants and their resolved scopes exist since V7 (FT-010) but aren't
+  enforced until FT-012 and FT-013.
 - **No `media_tag` table yet.** FT-008 covers profile photos and citation scans; the
   per-person gallery and tagging several people in one photo (`MediaTag`) come later.

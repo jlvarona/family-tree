@@ -3,10 +3,9 @@ package com.moxietech.family_tree.domain
 /**
  * Anchor person + direction: the one concept that drives both tree views
  * ("Mom's side") and, from Phase 2 on, who may edit what (a [Branch] is
- * what a Grant scopes). Resolving a [Branch] to the set of person ids it
- * covers is a recursive graph query over Union/UnionChild and lives in the
- * server repository layer, not here — this type only carries the
- * definition, since that's what server and clients both need to agree on.
+ * what a [Grant] scopes). The rules for what a branch covers are in
+ * [com.moxietech.family_tree.permissions.BranchResolution] (FT-010); the server
+ * resolves grants against stored data with a recursive CTE that follows them.
  */
 data class Branch(
     val anchorPersonId: PersonId,
