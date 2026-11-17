@@ -57,7 +57,10 @@ Local dev runs a real Postgres and a real Keycloak — never a bypass login or a
 in-memory stand-in, so dev exercises the same code paths as production. There are two
 ways to get the Postgres side; pick whichever matches your machine.
 
-**Option A — bundled container (default, nothing else running on 5432):**
+**Option A — bundled containers**
+
+If another project uses port 5432 or 8081, choose
+[other host ports](#using-other-host-ports-ft-064).
 
 ```bash
 # Start Postgres 16 + Keycloak 26 in the background
@@ -74,8 +77,8 @@ docker compose down -v
 ```
 
 **Option B — reuse a Postgres container another project already has running** (same
-host, same port 5432 — starting `docker compose up postgres` here would just fail to
-bind the port). Create a dedicated role and database for this project inside it:
+host, same port 5432 — starting `docker compose up postgres` here with the default port
+would just fail to bind it). Create a dedicated role and database for this project inside it:
 
 ```bash
 # Replace <container> and <admin-user>/<admin-db> with the other project's values
@@ -254,6 +257,42 @@ nothing to set for local dev, only for pointing at something else:
 | `MEDIA_MAX_CONCURRENT_VERIFICATIONS` | `2` (finalizations holding image buffers at once: upload read, verification and cleaned write) |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | none. Read by the AWS SDK's default credential chain; in AWS the task role is used instead |
 
+### Using other host ports (FT-064)
+
+Set the host ports below to run the bundled containers alongside another project.
+Use your shell or a git-ignored `.env` file next to `docker-compose.yml`. Shell
+settings take precedence. An unset or empty variable uses the default.
+
+| Variable | Default host port | Container port |
+| --- | --- | --- |
+| `FAMILY_TREE_POSTGRES_PORT` | `5432` | `5432` |
+| `FAMILY_TREE_KEYCLOAK_PORT` | `8081` | `8080` |
+
+This PowerShell example publishes PostgreSQL on 15432 and Keycloak on 18081.
+
+```powershell
+$env:FAMILY_TREE_POSTGRES_PORT = "15432"
+$env:FAMILY_TREE_KEYCLOAK_PORT = "18081"
+docker compose config postgres keycloak
+docker compose up -d postgres keycloak
+
+$env:DB_URL = "jdbc:postgresql://localhost:15432/family_tree"
+$env:OIDC_ISSUER = "http://localhost:18081/realms/family-tree"
+Remove-Item Env:OIDC_JWKS_URI -ErrorAction SilentlyContinue
+.\gradlew.bat :server:run
+```
+
+Set the web client's `issuer` in its local [runtime config](#running-the-web-client) to
+`http://localhost:18081/realms/family-tree`. Start the web app in a second terminal
+with `.\gradlew.bat :app:webApp:wasmJsBrowserDevelopmentRun`. Use the exact same
+`localhost` issuer URL for the browser, API and token requests. The JWKS URL defaults
+to the configured issuer when `OIDC_JWKS_URI` is unset.
+
+The issuer is part of each account's identity. A different Keycloak port gives
+tokens a different issuer. Use a fresh development database when moving an
+existing stack to a different issuer. See
+[Accounts and identities](#accounts-and-identities-ft-003) for existing data.
+
 ## Photo storage
 
 FT-008 photo uploads never pass through the API. The owner's browser asks the API for a
@@ -388,7 +427,8 @@ so each deployment can supply its own file without a rebuild. Nothing in it is s
 | `apiBaseUrl` | `""` | Empty means the page's origin (the proxy above). |
 
 If your Keycloak runs elsewhere (for example on another port because 8081 is taken), change
-`issuer` here and `OIDC_ISSUER` for the server together.
+`issuer` here and `OIDC_ISSUER` for the server together (see
+[Using other host ports](#using-other-host-ports-ft-064)).
 Use HTTPS for the app, Keycloak and API in production. Loopback URLs can use HTTP for local development.
 
 **Sign-in.** The client uses Keycloak's authorization code flow with PKCE (S256) and the

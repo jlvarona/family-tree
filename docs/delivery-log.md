@@ -9,6 +9,21 @@ up to date in place, not logged chronologically.
 
 ---
 
+## 2026-11-16 — FT-064 configurable Compose host ports
+
+Compose reads `FAMILY_TREE_POSTGRES_PORT` and `FAMILY_TREE_KEYCLOAK_PORT` from the
+shell or a git-ignored `.env`. The default host ports are 5432 and 8081. PostgreSQL
+and Keycloak still listen on 5432 and 8080 inside their containers. The README
+shows how to align `DB_URL`, the API's OIDC settings and the browser's configured
+issuer with the host ports.
+
+**Verification.** The complete default Compose rendering matched the preceding main
+commit. Shell variables and an env file both set the two published ports. I started
+a disposable Compose project on custom ports, signed in through the web client and
+created a tree through Ktor. The tree row landed in that project's PostgreSQL
+container, the account stored the configured Keycloak issuer, and the API returned
+`401` for a token from the alias host. Cleanup removed the disposable project.
+
 ## 2026-11-16 — FT-006 follow-up: read-only citations on the person page
 
 FT-006 deferred source citations until FT-002 and FT-008 existed. The person page now
@@ -1699,7 +1714,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 
 ### Status board
 
-**Done (29)** · **In progress (0)** · **To do (26)** · **Blocked (0)**
+**Done (30)** · **In progress (0)** · **To do (25)** · **Blocked (0)**
 
 | Order | ID | Story | Epic | Priority | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -1732,7 +1747,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 | — | FT-002 | Citation routes | E1 | P1 | Done |
 | — | FT-007 | Duplicate-merge workflow | E1 | P1 | Done |
 | — | FT-008 | Photo upload (S3 presigned URLs) | E1 | P1 | Done |
-| 4 | FT-064 | Make compose host ports configurable | E7 | P2 | To do |
+| — | FT-064 | Make compose host ports configurable | E7 | P2 | Done |
 | 5 | FT-010 | `Grant` + `GrantScope` tables, branch resolution | E2 | P1 | To do |
 | 6 | FT-011 | Invitations + account-to-person linking | E2 | P1 | To do |
 | 7 | FT-012 | Grant-based authorization | E2 | P1 | To do |
@@ -1991,11 +2006,17 @@ desktop/shared build repair.
   container on Docker Engine 29.7.2. Flyway applied the schema, the graph
   assertions passed, and teardown closed Hikari. The README has the Windows and
   Linux test commands.
-- **FT-064 Make compose host ports configurable.** `To do · P2 · #4` — this dev
+- **FT-064 Make compose host ports configurable.** `Done · P2` — this dev
   machine runs Postgres (5432) and Keycloak (8081) for another project on the same host
   ports `docker-compose.yml` claims. Worked around manually today (session entry 7);
   parameterizing the ports (or a per-developer override file) would let both projects'
   stacks coexist without a manual `CREATE ROLE`/`CREATE DATABASE` each time.
+
+  Implemented: `FAMILY_TREE_POSTGRES_PORT` and `FAMILY_TREE_KEYCLOAK_PORT` (defaults
+  5432 and 8081) set the published host ports, optionally from a git-ignored `.env`;
+  container ports and the default rendering are unchanged. The README documents the
+  settings that move together (`DB_URL`, `OIDC_ISSUER`, the web `config.json` issuer)
+  and the issuer's role in account identity. See the FT-064 delivery entry.
 - **FT-065 Enforce tenant isolation in graph routes and PostgreSQL.**
   `Done · P1`. In `server/graph`, require the authorized tree ID for
   resource lookups and constrain each anchor, join, and recursive step in the

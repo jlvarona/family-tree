@@ -5,6 +5,8 @@
 xcuserdata
 !src/**/build/
 local.properties
+# Per-developer Docker Compose variables (FT-064 host ports, local-only credentials)
+.env
 .idea
 .DS_Store
 captures

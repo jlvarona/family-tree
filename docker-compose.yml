@@ -9,6 +9,15 @@
 # instance instead -- see README.md "Setting up the database" for the exact
 # commands. Starting this service while another container already holds 5432
 # will just fail to bind the port.
+#
+# FT-064: the published host ports can be moved instead, so this stack runs next to
+# another project's. Set them in your shell (or a git-ignored .env next to this file):
+#   FAMILY_TREE_POSTGRES_PORT   host port for Postgres  (default 5432)
+#   FAMILY_TREE_KEYCLOAK_PORT   host port for Keycloak  (default 8081)
+# Unset or empty means the default. Only the host side changes; the containers still
+# listen on 5432 and 8080. A different Keycloak port changes the token issuer, so the
+# server's DB_URL / OIDC_ISSUER and the web client's config.json issuer must follow
+# (README "Using other host ports").
 
 services:
   postgres:
@@ -19,7 +28,7 @@ services:
       POSTGRES_USER: family_tree
       POSTGRES_PASSWORD: family_tree
     ports:
-      - "5432:5432"
+      - "${FAMILY_TREE_POSTGRES_PORT:-5432}:5432"
     volumes:
       - family-tree-postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -36,7 +45,7 @@ services:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
     ports:
-      - "8081:8080"
+      - "${FAMILY_TREE_KEYCLOAK_PORT:-8081}:8080"
     volumes:
       - ./ops/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
 

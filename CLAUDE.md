@@ -26,4 +26,4 @@ AGENTS.md's "Story review workflow" applies; these are the Claude-specific detai
 
 - `:server:test` needs Docker Desktop running (Testcontainers 1.21.4; Docker Engine 29 rejects older Testcontainers).
 - AVG Antivirus on this machine re-signs HTTPS traffic, which Java rejects (`PKIX path building failed`, unresolvable plugins, "Problems writing to Binary store"). Run Gradle with `JAVA_TOOL_OPTIONS=-Djavax.net.ssl.trustStoreType=Windows-ROOT` (README "Running tests"); don't commit machine-specific workarounds to the repo.
-- Postgres (5432) and Keycloak (8081) on this machine belong to another project's containers and are shared; see README "Setting up the database" before running `docker compose up`.
+- Postgres (5432) and Keycloak (8081) on this machine belong to another project's containers and are shared; see README "Setting up the database" before running `docker compose up`, or move this stack's host ports (README "Using other host ports").
