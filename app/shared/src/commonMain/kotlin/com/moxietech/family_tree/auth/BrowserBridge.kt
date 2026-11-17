@@ -48,7 +48,18 @@ interface BrowserBridge {
 
     /** SHA-256 of the UTF-8 bytes of [text], from Web Crypto (`crypto.subtle.digest`). */
     suspend fun sha256(text: String): ByteArray
+
+    /**
+     * FT-008: opens the browser's file chooser for one file of the [accept] MIME types.
+     * Must be called straight from a click handler (browsers require a user gesture).
+     * [onPicked] runs later with the file, or not at all if the user cancels. The
+     * default (non-browser platforms) never offers a file.
+     */
+    fun pickFile(accept: List<String>, onPicked: (PickedFile) -> Unit) = Unit
 }
+
+/** A file the user chose: its browser-reported MIME type and its bytes. */
+class PickedFile(val contentType: String, val bytes: ByteArray)
 
 class BrowserFeatureException(feature: String) : Exception("Browser feature unavailable: $feature")
 

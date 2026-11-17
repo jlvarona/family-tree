@@ -53,6 +53,22 @@ class PersonMergeTest {
     }
 
     @Test
+    fun profilePhotosAreAnExplicitChoiceIncludingAPhotoAgainstNone() {
+        val photo = "0b8f6c5e-3f2a-4c1d-9e7b-1a2b3c4d5e6f"
+        val other = "7d1e2f3a-4b5c-4d6e-8f9a-0b1c2d3e4f5a"
+        val a = survivor.copy(profileMediaId = photo)
+        assertEquals(emptySet(), PersonMerge.differingFields(a, a.copy(profileMediaId = photo.uppercase())), "same media in another case")
+        assertEquals(setOf(MergeField.PROFILE_PHOTO), PersonMerge.differingFields(a, a.copy(profileMediaId = other)))
+        assertEquals(setOf(MergeField.PROFILE_PHOTO), PersonMerge.differingFields(a, a.copy(profileMediaId = null)), "a photo against none")
+        assertEquals(1, PersonMerge.choiceErrors(setOf(MergeField.PROFILE_PHOTO), emptyMap()).size, "never kept or dropped silently")
+
+        val withRetired = PersonMerge.merged(a, a.copy(profileMediaId = other), mapOf(MergeField.PROFILE_PHOTO to MergeSide.RETIRED))
+        assertEquals(other, withRetired.profileMediaId)
+        val noPhoto = PersonMerge.merged(a, a.copy(profileMediaId = null), mapOf(MergeField.PROFILE_PHOTO to MergeSide.RETIRED))
+        assertEquals(null, noPhoto.profileMediaId, "choosing the record without a photo is deliberate")
+    }
+
+    @Test
     fun mergeRefusesIncompleteChoices() {
         assertFailsWith<IllegalArgumentException> { PersonMerge.merged(survivor, retired, emptyMap()) }
         assertEquals(survivor, PersonMerge.merged(survivor, survivor, emptyMap()))

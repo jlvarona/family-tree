@@ -166,4 +166,20 @@
     <string name="merge_error_choices">Elige un valor para cada campo que difiere.</string>
     <string name="merge_error_confirm">Confirma qué ficha se eliminará.</string>
     <string name="merge_error_changed">Estas fichas han cambiado o no se pueden fusionar tal como se mostraban. Se han vuelto a cargar: revisa los valores e inténtalo de nuevo.</string>
+
+    <!-- Fotos de perfil (FT-008) -->
+    <string name="photo_alt">Foto de %1$s</string>
+    <string name="photo_add">Añadir foto</string>
+    <string name="photo_change">Cambiar foto</string>
+    <string name="photo_remove">Quitar foto</string>
+    <string name="photo_saving">Guardando la foto…</string>
+    <string name="photo_hint">JPEG o PNG, hasta 20 MB. Se eliminan del archivo la ubicación y otros datos ocultos.</string>
+    <string name="photo_error_type">Elige una imagen JPEG o PNG.</string>
+    <string name="photo_error_size">Esa imagen ocupa más de 20 MB.</string>
+    <string name="photo_error_invalid">Ese archivo no se pudo leer como imagen. Elige otro.</string>
+    <string name="photo_error_changed">Esta persona cambió mientras tanto. La página se ha actualizado; inténtalo de nuevo.</string>
+    <string name="photo_error_upload">No se pudo enviar la foto al almacenamiento. Comprueba tu conexión e inténtalo de nuevo.</string>
+    <string name="photo_load_failed">No se pudo cargar la foto.</string>
+    <string name="merge_photo">Foto de perfil</string>
+    <string name="merge_no_photo">Sin foto</string>
 </resources>

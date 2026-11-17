@@ -1,9 +1,17 @@
 package com.moxietech.family_tree.state
 
 import com.moxietech.family_tree.FakeBridge
+import com.moxietech.family_tree.FakeTransfer
 import com.moxietech.family_tree.TREE_ID
 import com.moxietech.family_tree.api.AccountDto
 import com.moxietech.family_tree.api.AddUnionChildRequest
+import com.moxietech.family_tree.api.CreateMediaUploadRequest
+import com.moxietech.family_tree.api.MediaDownloadDto
+import com.moxietech.family_tree.api.MediaDto
+import com.moxietech.family_tree.api.MediaUploadDto
+import com.moxietech.family_tree.api.PresignedUploadDto
+import com.moxietech.family_tree.auth.PickedFile
+import com.moxietech.family_tree.media.MediaRules
 import com.moxietech.family_tree.api.CreatePersonRequest
 import com.moxietech.family_tree.api.CreatePersonResponse
 import com.moxietech.family_tree.api.CreateUnionRequest
@@ -177,14 +185,59 @@ class FamilyTreeControllerTest {
             addChildFailures.removeFirstOrNull()?.let { throw ApiException(it) }
             return graph.unions.single { it.id == unionId }
         }
+
+        // --- FT-008 -----------------------------------------------------------------------
+        private var mediaCount = 0
+        val finalizeFailures = ArrayDeque<ApiFailure>()
+
+        /** Each assignment fails with the next queued failure; a CONFLICT also bumps the person's version, as a concurrent edit would. */
+        val photoFailures = ArrayDeque<ApiFailure>()
+        val downloadFailures = ArrayDeque<ApiFailure>()
+
+        override suspend fun createMediaUpload(treeId: String, request: CreateMediaUploadRequest): MediaUploadDto {
+            val id = "m${++mediaCount}"
+            calls += "presign:$id:${request.purpose}:${request.contentType}:${request.byteSize}"
+            return MediaUploadDto(
+                MediaDto(id, treeId, request.purpose, "PENDING", request.contentType, null, null, null, 1),
+                PresignedUploadDto("https://store.test/uploads/$id?X-Amz-Signature=x", "PUT", mapOf("content-type" to request.contentType), "2026-11-16T10:10:00Z"),
+            )
+        }
+
+        override suspend fun finalizeMedia(treeId: String, mediaId: String): MediaDto {
+            calls += "finalize:$mediaId"
+            finalizeFailures.removeFirstOrNull()?.let { throw ApiException(it) }
+            return MediaDto(mediaId, treeId, "PROFILE_PHOTO", "READY", "image/jpeg", 3, 1, 1, 2)
+        }
+
+        override suspend fun mediaDownload(treeId: String, mediaId: String): MediaDownloadDto {
+            calls += "download:$mediaId"
+            downloadFailures.removeFirstOrNull()?.let { throw ApiException(it) }
+            return MediaDownloadDto(mediaId, "https://store.test/media/$mediaId?X-Amz-Signature=y", "image/jpeg", "2026-11-16T10:05:00Z")
+        }
+
+        override suspend fun setProfilePhoto(treeId: String, personId: String, mediaId: String?, version: Long): PersonDto {
+            calls += "photo:$personId:$mediaId:$version"
+            val stored = graph.people.single { it.id == personId }
+            photoFailures.removeFirstOrNull()?.let { failure ->
+                if (failure == ApiFailure.CONFLICT) replacePerson(stored.copy(version = stored.version + 1))
+                throw ApiException(failure)
+            }
+            if (stored.version != version) throw ApiException(ApiFailure.CONFLICT)
+            return stored.copy(profileMediaId = mediaId, version = version + 1).also(::replacePerson)
+        }
+
+        fun replacePerson(person: PersonDto) {
+            graph = graph.copy(people = graph.people.map { if (it.id == person.id) person else it })
+        }
     }
 
     private val bridge = FakeBridge()
     private val session = FakeSession()
     private val api = FakeApi()
+    private val transfer = FakeTransfer()
 
     private fun TestScope.controller(): FamilyTreeController =
-        FamilyTreeController(session, api, bridge, backgroundScope).also {
+        FamilyTreeController(session, api, bridge, backgroundScope, transfer).also {
             it.start()
             runCurrent()
         }
@@ -977,6 +1030,172 @@ class FamilyTreeControllerTest {
         runCurrent()
 
         assertNull(controller.merge)
+    }
+
+    // --- FT-008 profile photos ----------------------------------------------------------
+
+    private val FamilyTreeController.page get() = state.value.personScreen!!
+
+    private fun jpegFile(size: Int = 100) = PickedFile("image/jpeg", ByteArray(size) { it.toByte() })
+
+    @Test
+    fun ownerUploadsStraightToStorageThenFinalizesAttachesAndShowsThePhoto() = runTest {
+        val controller = openPersonPage()
+        bridge.pickedFile = jpegFile()
+
+        controller.choosePhoto()
+        runCurrent()
+
+        assertEquals(listOf(MediaRules.SUPPORTED_CONTENT_TYPES), bridge.pickRequests)
+        assertTrue("presign:m1:PROFILE_PHOTO:image/jpeg:100" in api.calls)
+        assertEquals(listOf("https://store.test/uploads/m1?X-Amz-Signature=x" to 100), transfer.uploads, "bytes go to the presigned URL")
+        assertEquals(
+            listOf("finalize:m1", "photo:kid:m1:0", "download:m1"),
+            api.calls.filter { it.startsWith("finalize") || it.startsWith("photo:") || it.startsWith("download") },
+        )
+        assertEquals("m1", controller.page.person.valueOrNull?.profileMediaId)
+        assertNull(controller.page.photo, "nothing pending")
+        val photo = controller.state.value.photos[PhotoKey(TREE_ID, "m1")]
+        assertTrue(photo is Loadable.Ready && photo.value.contentEquals(transfer.image))
+    }
+
+    @Test
+    fun unsupportedOrOversizedFilesAreRefusedBeforeAnyRequest() = runTest {
+        val controller = openPersonPage()
+        bridge.pickedFile = PickedFile("image/gif", ByteArray(10))
+        controller.choosePhoto()
+        assertEquals(PhotoError.UNSUPPORTED_TYPE, controller.page.photo?.error)
+
+        bridge.pickedFile = PickedFile("image/png", ByteArray((MediaRules.MAX_UPLOAD_BYTES + 1).toInt()))
+        controller.choosePhoto()
+        assertEquals(PhotoError.TOO_LARGE, controller.page.photo?.error)
+        runCurrent()
+        assertTrue(api.calls.none { it.startsWith("presign") })
+        assertTrue(transfer.uploads.isEmpty())
+    }
+
+    @Test
+    fun aFailedFinalizeIsRetriedWithoutUploadingAgain() = runTest {
+        val controller = openPersonPage()
+        api.finalizeFailures += ApiFailure.UNAVAILABLE
+        bridge.pickedFile = jpegFile()
+        controller.choosePhoto()
+        runCurrent()
+
+        assertEquals(PhotoError.UNAVAILABLE, controller.page.photo?.error)
+        assertEquals("m1", controller.page.photo?.pending?.mediaId)
+        assertNull(controller.page.person.valueOrNull?.profileMediaId)
+
+        controller.retryPhoto()
+        runCurrent()
+
+        assertEquals(1, api.calls.count { it.startsWith("presign") }, "no second upload")
+        assertEquals(1, transfer.uploads.size)
+        assertEquals(2, api.calls.count { it == "finalize:m1" }, "finalize is safe to repeat")
+        assertEquals("m1", controller.page.person.valueOrNull?.profileMediaId)
+    }
+
+    @Test
+    fun aPersonChangedMeanwhileReloadsAndTheRetryAttachesAtTheNewVersion() = runTest {
+        val controller = openPersonPage()
+        api.photoFailures += ApiFailure.CONFLICT
+        bridge.pickedFile = jpegFile()
+        controller.choosePhoto()
+        runCurrent()
+
+        assertEquals(PhotoError.CHANGED, controller.page.photo?.error)
+        assertEquals(1L, controller.page.person.valueOrNull?.version, "the person was reloaded")
+
+        controller.retryPhoto()
+        runCurrent()
+
+        assertTrue("photo:kid:m1:1" in api.calls)
+        assertEquals(1, api.calls.count { it.startsWith("presign") })
+        assertEquals("m1", controller.page.person.valueOrNull?.profileMediaId)
+    }
+
+    @Test
+    fun aRejectedImageAsksForAnotherFileAndAFailedTransferStartsOver() = runTest {
+        val controller = openPersonPage()
+        api.finalizeFailures += ApiFailure.INVALID
+        bridge.pickedFile = jpegFile()
+        controller.choosePhoto()
+        runCurrent()
+        assertEquals(PhotoError.INVALID_IMAGE, controller.page.photo?.error)
+        assertNull(controller.page.photo?.pending, "nothing to retry: choose another file")
+
+        transfer.uploadFailures += ApiFailure.UNAVAILABLE
+        controller.choosePhoto()
+        runCurrent()
+        assertEquals(PhotoError.UPLOAD_FAILED, controller.page.photo?.error)
+        assertNull(controller.page.photo?.pending?.mediaId)
+
+        controller.retryPhoto()
+        runCurrent()
+        assertTrue("presign:m3:PROFILE_PHOTO:image/jpeg:100" in api.calls, "a fresh upload after a failed transfer")
+        assertEquals("m3", controller.page.person.valueOrNull?.profileMediaId)
+    }
+
+    @Test
+    fun removingThePhotoClearsItAtTheCurrentVersion() = runTest {
+        api.replacePerson(personOf("kid").copy(profileMediaId = "m0"))
+        val controller = openPersonPage()
+        controller.removePhoto()
+        runCurrent()
+
+        assertTrue("photo:kid:null:0" in api.calls)
+        assertNull(controller.page.person.valueOrNull?.profileMediaId)
+    }
+
+    @Test
+    fun onlyTheOwnerCanChangeAPhoto() = runTest {
+        api.tree = api.tree.copy(ownerAccountId = "someone-else")
+        val controller = openPersonPage()
+        bridge.pickedFile = jpegFile()
+        controller.choosePhoto()
+        controller.removePhoto()
+        runCurrent()
+        assertTrue(bridge.pickRequests.isEmpty(), "no file chooser for a non-owner")
+        assertTrue(api.calls.none { it.startsWith("presign") || it.startsWith("photo:") })
+    }
+
+    @Test
+    fun aPersonPagePhotoLoadsThroughAShortLivedLinkAndRetriesAfterAFailure() = runTest {
+        api.replacePerson(personOf("kid").copy(profileMediaId = "m9"))
+        api.downloadFailures += ApiFailure.UNAVAILABLE
+        val controller = openPersonPage()
+        assertEquals(Loadable.Failed(ApiFailure.UNAVAILABLE), controller.state.value.photos[PhotoKey(TREE_ID, "m9")])
+
+        controller.retry()
+        runCurrent()
+
+        assertIs<Loadable.Ready<*>>(controller.state.value.photos[PhotoKey(TREE_ID, "m9")])
+        assertEquals(listOf("https://store.test/media/m9?X-Amz-Signature=y"), transfer.downloads)
+    }
+
+    @Test
+    fun differentPhotosNeedAnExplicitMergeChoiceAndBothAreShown() = runTest {
+        api.graph = duplicatesGraph()
+        api.replacePerson(api.graph.people.single { it.id == "ana" }.copy(profileMediaId = "p1"))
+        api.replacePerson(api.graph.people.single { it.id == "ana2" }.copy(profileMediaId = "p2"))
+        bridge.url = "http://localhost:3000/#/trees/$TREE_ID"
+        val controller = controller().also { signIn() }
+        controller.startMerge("ana", "ana2")
+        runCurrent()
+
+        val records = controller.merge!!.records!!.valueOrNull!!
+        assertTrue(MergeField.PROFILE_PHOTO in FamilyTreeController.differingFields(records.first, records.second))
+        assertIs<Loadable.Ready<*>>(controller.state.value.photos[PhotoKey(TREE_ID, "p1")])
+        assertIs<Loadable.Ready<*>>(controller.state.value.photos[PhotoKey(TREE_ID, "p2")])
+
+        controller.decide()
+        controller.submitMerge()
+        assertEquals(MergeError.CHOICES_REQUIRED, controller.merge?.error, "the photo isn't kept or dropped silently")
+
+        controller.chooseMergeValue(MergeField.PROFILE_PHOTO, "ana2")
+        controller.submitMerge()
+        runCurrent()
+        assertEquals("RETIRED", api.mergeRequests.single().choices["PROFILE_PHOTO"])
     }
 }
 

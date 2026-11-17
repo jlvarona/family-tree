@@ -3,6 +3,7 @@ package com.moxietech.family_tree.server.graph
 import com.moxietech.family_tree.api.CreatePersonRequest
 import com.moxietech.family_tree.api.DuplicateCandidateDto
 import com.moxietech.family_tree.api.PersonDto
+import com.moxietech.family_tree.api.SetProfilePhotoRequest
 import com.moxietech.family_tree.api.UpdatePersonRequest
 import com.moxietech.family_tree.domain.AccountId
 import com.moxietech.family_tree.domain.AuditAction
@@ -10,11 +11,15 @@ import com.moxietech.family_tree.domain.Person
 import com.moxietech.family_tree.domain.PersonId
 import com.moxietech.family_tree.domain.Sex
 import com.moxietech.family_tree.domain.TreeId
+import com.moxietech.family_tree.media.MediaPurpose
 import com.moxietech.family_tree.server.collaboration.AuditJson
 import com.moxietech.family_tree.server.collaboration.AuditLogRepository
 import com.moxietech.family_tree.server.config.DatabaseDispatcher
 import com.moxietech.family_tree.server.errors.ValidationException
+import com.moxietech.family_tree.server.errors.parseOptionalUuidField
 import com.moxietech.family_tree.server.errors.parseUuidField
+import com.moxietech.family_tree.server.media.MediaAttachments
+import com.moxietech.family_tree.server.media.mediaInUse
 import com.moxietech.family_tree.server.errors.parseVersionParam
 import com.moxietech.family_tree.server.errors.referenced
 import com.moxietech.family_tree.server.errors.requireValid
@@ -24,7 +29,12 @@ import com.moxietech.family_tree.validation.Validation
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
+import java.sql.Connection
+import java.sql.SQLException
 import kotlin.uuid.Uuid
+
+/** V6: the deferred constraint keeping each media row the photo of at most one person. */
+internal const val PROFILE_MEDIA_UNIQUE = "person_profile_media_id_key"
 
 object PersonService {
 
@@ -123,6 +133,65 @@ object PersonService {
                 )
                 dto
             }
+        }
+    }
+
+    /**
+     * FT-008: sets or removes a person's profile photo, owner only
+     * (`PUT …/people/{personId}/profile-photo`). One READ COMMITTED transaction that
+     * first takes [GraphWriteLock] shared (so it can't interleave with a merge); then
+     * the media is locked and checked in the URL's tree (404 missing or foreign,
+     * 409 not verified, 400 another purpose, 409 already another person's photo),
+     * then the person is resolved in the same tree (404) and updated at the version
+     * the client read (409 stale), and the before/after audit is written. A replaced
+     * photo stays stored as unattached media; only the owner can still read it.
+     */
+    suspend fun setProfilePhoto(
+        treeId: TreeId,
+        personId: PersonId,
+        callerAccountId: AccountId,
+        request: SetProfilePhotoRequest,
+    ): PersonDto {
+        TreeService.getTreeForWriter(treeId, callerAccountId)
+        val personUuid = parseUuidField("personId", personId.value)
+        val mediaUuid = parseOptionalUuidField("mediaId", request.mediaId)
+        val treeUuid = Uuid.parse(treeId.value)
+        return try {
+            withContext(DatabaseDispatcher) {
+                transaction(transactionIsolation = Connection.TRANSACTION_READ_COMMITTED) {
+                    // First statement, before any row lock (FT-007 order): a merge holds the
+                    // tree exclusive and locks people before the survivor's photo foreign key
+                    // touches the media row, so taking media then person here could deadlock
+                    // with it. Waiting here, the assignment runs after the merge and then sees
+                    // the merged result (survivor: stale version 409; retired person: 404).
+                    GraphWriteLock.shared(treeUuid)
+                    if (mediaUuid != null) {
+                        MediaAttachments.lockForAttaching(treeUuid, mediaUuid, MediaPurpose.PROFILE_PHOTO)
+                        val holder = PersonRepository.findByProfileMedia(treeUuid, mediaUuid)
+                        if (holder != null && Uuid.parse(holder.id.value) != personUuid) throw mediaInUse(mediaUuid)
+                    }
+                    val before = TreeScopedLookups.requirePerson(treeUuid, personUuid)
+                    if (before.version != request.version) throw staleVersion("Person", before.id.value)
+                    val after = PersonRepository.setProfileMedia(treeUuid, personUuid, request.version, mediaUuid)
+                        ?: throw staleVersion("Person", before.id.value)
+                    val dto = after.toDto()
+                    AuditLogRepository.append(
+                        treeId = treeUuid,
+                        actorAccountId = Uuid.parse(callerAccountId.value),
+                        entityType = "Person",
+                        entityId = after.id.value,
+                        action = AuditAction.UPDATE,
+                        beforeJson = AuditJson.encodeToString(before.toDto()),
+                        afterJson = AuditJson.encodeToString(dto),
+                    )
+                    dto
+                }
+            }
+        } catch (e: SQLException) {
+            // The deferred one-photo-per-media constraint is checked at commit. The media
+            // lock makes it unreachable from this route; kept so it is a 409, never a 500.
+            if (mediaUuid != null && e.isUniqueViolation(PROFILE_MEDIA_UNIQUE)) throw mediaInUse(mediaUuid)
+            throw e
         }
     }
 

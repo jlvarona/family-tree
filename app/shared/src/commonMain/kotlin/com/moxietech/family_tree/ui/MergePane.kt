@@ -22,7 +22,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
@@ -43,6 +45,7 @@ import com.moxietech.family_tree.state.MergeError
 import com.moxietech.family_tree.state.MergeRecords
 import com.moxietech.family_tree.state.MergeState
 import com.moxietech.family_tree.state.PersonProfile
+import com.moxietech.family_tree.state.PhotoKey
 import com.moxietech.family_tree.state.Viewer
 import family_tree.app.shared.generated.resources.Res
 import family_tree.app.shared.generated.resources.cancel
@@ -82,6 +85,10 @@ import family_tree.app.shared.generated.resources.merge_second_record
 import family_tree.app.shared.generated.resources.merge_submit
 import family_tree.app.shared.generated.resources.merge_title
 import family_tree.app.shared.generated.resources.merge_values
+import family_tree.app.shared.generated.resources.merge_no_photo
+import family_tree.app.shared.generated.resources.merge_photo
+import family_tree.app.shared.generated.resources.photo_alt
+import family_tree.app.shared.generated.resources.photo_load_failed
 import family_tree.app.shared.generated.resources.retry
 import family_tree.app.shared.generated.resources.sex
 import family_tree.app.shared.generated.resources.sex_female
@@ -106,6 +113,7 @@ internal fun MergePeoplePane(
     controller: FamilyTreeController,
 ) {
     val records = merge.records
+    val photos = controller.state.collectAsState().value.photos
     Box(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp), contentAlignment = Alignment.TopCenter) {
         Surface(
             modifier = Modifier.widthIn(max = 760.dp).fillMaxWidth(),
@@ -124,7 +132,7 @@ internal fun MergePeoplePane(
                         Text(stringResource(failureMessage(records.failure)), color = MaterialTheme.colorScheme.error)
                         TextButton(onClick = controller::retry) { Text(stringResource(Res.string.retry)) }
                     }
-                    is Loadable.Ready -> Review(merge, records.value, graph, label, controller)
+                    is Loadable.Ready -> Review(merge, records.value, graph, label, photos, controller)
                 }
                 merge.error?.let { Text(stringResource(mergeErrorMessage(it)), color = MaterialTheme.colorScheme.error) }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
@@ -175,6 +183,7 @@ private fun Review(
     records: MergeRecords,
     graph: TreeGraphDto,
     label: (PersonDto) -> String,
+    photos: Map<PhotoKey, Loadable<ByteArray>>,
     controller: FamilyTreeController,
 ) {
     val first = records.first
@@ -219,6 +228,8 @@ private fun Review(
                     // long bios that start alike are told apart by their endings.
                     listOf(first, second).forEach { person ->
                         Column(Modifier.weight(1f).padding(end = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            // FT-008: the photos themselves are shown, so the choice is made by looking at them.
+                            if (field == MergeField.PROFILE_PHOTO) MergePhoto(person, photos, recordLabel(person))
                             Text(valueText(person, field), fontSize = 13.sp)
                             FilterChip(
                                 selected = merge.choices[field] == person.id,
@@ -237,7 +248,7 @@ private fun Review(
                     )
                 }
             }
-            if (field in differing && valueText(first, field) == valueText(second, field)) {
+            if (field in differing && field != MergeField.PROFILE_PHOTO && valueText(first, field) == valueText(second, field)) {
                 // Stored values that differ only in spacing or removed control characters.
                 Text(
                     stringResource(Res.string.merge_differs_invisibly),
@@ -316,6 +327,18 @@ private fun valueText(person: PersonDto, field: MergeField): String {
         )
         MergeField.IS_LIVING -> stringResource(if (person.isLiving) Res.string.living else Res.string.deceased)
         MergeField.BIO -> text(person.bio)
+        MergeField.PROFILE_PHOTO -> stringResource(if (person.profileMediaId == null) Res.string.merge_no_photo else Res.string.merge_photo)
+    }
+}
+
+/** A record's profile photo in the comparison (FT-008), or nothing while it loads or if it has none. */
+@Composable
+private fun MergePhoto(person: PersonDto, photos: Map<PhotoKey, Loadable<ByteArray>>, label: String) {
+    val mediaId = person.profileMediaId ?: return
+    when (val photo = photos[PhotoKey(person.treeId, mediaId)]) {
+        is Loadable.Ready -> StoredPhoto(photo.value, stringResource(Res.string.photo_alt, label), 96, RoundedCornerShape(12.dp)) {}
+        is Loadable.Failed -> Text(stringResource(Res.string.photo_load_failed), fontSize = 12.sp, color = Palette.muted)
+        else -> Text(stringResource(Res.string.loading), fontSize = 12.sp, color = Palette.muted)
     }
 }
 
@@ -326,6 +349,7 @@ private fun fieldLabel(field: MergeField): StringResource = when (field) {
     MergeField.SEX -> Res.string.sex
     MergeField.IS_LIVING -> Res.string.merge_living_status
     MergeField.BIO -> Res.string.life_story
+    MergeField.PROFILE_PHOTO -> Res.string.merge_photo
 }
 
 private fun conflictMessage(conflict: MergeConflict): StringResource = when (conflict) {

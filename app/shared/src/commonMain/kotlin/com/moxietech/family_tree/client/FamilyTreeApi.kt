@@ -4,9 +4,14 @@ import com.moxietech.family_tree.api.AccountDto
 import com.moxietech.family_tree.api.AddUnionChildRequest
 import com.moxietech.family_tree.api.CreatePersonRequest
 import com.moxietech.family_tree.api.CreatePersonResponse
+import com.moxietech.family_tree.api.CreateMediaUploadRequest
 import com.moxietech.family_tree.api.CreateTreeRequest
 import com.moxietech.family_tree.api.CreateUnionRequest
 import com.moxietech.family_tree.api.EventDto
+import com.moxietech.family_tree.api.MediaDownloadDto
+import com.moxietech.family_tree.api.MediaDto
+import com.moxietech.family_tree.api.MediaUploadDto
+import com.moxietech.family_tree.api.SetProfilePhotoRequest
 import com.moxietech.family_tree.api.MergePeopleRequest
 import com.moxietech.family_tree.api.MergePeopleResponse
 import com.moxietech.family_tree.api.PersonDto
@@ -94,6 +99,22 @@ interface FamilyTreeApi {
      * break the graph; the caller reloads both and asks again.
      */
     suspend fun mergePeople(treeId: String, request: MergePeopleRequest): MergePeopleResponse
+
+    /** FT-008: a pending upload and its presigned `PUT` (owner only). */
+    suspend fun createMediaUpload(treeId: String, request: CreateMediaUploadRequest): MediaUploadDto
+
+    /**
+     * FT-008: asks the server to verify an upload. Safe to repeat: a `READY` upload is
+     * returned unchanged; `409` means not uploaded yet (or rejected earlier); `400` means
+     * the file isn't a valid image of the declared type and size.
+     */
+    suspend fun finalizeMedia(treeId: String, mediaId: String): MediaDto
+
+    /** FT-008: a short-lived read URL for an image the caller may see (`404` otherwise). */
+    suspend fun mediaDownload(treeId: String, mediaId: String): MediaDownloadDto
+
+    /** FT-008: sets or removes (null) a person's profile photo at the person's [version]. */
+    suspend fun setProfilePhoto(treeId: String, personId: String, mediaId: String?, version: Long): PersonDto
 }
 
 /**
@@ -150,6 +171,24 @@ class HttpFamilyTreeApi(
         MergePeopleRequest.serializer(),
         request,
         MergePeopleResponse.serializer(),
+    )
+
+    override suspend fun createMediaUpload(treeId: String, request: CreateMediaUploadRequest): MediaUploadDto =
+        post("/trees/${seg(treeId)}/media", CreateMediaUploadRequest.serializer(), request, MediaUploadDto.serializer())
+
+    override suspend fun finalizeMedia(treeId: String, mediaId: String): MediaDto =
+        decode(send(HttpMethod.Post, "/trees/${seg(treeId)}/media/${seg(mediaId)}/finalize", body = null), MediaDto.serializer())
+
+    override suspend fun mediaDownload(treeId: String, mediaId: String): MediaDownloadDto =
+        get("/trees/${seg(treeId)}/media/${seg(mediaId)}/download", MediaDownloadDto.serializer())
+
+    override suspend fun setProfilePhoto(treeId: String, personId: String, mediaId: String?, version: Long): PersonDto = decode(
+        send(
+            HttpMethod.Put,
+            "/trees/${seg(treeId)}/people/${seg(personId)}/profile-photo",
+            json.encodeToString(SetProfilePhotoRequest.serializer(), SetProfilePhotoRequest(mediaId, version)),
+        ),
+        PersonDto.serializer(),
     )
 
     private suspend fun <T> get(path: String, result: DeserializationStrategy<T>): T =

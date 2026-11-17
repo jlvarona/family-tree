@@ -17,7 +17,8 @@ updates in the commit that changes the behavior.
 ## Project status
 
 The Phase 1 server foundation and shared domain model are implemented. The web client (FT-005)
-signs in with Keycloak and covers the owner workflow, tree views and the person page (FT-006). Android, iOS and desktop still use
+signs in with Keycloak and covers the owner workflow, tree views, the person page (FT-006) and
+profile photo upload through presigned URLs (FT-008). Android, iOS and desktop still use
 the starter UI. See [the delivery log](docs/delivery-log.md) for the current backlog and verification.
 
 Current roadmap phase: **1. Foundations** — accounts, trees, people, unions, events, sources; full-tree and

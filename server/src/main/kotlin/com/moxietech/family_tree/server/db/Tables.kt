@@ -130,6 +130,27 @@ object CitationTable : Table("citation") {
     override val primaryKey = PrimaryKey(id)
 }
 
+/** FT-008 (V6): one uploaded image; bytes are in the object store under server-generated keys. */
+object MediaTable : Table("media") {
+    val id = uuid("id")
+    val treeId = uuid("tree_id") references TreeTable.id
+    val purpose = text("purpose")
+    val status = text("status")
+    val contentType = text("content_type")
+    val uploadByteSize = long("upload_byte_size")
+    val uploadKey = text("upload_key")
+    val storageKey = text("storage_key").nullable()
+    val byteSize = long("byte_size").nullable()
+    val width = integer("width").nullable()
+    val height = integer("height").nullable()
+    val sha256 = text("sha256").nullable()
+    val uploadedByAccountId = uuid("uploaded_by_account_id") references AccountTable.id
+    val createdAt = timestamp("created_at")
+    val finalizedAt = timestamp("finalized_at").nullable()
+    val version = long("version")
+    override val primaryKey = PrimaryKey(id)
+}
+
 object MembershipTable : Table("membership") {
     val treeId = uuid("tree_id") references TreeTable.id
     val accountId = uuid("account_id") references AccountTable.id

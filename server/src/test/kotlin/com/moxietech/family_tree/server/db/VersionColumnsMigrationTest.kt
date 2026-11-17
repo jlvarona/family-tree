@@ -41,9 +41,9 @@ class VersionColumnsMigrationTest {
                 it.execute("insert into union_child (tree_id, union_id, child_id, relation) values ('$tree', '$union', '$kid', 'STEP')")
             }
 
-            migrate(db)
+            migrate(db, target = "4")
 
-            assertEquals("5", c.string("select max(version) from flyway_schema_history where success"))
+            assertEquals("4", c.string("select max(version) from flyway_schema_history where success"))
             assertEquals("1|Sevilla|España", c.string("select version || '|' || name || '|' || hierarchy from place where id = '$place'"))
             assertEquals("1|STEP", c.string("select version || '|' || relation from union_child where union_id = '$union'"))
             // A row inserted without naming the column also starts at 1.
@@ -68,7 +68,7 @@ class VersionColumnsMigrationTest {
                 it.execute("insert into union_child (tree_id, union_id, child_id, relation, version) values ('$tree', '$union', '$kid', 'BIRTH', 7)")
             }
 
-            migrate(db)
+            migrate(db, target = "5")
 
             assertEquals("7|BIRTH", c.string("select version || '|' || relation from union_child where child_id = '$kid'"))
             val first = c.string(
@@ -92,8 +92,8 @@ class VersionColumnsMigrationTest {
         }
     }
 
-    private fun migrate(dataSource: DataSource, target: String? = null) {
-        Flyway.configure().dataSource(dataSource).apply { if (target != null) target(target) }.load().migrate()
+    private fun migrate(dataSource: DataSource, target: String) {
+        Flyway.configure().dataSource(dataSource).target(target).load().migrate()
     }
 
     private fun Connection.string(sql: String): String? =

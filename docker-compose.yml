@@ -40,5 +40,25 @@ services:
     volumes:
       - ./ops/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
 
+  # FT-008: a local S3-compatible photo store, so presigned uploads and downloads can
+  # be verified without AWS. SeaweedFS `weed mini` checks SigV4 signatures, keeps the
+  # bucket private and supports bucket CORS through the S3 API. Published on loopback
+  # only. The credentials come from your shell (README "Photo storage"); nothing is
+  # stored in this file. With S3_BUCKET set the bucket is created on start; the API
+  # server puts the browser CORS rules on it when MEDIA_S3_CREATE_BUCKET=true.
+  s3:
+    image: ghcr.io/chrislusf/seaweedfs:4.54
+    container_name: family-tree-s3
+    command: mini -dir=/data
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      S3_BUCKET: ${MEDIA_S3_BUCKET:-family-tree-media}
+    ports:
+      - "127.0.0.1:8333:8333"
+    volumes:
+      - family-tree-s3-data:/data
+
 volumes:
   family-tree-postgres-data:
+  family-tree-s3-data:

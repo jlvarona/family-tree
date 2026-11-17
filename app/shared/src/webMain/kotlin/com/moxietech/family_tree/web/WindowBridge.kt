@@ -2,7 +2,10 @@ package com.moxietech.family_tree.web
 
 import com.moxietech.family_tree.auth.BrowserBridge
 import com.moxietech.family_tree.auth.BrowserFeatureException
+import com.moxietech.family_tree.auth.PickedFile
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -32,6 +35,13 @@ internal expect fun cryptoRandomHex(count: Int): String
  * hex, or [onError] (insecure context, no SubtleCrypto, rejected promise).
  */
 internal expect fun cryptoSha256Hex(text: String, onDone: (String) -> Unit, onError: (String) -> Unit)
+
+/**
+ * Opens a one-off `<input type=file accept=…>` and, when a file is chosen, reads it
+ * with `FileReader.readAsDataURL`; calls [onDone] with the file's MIME type and the
+ * base64 payload. Nothing is called if the user cancels or reading fails.
+ */
+internal expect fun pickFileBase64(accept: String, onDone: (String, String) -> Unit)
 
 /** [BrowserBridge] over the page's `window`. */
 internal class WindowBridge : BrowserBridge {
@@ -71,6 +81,14 @@ internal class WindowBridge : BrowserBridge {
             )
         }
         return hexToBytes(hex, 32, "crypto.subtle.digest")
+    }
+
+    @OptIn(ExperimentalEncodingApi::class)
+    override fun pickFile(accept: List<String>, onPicked: (PickedFile) -> Unit) {
+        pickFileBase64(accept.joinToString(",")) { type, base64 ->
+            val bytes = runCatching { Base64.decode(base64) }.getOrNull() ?: return@pickFileBase64
+            onPicked(PickedFile(type, bytes))
+        }
     }
 
     private fun hexToBytes(hex: String, count: Int, feature: String): ByteArray {

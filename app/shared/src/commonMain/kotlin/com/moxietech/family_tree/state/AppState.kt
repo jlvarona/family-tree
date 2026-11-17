@@ -121,7 +121,51 @@ data class PersonScreen(
     val person: Loadable<PersonDto> = Loadable.Loading,
     val graph: Loadable<TreeGraphDto> = Loadable.Loading,
     val events: Loadable<List<EventDto>> = Loadable.Loading,
+    /** The owner's profile-photo change in progress or failed (FT-008); dropped with the page. */
+    val photo: PhotoUpload? = null,
 )
+
+/**
+ * FT-008: one profile-photo change on a person page. [busy] while requests run;
+ * [error] after a failure. [pending] keeps what a retry needs so it resumes where it
+ * stopped: the chosen file, and the upload's media ID once it was sent to the store
+ * (a retry then finalizes and attaches it instead of uploading again). [removing] is
+ * a "remove photo" request rather than an upload.
+ */
+data class PhotoUpload(
+    val busy: Boolean = false,
+    val error: PhotoError? = null,
+    val pending: PendingPhoto? = null,
+    val removing: Boolean = false,
+)
+
+class PendingPhoto(val contentType: String, val bytes: ByteArray, val mediaId: String? = null) {
+    fun withMedia(id: String?) = PendingPhoto(contentType, bytes, id)
+}
+
+enum class PhotoError {
+    /** Not a JPEG or PNG (checked before anything is sent). */
+    UNSUPPORTED_TYPE,
+
+    /** Over `MediaRules.MAX_UPLOAD_BYTES` (checked before anything is sent). */
+    TOO_LARGE,
+
+    /** The server didn't accept the file as a valid image; choose another. */
+    INVALID_IMAGE,
+
+    /** The person changed meanwhile; the page was reloaded and a retry uses the new version. */
+    CHANGED,
+
+    /** Sending the file to photo storage failed (network, CORS, expired link); retry uploads again. */
+    UPLOAD_FAILED,
+    FORBIDDEN,
+    NOT_FOUND,
+    UNAVAILABLE,
+    SERVER,
+}
+
+/** An image cached for display, per tree and media ID (FT-008). */
+data class PhotoKey(val treeId: String, val mediaId: String)
 
 enum class FormError {
     NAME_REQUIRED,
@@ -176,6 +220,12 @@ data class AppState(
     val treeScreen: TreeScreen? = null,
     val personScreen: PersonScreen? = null,
     val form: FormState = FormState(),
+    /**
+     * FT-008: images fetched through short-lived presigned URLs, as encoded bytes (the
+     * UI decodes them). Only images the server let this session read; cleared with the
+     * session like everything else, and capped in size.
+     */
+    val photos: Map<PhotoKey, Loadable<ByteArray>> = emptyMap(),
 )
 
 data class PersonInput(

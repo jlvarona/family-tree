@@ -56,6 +56,7 @@ internal object CitationRepository {
         page: String?,
         confidence: Confidence,
         note: String?,
+        mediaId: Uuid? = null,
     ): Citation = transaction {
         val id = Uuid.random()
         CitationTable.insert {
@@ -67,9 +68,26 @@ internal object CitationRepository {
             it[CitationTable.page] = page
             it[CitationTable.confidence] = confidence.level.toShort()
             it[CitationTable.note] = note
-            it[CitationTable.mediaId] = null
+            it[CitationTable.mediaId] = mediaId
         }
         findById(treeId, id) ?: error("Citation $id was just inserted but cannot be read back")
+    }
+
+    /** FT-008: the citation in [treeId] whose scan is [mediaId], if any (at most one, V6). */
+    fun findByMedia(treeId: Uuid, mediaId: Uuid): Citation? = transaction {
+        CitationTable.selectAll().where { (CitationTable.mediaId eq mediaId) and (CitationTable.treeId eq treeId) }
+            .firstOrNull()?.toCitation()
+    }
+
+    /** FT-008: the typed target of [citation], for resolving who it is about. */
+    fun targetOf(citation: Citation): CitationTargetRef {
+        val kind = CitationTargetKind.of(citation.target)
+        val id = when (val target = citation.target) {
+            is com.moxietech.family_tree.domain.CitationTarget.OnPerson -> target.personId.value
+            is com.moxietech.family_tree.domain.CitationTarget.OnEvent -> target.eventId.value
+            is com.moxietech.family_tree.domain.CitationTarget.OnUnion -> target.unionId.value
+        }
+        return CitationTargetRef(kind, Uuid.parse(id))
     }
 
     /** Null when [id] doesn't exist or belongs to another tree. */

@@ -23,10 +23,12 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,6 +56,9 @@ import com.moxietech.family_tree.state.PersonHeader
 import com.moxietech.family_tree.state.PersonProfile
 import com.moxietech.family_tree.state.PersonScreen
 import com.moxietech.family_tree.state.PersonStatus
+import com.moxietech.family_tree.state.PhotoError
+import com.moxietech.family_tree.state.PhotoKey
+import com.moxietech.family_tree.state.PhotoUpload
 import com.moxietech.family_tree.state.RelativeLink
 import com.moxietech.family_tree.state.Timeline
 import com.moxietech.family_tree.state.TimelineEntry
@@ -61,6 +66,23 @@ import com.moxietech.family_tree.state.Viewer
 import com.moxietech.family_tree.state.valueOrNull
 import family_tree.app.shared.generated.resources.Res
 import family_tree.app.shared.generated.resources.back_to_tree
+import family_tree.app.shared.generated.resources.cancel
+import family_tree.app.shared.generated.resources.error_forbidden
+import family_tree.app.shared.generated.resources.error_not_found
+import family_tree.app.shared.generated.resources.error_server
+import family_tree.app.shared.generated.resources.error_unavailable
+import family_tree.app.shared.generated.resources.photo_add
+import family_tree.app.shared.generated.resources.photo_alt
+import family_tree.app.shared.generated.resources.photo_change
+import family_tree.app.shared.generated.resources.photo_error_changed
+import family_tree.app.shared.generated.resources.photo_error_invalid
+import family_tree.app.shared.generated.resources.photo_error_size
+import family_tree.app.shared.generated.resources.photo_error_type
+import family_tree.app.shared.generated.resources.photo_error_upload
+import family_tree.app.shared.generated.resources.photo_hint
+import family_tree.app.shared.generated.resources.photo_load_failed
+import family_tree.app.shared.generated.resources.photo_remove
+import family_tree.app.shared.generated.resources.photo_saving
 import family_tree.app.shared.generated.resources.children
 import family_tree.app.shared.generated.resources.date_from
 import family_tree.app.shared.generated.resources.date_range
@@ -127,7 +149,9 @@ private object PersonColors {
  * [PersonProfile]: a hidden living person shows only the localized placeholder,
  * with no story or timeline, and union dates appear only when both partners are
  * visible (the union type always does). Bios and notes are rendered as plain
- * text only. Photos and source citations wait for FT-008 and FT-002.
+ * text only. The header shows the profile photo (FT-008) when the caller may see the
+ * person, and the owner can add, change or remove it in place. Source citations and
+ * the photo gallery are not shown yet.
  *
  * Everything is in-page (no popups or dialogs), so Compose Web's accessibility
  * tree stays in sync, as in FT-005's forms.
@@ -155,6 +179,18 @@ private fun PersonContent(screen: PersonScreen, person: PersonDto, viewer: Viewe
         events.valueOrNull?.let { PersonProfile.timeline(person, it, viewer) }
     }
     val facts = remember(timeline) { timeline?.let(PersonProfile::lifeFacts) ?: LifeFacts(null, null, null) }
+    val photos = controller.state.collectAsState().value.photos
+    // FT-008: the server sends a photo ID only when this caller may see the person.
+    val photo = person.profileMediaId?.takeIf { header.status != PersonStatus.PRIVATE }?.let { photos[PhotoKey(screen.treeId, it)] }
+    val photoControls = PhotoControls(
+        editable = viewer.canWrite && header.status != PersonStatus.PRIVATE,
+        hasPhoto = person.profileMediaId != null,
+        state = screen.photo,
+        onChoose = controller::choosePhoto,
+        onRemove = controller::removePhoto,
+        onRetry = controller::retryPhoto,
+        onDismiss = controller::dismissPhotoError,
+    )
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= 900.dp
@@ -164,7 +200,7 @@ private fun PersonContent(screen: PersonScreen, person: PersonDto, viewer: Viewe
                 verticalArrangement = Arrangement.spacedBy(24.dp),
             ) {
                 Breadcrumb(header, onBack = controller::backToTree)
-                HeaderCard(header, facts, wide, onShowInTree = controller::showInTree)
+                HeaderCard(header, facts, wide, photo, photoControls, onShowInTree = controller::showInTree)
                 val story: @Composable () -> Unit = { StorySection(header) }
                 val timelineSection: @Composable () -> Unit = {
                     TimelineSection(header, events, timeline, onRetry = controller::retry)
@@ -205,10 +241,40 @@ private fun Breadcrumb(header: PersonHeader, onBack: () -> Unit) {
     }
 }
 
+/** FT-008: the owner's photo actions on the header, and the state of the last change. */
+private class PhotoControls(
+    val editable: Boolean,
+    val hasPhoto: Boolean,
+    val state: PhotoUpload?,
+    val onChoose: () -> Unit,
+    val onRemove: () -> Unit,
+    val onRetry: () -> Unit,
+    val onDismiss: () -> Unit,
+)
+
 @Composable
-private fun HeaderCard(header: PersonHeader, facts: LifeFacts, wide: Boolean, onShowInTree: () -> Unit) {
+private fun HeaderCard(
+    header: PersonHeader,
+    facts: LifeFacts,
+    wide: Boolean,
+    photo: Loadable<ByteArray>?,
+    controls: PhotoControls,
+    onShowInTree: () -> Unit,
+) {
     val content: @Composable () -> Unit = {
-        Avatar(header.initials, size = 120, isPrivate = header.status == PersonStatus.PRIVATE)
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            val avatar: @Composable () -> Unit = {
+                Avatar(header.initials, size = 120, isPrivate = header.status == PersonStatus.PRIVATE)
+            }
+            val bytes = photo?.valueOrNull
+            if (bytes != null && header.name != null) {
+                StoredPhoto(bytes, stringResource(Res.string.photo_alt, header.name), 120, RoundedCornerShape(16.dp), avatar)
+            } else {
+                avatar()
+            }
+            if (photo is Loadable.Failed) Text(stringResource(Res.string.photo_load_failed), fontSize = 12.sp, color = Palette.muted)
+            if (controls.editable) PhotoActions(controls)
+        }
     }
     val details: @Composable (Modifier) -> Unit = { modifier ->
         Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -260,7 +326,53 @@ private fun HeaderCard(header: PersonHeader, facts: LifeFacts, wide: Boolean, on
     }
 }
 
-/** The photo placeholder until FT-008: initials, or a blank tile for a private person. */
+/**
+ * FT-008: add/change/remove the profile photo, in the page (no dialogs), with the
+ * localized progress, hint and error, and a retry that resumes the failed step.
+ */
+@Composable
+private fun PhotoActions(controls: PhotoControls) {
+    val state = controls.state
+    val busy = state?.busy == true
+    Column(Modifier.widthIn(max = 220.dp), verticalArrangement = Arrangement.spacedBy(4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        if (busy) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                Text(stringResource(Res.string.photo_saving), fontSize = 12.sp, color = Palette.muted)
+            }
+        } else {
+            // The click opens the browser's file chooser directly (a user gesture is required).
+            TextButton(onClick = controls.onChoose) {
+                Text(stringResource(if (controls.hasPhoto) Res.string.photo_change else Res.string.photo_add))
+            }
+            if (controls.hasPhoto) TextButton(onClick = controls.onRemove) { Text(stringResource(Res.string.photo_remove)) }
+        }
+        val error = state?.error
+        if (error != null && !busy) {
+            Text(stringResource(photoErrorMessage(error)), fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (state?.pending != null || state?.removing == true) TextButton(onClick = controls.onRetry) { Text(stringResource(Res.string.retry)) }
+                TextButton(onClick = controls.onDismiss) { Text(stringResource(Res.string.cancel)) }
+            }
+        } else if (!busy) {
+            Text(stringResource(Res.string.photo_hint), fontSize = 11.sp, color = Palette.muted)
+        }
+    }
+}
+
+private fun photoErrorMessage(error: PhotoError): StringResource = when (error) {
+    PhotoError.UNSUPPORTED_TYPE -> Res.string.photo_error_type
+    PhotoError.TOO_LARGE -> Res.string.photo_error_size
+    PhotoError.INVALID_IMAGE -> Res.string.photo_error_invalid
+    PhotoError.CHANGED -> Res.string.photo_error_changed
+    PhotoError.UPLOAD_FAILED -> Res.string.photo_error_upload
+    PhotoError.FORBIDDEN -> Res.string.error_forbidden
+    PhotoError.NOT_FOUND -> Res.string.error_not_found
+    PhotoError.UNAVAILABLE -> Res.string.error_unavailable
+    PhotoError.SERVER -> Res.string.error_server
+}
+
+/** The photo placeholder: initials, or a blank tile for a private person. */
 @Composable
 private fun Avatar(initials: String?, size: Int, isPrivate: Boolean, round: Boolean = false, describe: Boolean = true) {
     val description = stringResource(Res.string.photo_placeholder)

@@ -10,6 +10,11 @@ import com.moxietech.family_tree.api.UnionDto
 import com.moxietech.family_tree.auth.Base64Url
 import com.moxietech.family_tree.auth.BrowserBridge
 import com.moxietech.family_tree.auth.BrowserFeatureException
+import com.moxietech.family_tree.auth.PickedFile
+import com.moxietech.family_tree.api.PresignedUploadDto
+import com.moxietech.family_tree.client.ApiException
+import com.moxietech.family_tree.client.ApiFailure
+import com.moxietech.family_tree.client.MediaTransfer
 
 const val TREE_ID = "tree-1"
 
@@ -78,6 +83,35 @@ class FakeBridge(var url: String = "http://localhost:3000/") : BrowserBridge {
         if (cryptoBlocked) throw BrowserFeatureException("crypto.subtle.digest")
         digestInputs += text
         return digestResult
+    }
+
+    /** FT-008: the file the "user" picks next; null simulates cancelling the chooser. */
+    var pickedFile: PickedFile? = null
+    val pickRequests = mutableListOf<List<String>>()
+
+    override fun pickFile(accept: List<String>, onPicked: (PickedFile) -> Unit) {
+        pickRequests += accept
+        pickedFile?.let(onPicked)
+    }
+}
+
+/** FT-008: records presigned transfers; each call fails with the next queued failure, if any. */
+class FakeTransfer : MediaTransfer {
+    val uploads = mutableListOf<Pair<String, Int>>()
+    val downloads = mutableListOf<String>()
+    val uploadFailures = ArrayDeque<ApiFailure>()
+    val downloadFailures = ArrayDeque<ApiFailure>()
+    var image: ByteArray = byteArrayOf(1, 2, 3)
+
+    override suspend fun upload(upload: PresignedUploadDto, bytes: ByteArray) {
+        uploadFailures.removeFirstOrNull()?.let { throw ApiException(it) }
+        uploads += upload.url to bytes.size
+    }
+
+    override suspend fun download(url: String): ByteArray {
+        downloadFailures.removeFirstOrNull()?.let { throw ApiException(it) }
+        downloads += url
+        return image
     }
 }
 

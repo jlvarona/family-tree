@@ -4,6 +4,7 @@ import com.moxietech.family_tree.api.AccountDto
 import com.moxietech.family_tree.api.PersonDto
 import com.moxietech.family_tree.api.TreeDto
 import com.moxietech.family_tree.domain.AccountId
+import com.moxietech.family_tree.domain.MediaId
 import com.moxietech.family_tree.domain.Membership
 import com.moxietech.family_tree.domain.MembershipStatus
 import com.moxietech.family_tree.domain.Person
@@ -61,7 +62,8 @@ internal fun PersonDto.toDomain(): Person = Person(
     surnameMaternal = surnameMaternal,
     sex = Sex.entries.firstOrNull { it.name == sex } ?: Sex.UNKNOWN,
     isLiving = isLiving,
-    profileMediaId = null,
+    // FT-008: compared by the merge (PROFILE_PHOTO); null for a hidden person, as the server sends it.
+    profileMediaId = profileMediaId?.let(::MediaId),
     bio = bio,
     createdByAccountId = null,
     version = version,

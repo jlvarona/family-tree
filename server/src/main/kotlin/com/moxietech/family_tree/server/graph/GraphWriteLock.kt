@@ -20,6 +20,9 @@ import kotlin.uuid.Uuid
  *   the retired person after the check ran, and the merge would close a loop.
  * - A union or event update holds its own row before it locks a person for its
  *   foreign-key check, the opposite order to the merge.
+ * - FT-008: a profile-photo assignment locks the media row and then updates the
+ *   person, while a merge locks people and then touches the chosen photo's media row
+ *   through the survivor's foreign key. Assignments take it shared first.
  *
  * Citation writers don't take it: they lock their target `FOR KEY SHARE` before
  * inserting (FT-002), which waits on the merge's lock of the person and then finds

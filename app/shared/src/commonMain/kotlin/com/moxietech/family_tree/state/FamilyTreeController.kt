@@ -15,6 +15,12 @@ import com.moxietech.family_tree.auth.UrlParts
 import com.moxietech.family_tree.client.ApiException
 import com.moxietech.family_tree.client.ApiFailure
 import com.moxietech.family_tree.client.FamilyTreeApi
+import com.moxietech.family_tree.client.MediaTransfer
+import com.moxietech.family_tree.client.NoMediaTransfer
+import com.moxietech.family_tree.api.CreateMediaUploadRequest
+import com.moxietech.family_tree.auth.PickedFile
+import com.moxietech.family_tree.media.MediaPurpose
+import com.moxietech.family_tree.media.MediaRules
 import com.moxietech.family_tree.merge.MergeField
 import com.moxietech.family_tree.merge.MergeSide
 import com.moxietech.family_tree.merge.PersonMerge
@@ -49,6 +55,8 @@ class FamilyTreeController(
     private val api: FamilyTreeApi,
     private val bridge: BrowserBridge,
     private val scope: CoroutineScope,
+    /** FT-008: presigned transfers to and from photo storage (no session token). */
+    private val transfer: MediaTransfer = NoMediaTransfer,
 ) {
     private val _state = MutableStateFlow(AppState())
     val state: StateFlow<AppState> = _state.asStateFlow()
@@ -90,6 +98,11 @@ class FamilyTreeController(
                 loadBranch(screen.instance, force = true)
             }
             screen.merge?.takeIf { it.records is Loadable.Failed }?.let { loadMergeRecords(screen.instance, it.id) }
+        }
+        // FT-008: images that failed to load are fetched again (a fresh short-lived link each time).
+        current.photos.filterValues { it is Loadable.Failed }.keys.forEach { key ->
+            _state.update { it.copy(photos = it.photos - key) }
+            loadPhoto(key.treeId, key.mediaId)
         }
         // Only the profile on screen is retried; one left behind (e.g. after "Back to tree") isn't.
         current.personScreen?.takeIf { isOnRoute(current.route, it) }?.let { page ->
@@ -392,6 +405,10 @@ class FamilyTreeController(
             updateMerge(instance, mergeId) { current ->
                 if (current.recordsLoad == load) current.copy(records = records) else current
             }
+            // FT-008: the owner compares the photos themselves before choosing one.
+            records.valueOrNull?.let { pair ->
+                listOfNotNull(pair.first.profileMediaId, pair.second.profileMediaId).forEach { loadPhoto(screen.treeId, it) }
+            }
         }
     }
 
@@ -402,6 +419,180 @@ class FamilyTreeController(
     }
 
     private fun mergeError(error: MergeError) = updateMerge(null, null) { it.copy(error = error) }
+
+    // --- FT-008: profile photos ---------------------------------------------------------
+
+    /**
+     * Opens the file chooser for the person on screen (owner only, and only for a person
+     * whose details they can see). Call straight from the click: browsers only open a
+     * file chooser during a user gesture.
+     */
+    fun choosePhoto() {
+        val page = editablePhotoPage() ?: return
+        bridge.pickFile(MediaRules.SUPPORTED_CONTENT_TYPES) { file -> onPhotoPicked(page.instance, file) }
+    }
+
+    /** Retries the failed step of the last photo change, reusing what already succeeded. */
+    fun retryPhoto() {
+        val page = editablePhotoPage() ?: return
+        val photo = page.photo ?: return
+        when {
+            photo.removing -> removePhoto()
+            photo.pending != null -> runPhotoChange(page.instance, photo.pending)
+        }
+    }
+
+    fun dismissPhotoError() {
+        val page = _state.value.personScreen ?: return
+        if (page.photo?.busy == true) return
+        updatePersonScreen(page.instance) { it.copy(photo = null) }
+    }
+
+    /** Removes the person's profile photo (the image stays stored, unattached; owner-readable only). */
+    fun removePhoto() {
+        val page = editablePhotoPage() ?: return
+        val person = page.person.valueOrNull ?: return
+        if (person.profileMediaId == null) return
+        updatePersonScreen(page.instance) { it.copy(photo = PhotoUpload(busy = true, removing = true)) }
+        inSession { owner ->
+            try {
+                val current = currentPersonScreen(page.instance)?.person?.valueOrNull ?: return@inSession
+                val updated = api.setProfilePhoto(page.treeId, current.id, null, current.version)
+                if (isCurrent(owner)) updatePersonScreen(page.instance) { it.copy(person = Loadable.Ready(updated), photo = null) }
+            } catch (e: ApiException) {
+                if (!isCurrent(owner)) return@inSession
+                if (e.failure == ApiFailure.CONFLICT) reloadPerson(page.instance)
+                updatePersonScreen(page.instance) {
+                    it.copy(photo = PhotoUpload(error = photoErrorFor(e.failure, PhotoStep.ATTACH), removing = true))
+                }
+            }
+        }
+    }
+
+    /** Fetches an image this session may read into [AppState.photos], once per tree and media ID. */
+    fun loadPhoto(treeId: String, mediaId: String) {
+        val key = PhotoKey(treeId, mediaId)
+        val existing = _state.value.photos[key]
+        if (existing is Loadable.Ready || existing == Loadable.Loading) return
+        putPhoto(key, Loadable.Loading)
+        inSession { owner ->
+            val result = load {
+                val link = api.mediaDownload(treeId, mediaId)
+                if (!Route.sameId(link.mediaId, mediaId)) throw ApiException(ApiFailure.NOT_FOUND)
+                transfer.download(link.url)
+            }
+            if (isCurrent(owner)) putPhoto(key, result)
+        }
+    }
+
+    private fun onPhotoPicked(instance: Long, file: PickedFile) {
+        val page = currentPersonScreen(instance) ?: return
+        if (page.photo?.busy == true) return
+        val format = MediaRules.formatOf(file.contentType)
+        val error = when {
+            format == null -> PhotoError.UNSUPPORTED_TYPE
+            !MediaRules.isSizeAllowed(file.bytes.size.toLong()) -> PhotoError.TOO_LARGE
+            else -> null
+        }
+        if (error != null || format == null) {
+            updatePersonScreen(instance) { it.copy(photo = PhotoUpload(error = error)) }
+            return
+        }
+        runPhotoChange(instance, PendingPhoto(format.contentType, file.bytes))
+    }
+
+    private enum class PhotoStep { UPLOAD, VERIFY, ATTACH }
+
+    /**
+     * Presign → `PUT` straight to storage → finalize → attach at the person's current
+     * version. Each step's result is kept in [PendingPhoto] so a retry skips what
+     * already succeeded; finalizing again is safe on the server.
+     */
+    private fun runPhotoChange(instance: Long, start: PendingPhoto) {
+        val page = currentPersonScreen(instance) ?: return
+        if (page.photo?.busy == true) return
+        updatePersonScreen(instance) { it.copy(photo = PhotoUpload(busy = true, pending = start)) }
+        inSession { owner ->
+            var pending = start
+            var step = PhotoStep.UPLOAD
+            try {
+                val mediaId = pending.mediaId ?: run {
+                    val upload = api.createMediaUpload(
+                        page.treeId,
+                        CreateMediaUploadRequest(MediaPurpose.PROFILE_PHOTO.name, pending.contentType, pending.bytes.size.toLong()),
+                    )
+                    transfer.upload(upload.upload, pending.bytes)
+                    upload.media.id
+                }
+                pending = pending.withMedia(mediaId)
+                step = PhotoStep.VERIFY
+                api.finalizeMedia(page.treeId, mediaId)
+                step = PhotoStep.ATTACH
+                val current = currentPersonScreen(instance)?.person?.valueOrNull ?: return@inSession
+                val updated = api.setProfilePhoto(page.treeId, current.id, mediaId, current.version)
+                if (!isCurrent(owner)) return@inSession
+                updatePersonScreen(instance) { it.copy(person = Loadable.Ready(updated), photo = null) }
+                updated.profileMediaId?.let { loadPhoto(page.treeId, it) }
+            } catch (e: ApiException) {
+                if (!isCurrent(owner)) return@inSession
+                val error = photoErrorFor(e.failure, step)
+                // What a retry starts from: a failed transfer or an upload the server didn't
+                // accept starts over; otherwise the upload is reused.
+                val retryFrom = when {
+                    error == PhotoError.INVALID_IMAGE -> null
+                    step == PhotoStep.UPLOAD || (step == PhotoStep.VERIFY && e.failure == ApiFailure.CONFLICT) -> pending.withMedia(null)
+                    else -> pending
+                }
+                if (error == PhotoError.CHANGED) reloadPerson(instance)
+                updatePersonScreen(instance) { it.copy(photo = PhotoUpload(error = error, pending = retryFrom)) }
+            }
+        }
+    }
+
+    /** Re-reads the person on screen after a `409`, so a retry uses the version now stored. */
+    private suspend fun reloadPerson(instance: Long) {
+        val page = currentPersonScreen(instance) ?: return
+        val person = load {
+            api.person(page.treeId, page.personId).also {
+                requireRoute(it.treeId, page.treeId)
+                requireRoute(it.id, page.personId)
+            }
+        }
+        if (person is Loadable.Ready) {
+            updatePersonScreen(instance) { it.copy(person = person) }
+            person.value.profileMediaId?.let { loadPhoto(page.treeId, it) }
+        }
+    }
+
+    private fun photoErrorFor(failure: ApiFailure, step: PhotoStep): PhotoError = when {
+        step == PhotoStep.UPLOAD && failure in setOf(ApiFailure.UNAVAILABLE, ApiFailure.FORBIDDEN, ApiFailure.NOT_FOUND) ->
+            PhotoError.UPLOAD_FAILED
+        step == PhotoStep.VERIFY && failure == ApiFailure.INVALID -> PhotoError.INVALID_IMAGE
+        step == PhotoStep.VERIFY && failure == ApiFailure.CONFLICT -> PhotoError.UPLOAD_FAILED
+        step == PhotoStep.ATTACH && failure == ApiFailure.CONFLICT -> PhotoError.CHANGED
+        failure == ApiFailure.FORBIDDEN -> PhotoError.FORBIDDEN
+        failure == ApiFailure.NOT_FOUND -> PhotoError.NOT_FOUND
+        failure == ApiFailure.UNAVAILABLE -> PhotoError.UNAVAILABLE
+        else -> PhotoError.SERVER
+    }
+
+    /** The person page on screen, if its person is loaded, visible, and the caller may change it. */
+    private fun editablePhotoPage(): PersonScreen? {
+        val page = _state.value.personScreen?.takeIf { isOnRoute(_state.value.route, it) } ?: return null
+        val tree = page.tree.valueOrNull ?: return null
+        val account = _state.value.account.valueOrNull ?: return null
+        val person = page.person.valueOrNull ?: return null
+        val viewer = Viewer(tree, account)
+        return page.takeIf { viewer.canWrite && viewer.canSeeDetails(person) }
+    }
+
+    private fun putPhoto(key: PhotoKey, value: Loadable<ByteArray>) = _state.update { state ->
+        val photos = LinkedHashMap(state.photos)
+        photos.remove(key)
+        photos[key] = value
+        while (photos.size > MAX_CACHED_PHOTOS) photos.remove(photos.keys.first())
+        state.copy(photos = photos)
+    }
 
     private fun onAuth(auth: AuthState) {
         if (auth is AuthState.SignedIn) {
@@ -549,6 +740,8 @@ class FamilyTreeController(
             updatePersonScreen(instance) { it.copy(tree = tree, person = person) }
             loadPersonFamily(instance)
             loadPersonTimeline(instance)
+            // FT-008: the server sends a photo ID only for a person this caller may see.
+            (person as? Loadable.Ready)?.value?.profileMediaId?.let { loadPhoto(target.treeId, it) }
         }
     }
 
@@ -661,6 +854,9 @@ class FamilyTreeController(
         }
 
     companion object {
+        /** Images kept for display at once (FT-008); the oldest is dropped first. */
+        internal const val MAX_CACHED_PHOTOS = 40
+
         /** People in name order, so the layout and pickers are stable between reloads. */
         internal fun sortedGraph(graph: TreeGraphDto): TreeGraphDto =
             graph.copy(people = graph.people.sortedWith(compareBy({ Viewer.sortKey(it).lowercase() }, { it.id })))

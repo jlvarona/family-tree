@@ -14,6 +14,7 @@ import com.moxietech.family_tree.domain.Union
 import com.moxietech.family_tree.domain.UnionChild
 import com.moxietech.family_tree.format.DuplicatePersonScorer
 import com.moxietech.family_tree.permissions.PersonVisibility
+import com.moxietech.family_tree.server.media.MediaAttachment
 
 /**
  * The one place responses are shaped for living-person privacy (FT-066).
@@ -70,6 +71,20 @@ class ViewerPolicy(private val tree: Tree, private val callerAccountId: AccountI
 
     /** Whether this caller can see every one of [people]. */
     fun canSeeAll(people: List<Person>): Boolean = people.all(::canSee)
+
+    /**
+     * FT-008: whether this caller may read a verified image, from what it is attached
+     * to. A profile photo follows its person ([project] already drops the photo ID of a
+     * hidden person); a citation scan follows the citation ([citationsOn]: every person
+     * the fact is about must be visible). An unattached image (not used yet, or replaced)
+     * is the tree owner's only. The owner sees everyone in Phase 1, so every image of
+     * the tree. FT-013 widens [canSee] with grants without changing this.
+     */
+    fun canSeeMedia(attachment: MediaAttachment): Boolean = when (attachment) {
+        is MediaAttachment.ProfilePhotoOf -> canSee(attachment.person)
+        is MediaAttachment.ScanOf -> canSeeAll(attachment.subjects)
+        MediaAttachment.Unattached -> tree.ownerAccountId == callerAccountId
+    }
 
     /**
      * Duplicate candidates for a new person, scored only against people this
