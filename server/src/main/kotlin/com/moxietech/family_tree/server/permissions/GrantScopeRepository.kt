@@ -1,5 +1,6 @@
 package com.moxietech.family_tree.server.permissions
 
+import com.moxietech.family_tree.domain.Branch
 import com.moxietech.family_tree.domain.BranchDirection
 import com.moxietech.family_tree.domain.Grant
 import java.sql.Connection
@@ -41,8 +42,14 @@ internal object GrantScopeRepository {
      * the cache or taking locks. Usable inside any transaction, including a read-only
      * `REPEATABLE READ` snapshot. [grant] must belong to [treeId].
      */
-    fun resolve(treeId: Uuid, grant: Grant): Set<Uuid> = withJdbc { connection ->
-        val query = scopeQuery(treeId, grant)
+    fun resolve(treeId: Uuid, grant: Grant): Set<Uuid> = resolveBranch(treeId, scopedBranch(treeId, grant))
+
+    /**
+     * FT-011: any [branch] in [treeId] (a member's home branch), resolved by the same CTE
+     * as a grant, without the cache. An anchor outside [treeId] resolves to nobody.
+     */
+    fun resolveBranch(treeId: Uuid, branch: Branch): Set<Uuid> = withJdbc { connection ->
+        val query = scopeQuery(treeId, branch)
         connection.prepare(query.sql, query.params).use { st ->
             st.executeQuery().use { rs -> buildSet { while (rs.next()) add(Uuid.parse(rs.getString(1))) } }
         }
@@ -89,7 +96,7 @@ internal object GrantScopeRepository {
         val grantId = Uuid.parse(grant.id.value)
         withJdbc { connection ->
             connection.prepare("delete from grant_scope where grant_id = ? and tree_id = ?", listOf(grantId, treeId)).use { it.executeUpdate() }
-            val query = scopeQuery(treeId, grant)
+            val query = scopeQuery(treeId, scopedBranch(treeId, grant))
             connection.prepare(
                 "insert into grant_scope (grant_id, tree_id, person_id) select ?, ?, scope.id from (${query.sql}) as scope",
                 listOf<Any>(grantId, treeId) + query.params,
@@ -120,9 +127,12 @@ internal object GrantScopeRepository {
         }
     }
 
-    private fun scopeQuery(treeId: Uuid, grant: Grant): Query {
+    private fun scopedBranch(treeId: Uuid, grant: Grant): Branch {
         require(grant.treeId.value == treeId.toString()) { "Grant ${grant.id.value} is not in tree $treeId" }
-        val branch = grant.branch
+        return grant.branch
+    }
+
+    private fun scopeQuery(treeId: Uuid, branch: Branch): Query {
         val q = Builder()
         q.add("with recursive anchor(id) as (select p.id from person p where p.id = ? and p.tree_id = ?),", Uuid.parse(branch.anchorPersonId.value), treeId)
 

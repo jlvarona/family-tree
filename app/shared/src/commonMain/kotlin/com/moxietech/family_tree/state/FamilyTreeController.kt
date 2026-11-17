@@ -12,7 +12,9 @@ import com.moxietech.family_tree.api.UnionDto
 import com.moxietech.family_tree.auth.AuthSession
 import com.moxietech.family_tree.auth.AuthState
 import com.moxietech.family_tree.auth.BrowserBridge
+import com.moxietech.family_tree.auth.BrowserFeatureException
 import com.moxietech.family_tree.auth.UrlParts
+import com.moxietech.family_tree.navigation.InvitationLink
 import com.moxietech.family_tree.client.ApiException
 import com.moxietech.family_tree.client.ApiFailure
 import com.moxietech.family_tree.client.FamilyTreeApi
@@ -71,6 +73,9 @@ class FamilyTreeController(
     private var nextInstance = 1L
 
     fun start() {
+        // First, before the session reads the URL: an invitation link's token leaves the
+        // address bar (and so the history entry and any sign-in return route) at once.
+        takeInvitationFromUrl()
         bridge.onHashChange(::onLocationChanged)
         scope.launch { session.state.collect { onAuth(it) } }
         scope.launch { session.start() }
@@ -82,6 +87,7 @@ class FamilyTreeController(
     }
 
     fun signOut() {
+        dropInvitation()
         resetSession()
         _state.value = AppState(auth = AuthState.SignedOut(), route = _state.value.route)
         session.signOut()
@@ -253,6 +259,95 @@ class FamilyTreeController(
             // Either way the graph may have changed (a new union), so show the saved state.
             if (isCurrent(owner)) refreshTree(screen.instance)
         }
+    }
+
+    // --- FT-011: accepting an invitation link ---------------------------------------------
+
+    /**
+     * The invitation of the join page on screen, held for this tab only: in memory, and in
+     * sessionStorage so it survives the sign-in redirect. Kept until a definitive answer
+     * (accepted, or refused with `404`/`409`/`403`/`400`), sign-out, or leaving the page.
+     */
+    private var invitation: InvitationLink? = null
+
+    /**
+     * Accepts the invitation on the join page with the signed-in account; the server
+     * decides who that is (token issuer and subject) and checks everything again. On
+     * success the trees are reloaded and the tree opens.
+     */
+    fun acceptInvitation() {
+        val screen = _state.value.joinScreen ?: return
+        if (screen.accepting || _state.value.route != Route.JoinTree(screen.treeId)) return
+        val link = invitationFor(screen.treeId)
+            ?: return updateJoin(screen.instance) { it.copy(hasInvitation = false, error = null) }
+        updateJoin(screen.instance) { it.copy(accepting = true, error = null) }
+        inSession { owner ->
+            try {
+                api.redeemInvitation(link.treeId, link.token)
+                if (invitation === link) dropInvitation()
+                if (!isCurrent(owner)) return@inSession
+                loadTrees()
+                if (_state.value.joinScreen?.instance == screen.instance) navigate(Route.Tree(link.treeId))
+            } catch (e: ApiException) {
+                val retryable = e.failure in RETRYABLE_JOIN_FAILURES
+                if (!retryable && invitation === link) dropInvitation()
+                if (isCurrent(owner)) {
+                    updateJoin(screen.instance) {
+                        it.copy(accepting = false, hasInvitation = retryable, error = joinErrorFor(e.failure))
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Takes an invitation link's token out of the address bar: the URL is replaced by the
+     * bare join route before anything else reads it, malformed links included. A
+     * well-formed link is kept for this tab (replacing any earlier one). True when the URL
+     * was a link.
+     */
+    private fun takeInvitationFromUrl(): Boolean {
+        val url = UrlParts(bridge.currentUrl())
+        if (!url.fragmentIsRoute || !InvitationLink.isLink(url.fragment)) return false
+        val route = Route.parse(url.fragment)
+        bridge.replaceUrl(url.base + "#" + route.toFragment())
+        dropInvitation()
+        InvitationLink.parse(url.fragment)?.let(::keepInvitation)
+        return true
+    }
+
+    private fun keepInvitation(link: InvitationLink) {
+        invitation = link
+        try {
+            bridge.sessionSet(INVITATION_KEY, link.encode())
+        } catch (e: BrowserFeatureException) {
+            // Kept in memory only: accepting works in this page, but not across a sign-in redirect.
+        }
+    }
+
+    /** The held invitation for [treeId] (restored after a sign-in redirect), or null; one for another tree is dropped. */
+    private fun invitationFor(treeId: String): InvitationLink? {
+        if (invitation == null) {
+            invitation = try {
+                bridge.sessionGet(INVITATION_KEY)?.let(InvitationLink::decode)
+            } catch (e: BrowserFeatureException) {
+                null
+            }
+        }
+        val held = invitation ?: return null
+        if (Route.sameId(held.treeId, treeId)) return held
+        dropInvitation()
+        return null
+    }
+
+    private fun dropInvitation() {
+        invitation = null
+        bridge.sessionRemove(INVITATION_KEY)
+    }
+
+    private fun updateJoin(instance: Long, change: (JoinScreen) -> JoinScreen) = _state.update { state ->
+        val screen = state.joinScreen
+        if (screen == null || screen.instance != instance) state else state.copy(joinScreen = change(screen))
     }
 
     // --- FT-007: merging two records of one person (owner only) ------------------------
@@ -769,8 +864,10 @@ class FamilyTreeController(
     }
 
     private fun onLocationChanged() {
+        // A link pasted into this tab while already on its join page still refreshes the page.
+        val tookLink = takeInvitationFromUrl()
         val route = currentRoute()
-        if (route != _state.value.route) showRoute(route)
+        if (route != _state.value.route || tookLink) showRoute(route)
     }
 
     private fun showRoute(route: Route) {
@@ -778,9 +875,15 @@ class FamilyTreeController(
         // Every route change leaves the person page on screen (a person route opens a new
         // one), so its citation and source requests stop, running or queued.
         cancelCitationWork()
-        _state.update { it.copy(route = route, form = FormState()) }
+        // FT-011: the invitation lives only as long as its join page.
+        if (route !is Route.JoinTree) dropInvitation()
+        _state.update { it.copy(route = route, form = FormState(), joinScreen = null) }
         if (_state.value.auth !is AuthState.SignedIn) return
         when (route) {
+            is Route.JoinTree -> {
+                val screen = JoinScreen(route.treeId, nextInstance++, hasInvitation = invitationFor(route.treeId) != null)
+                _state.update { it.copy(joinScreen = screen) }
+            }
             Route.Trees -> {
                 _state.update { it.copy(treeScreen = null, personScreen = null) }
                 if (_state.value.trees !is Loadable.Ready) loadTrees()
@@ -1081,6 +1184,19 @@ class FamilyTreeController(
             ApiFailure.INVALID -> MergeError.INVALID
             ApiFailure.UNAVAILABLE -> MergeError.UNAVAILABLE
             ApiFailure.SESSION_EXPIRED, ApiFailure.SERVER -> MergeError.SERVER
+        }
+
+        /** FT-011: sessionStorage key of the invitation held across the sign-in redirect. */
+        internal const val INVITATION_KEY = "family-tree.invitation"
+
+        /** Failures after which the invitation may still be valid, so its token is kept for a retry. */
+        private val RETRYABLE_JOIN_FAILURES = setOf(ApiFailure.UNAVAILABLE, ApiFailure.SERVER, ApiFailure.SESSION_EXPIRED)
+
+        internal fun joinErrorFor(failure: ApiFailure): JoinError = when (failure) {
+            ApiFailure.NOT_FOUND, ApiFailure.INVALID -> JoinError.NOT_VALID
+            ApiFailure.CONFLICT, ApiFailure.FORBIDDEN -> JoinError.CANNOT_ACCEPT
+            ApiFailure.UNAVAILABLE -> JoinError.UNAVAILABLE
+            ApiFailure.SESSION_EXPIRED, ApiFailure.SERVER -> JoinError.SERVER
         }
 
         internal fun formErrorFor(failure: ApiFailure): FormError = when (failure) {

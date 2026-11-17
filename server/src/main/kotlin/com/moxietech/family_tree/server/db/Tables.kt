@@ -156,7 +156,41 @@ object MembershipTable : Table("membership") {
     val accountId = uuid("account_id") references AccountTable.id
     val personId = (uuid("person_id") references PersonTable.id).nullable()
     val status = text("status")
+    /** FT-011 (V9): advances on every change; a person is linked to at most one membership per tree. */
+    val version = long("version")
     override val primaryKey = PrimaryKey(treeId, accountId)
+}
+
+/**
+ * FT-011 (V9): a pending invitation. [tokenDigest] is the SHA-256 of the secret token,
+ * which is never stored; the row is deleted when the invitation is accepted or revoked.
+ * [email] is a delivery address, never an identity.
+ */
+object InvitationTable : Table("invitation") {
+    val id = uuid("id")
+    val treeId = uuid("tree_id") references TreeTable.id
+    val tokenDigest = binary("token_digest")
+    val email = text("email").nullable()
+    val personId = uuid("person_id").nullable()
+    val expiresAt = timestamp("expires_at")
+    val createdByAccountId = uuid("created_by_account_id") references AccountTable.id
+    val createdAt = timestamp("created_at")
+    val version = long("version")
+    override val primaryKey = PrimaryKey(id)
+}
+
+/** FT-011 (V9): a grant proposed by an invitation, created as a `tree_grant` on acceptance. */
+object InvitationGrantTable : Table("invitation_grant") {
+    val id = uuid("id")
+    val invitationId = uuid("invitation_id")
+    val treeId = uuid("tree_id") references TreeTable.id
+    val ordinal = integer("ordinal")
+    val role = text("role")
+    val anchorPersonId = uuid("anchor_person_id")
+    val direction = text("direction")
+    val depth = integer("depth").nullable()
+    val includePartners = bool("include_partners")
+    override val primaryKey = PrimaryKey(id)
 }
 
 /**

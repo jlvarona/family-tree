@@ -71,6 +71,19 @@ class HttpFamilyTreeApiTest {
     }
 
     @Test
+    fun anInvitationIsRedeemedInItsTreeWithTheTokenOnlyInTheBody() = runTest {
+        val token = "abcDEF0123456789_-abcDEF0123456789_-abcDEF0"
+        val api = api(
+            Tokens(),
+            HttpStatusCode.OK to """{"member":{"treeId":"t1","accountId":"a","displayName":"Dev","status":"ACTIVE","version":1},"grants":[]}""",
+        )
+
+        assertEquals("ACTIVE", api.redeemInvitation("t1", token).member.status)
+        assertEquals("http://localhost:3000/api/v1/trees/t1/invitations/redeem", seen.single().first)
+        assertEquals(HttpMethod.Post to """{"token":"$token"}""", sent.single())
+    }
+
+    @Test
     fun unauthorizedRetriesOnceWithARefreshedToken() = runTest {
         val tokens = Tokens()
         val api = api(

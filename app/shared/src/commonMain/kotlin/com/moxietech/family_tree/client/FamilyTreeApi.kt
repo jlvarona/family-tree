@@ -16,6 +16,8 @@ import com.moxietech.family_tree.api.SetProfilePhotoRequest
 import com.moxietech.family_tree.api.MergePeopleRequest
 import com.moxietech.family_tree.api.MergePeopleResponse
 import com.moxietech.family_tree.api.PersonDto
+import com.moxietech.family_tree.api.RedeemInvitationRequest
+import com.moxietech.family_tree.api.RedeemInvitationResponse
 import com.moxietech.family_tree.api.SourceDto
 import com.moxietech.family_tree.api.TreeDto
 import com.moxietech.family_tree.api.TreeGraphDto
@@ -128,6 +130,14 @@ interface FamilyTreeApi {
      * for a person or union with a hidden subject, and `404` for an event it hides.
      */
     suspend fun citations(treeId: String, target: CitationTarget): List<CitationDto>
+
+    /**
+     * FT-011: accepts an invitation to [treeId] (`POST …/trees/{treeId}/invitations/redeem`)
+     * with [token] in the body only. `404`: not a valid invitation (unknown, expired,
+     * revoked, already used, another tree's or invitations are off); `409`: this account
+     * can't accept it (already a member, the person is taken, or an email invitation).
+     */
+    suspend fun redeemInvitation(treeId: String, token: String): RedeemInvitationResponse
 }
 
 /** The API's `targetType` for a `:core` citation target (FT-002). */
@@ -233,6 +243,13 @@ class HttpFamilyTreeApi(
     override suspend fun citations(treeId: String, target: CitationTarget): List<CitationDto> = get(
         "/trees/${seg(treeId)}/${target.collection}/${seg(target.targetId)}/citations",
         ListSerializer(CitationDto.serializer()),
+    )
+
+    override suspend fun redeemInvitation(treeId: String, token: String): RedeemInvitationResponse = post(
+        "/trees/${seg(treeId)}/invitations/redeem",
+        RedeemInvitationRequest.serializer(),
+        RedeemInvitationRequest(token),
+        RedeemInvitationResponse.serializer(),
     )
 
     private suspend fun <T> get(path: String, result: DeserializationStrategy<T>): T =

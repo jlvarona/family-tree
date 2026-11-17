@@ -247,7 +247,36 @@ data class AppState(
      * session like everything else, and capped in size.
      */
     val photos: Map<PhotoKey, Loadable<ByteArray>> = emptyMap(),
+    /** FT-011: the join page, while the route is `#/trees/{treeId}/join`. */
+    val joinScreen: JoinScreen? = null,
 )
+
+/**
+ * FT-011: one opening of the join page for an invitation to [treeId]. [hasInvitation]
+ * is whether this tab still holds the link's token (it is dropped after a definitive
+ * answer, on sign-out and when leaving the page). The token itself is never in the state.
+ */
+data class JoinScreen(
+    val treeId: String,
+    val instance: Long = 0,
+    val hasInvitation: Boolean,
+    val accepting: Boolean = false,
+    val error: JoinError? = null,
+)
+
+enum class JoinError {
+    /** `404` (or `400`): unknown, expired, revoked, already used, or another tree's. The token is dropped. */
+    NOT_VALID,
+
+    /** `409` or `403`: this account can't accept it (already a member, the person is taken, an email invitation). Dropped. */
+    CANNOT_ACCEPT,
+
+    /** The API couldn't be reached; the token is kept for a retry. */
+    UNAVAILABLE,
+
+    /** Any other failure; the token is kept for a retry. */
+    SERVER,
+}
 
 data class PersonInput(
     val givenNames: String,

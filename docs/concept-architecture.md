@@ -92,10 +92,10 @@ Families are modelled the way GEDCOM does: people connect through **Union** reco
 | --- | --- | --- |
 | Account | id, oidc_issuer + oidc_subject, email, name, locale | A login; can belong to many trees. Found by the verified issuer + subject; email is profile data |
 | Tree | id, name, owner_account_id, settings | Tenant boundary; every row below carries tree_id |
-| Membership | tree_id, account_id, person_id, status | person_id = the member's own person (drives home branch) |
+| Membership | tree_id, account_id, person_id, status, version | person_id = the member's own person (drives home branch); a person is linked to at most one member (FT-011, V9) |
 | Grant | membership (tree_id + account_id), role, anchor_person_id, direction, depth, include_partners, version | Branch-scoped permission. FT-010 (V7, V8) stores it as `tree_grant` |
 | GrantScope (cache) | grant_id, tree_id, person_id; stamp: grant version + tree graph generation | Resolved person set, used only while both stamps are current; otherwise computed in the reader's snapshot or refreshed (FT-010) |
-| Invitation | tree_id, email, token, person_id, proposed grants, expires_at | Email or shareable link |
+| Invitation | tree_id, email, token, person_id, proposed grants, expires_at | Email or shareable link. FT-011 (V9) stores only a SHA-256 digest of the token; the row exists only while pending (accepting or revoking deletes it) |
 | Person | id, tree_id, given_names, surname_paternal, surname_maternal, sex, is_living, profile_media_id, bio (rich text JSON), created_by | |
 | Event | person_id or union_id, type, date, place_id, notes | Dates as GEDCOM-style text + sortable range ("abt 1890") |
 | Union | id, tree_id, partner1_id, partner2_id, type, start/end | Married, divorced, partners, unknown |
@@ -233,4 +233,5 @@ Launch is free and invitation-only; trees are private, with no linking between f
 
 
 - [ ] Citations: which source types matter most (vital records, census, church records, newspapers, family bibles, oral history)?
+- [ ] Invitations (FT-011): who can claim an **email-addressed** invitation? For example, only a signed-in account whose verified email matches the address, or anyone holding the link. Until decided, email invitations are created and delivered (local capture only) but can't be accepted (`409`); the token alone never claims one. Link invitations, which carry no address, are unaffected.
 - [ ] Photos (FT-008 follow-ups): should the owner be able to keep a photo's location, and who would see it? Should replaced, unchosen (merge) and unused uploads be listed, reused or deleted? Should HEIC/WebP or CMYK JPEGs be accepted (converted server-side)?

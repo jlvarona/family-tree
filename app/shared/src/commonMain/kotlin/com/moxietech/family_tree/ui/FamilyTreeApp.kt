@@ -39,6 +39,8 @@ import com.moxietech.family_tree.state.Loadable
 import com.moxietech.family_tree.state.valueOrNull
 import family_tree.app.shared.generated.resources.Res
 import family_tree.app.shared.generated.resources.app_name
+import family_tree.app.shared.generated.resources.join_sign_in_body
+import family_tree.app.shared.generated.resources.join_title
 import family_tree.app.shared.generated.resources.my_trees
 import family_tree.app.shared.generated.resources.session_expired
 import family_tree.app.shared.generated.resources.sign_in
@@ -63,7 +65,7 @@ fun FamilyTreeApp(controller: FamilyTreeController) {
         Surface(Modifier.fillMaxSize(), color = Palette.background) {
             when (val auth = state.auth) {
                 AuthState.Starting, AuthState.Redirecting -> LoadingPane(message = Res.string.signing_in)
-                is AuthState.SignedOut -> SignInScreen(auth.reason, onSignIn = controller::signIn)
+                is AuthState.SignedOut -> SignInScreen(auth.reason, invited = state.route is Route.JoinTree, onSignIn = controller::signIn)
                 is AuthState.SignedIn -> SignedInShell(state, controller)
             }
         }
@@ -71,7 +73,7 @@ fun FamilyTreeApp(controller: FamilyTreeController) {
 }
 
 @Composable
-private fun SignInScreen(reason: SignedOutReason?, onSignIn: () -> Unit) {
+private fun SignInScreen(reason: SignedOutReason?, invited: Boolean, onSignIn: () -> Unit) {
     Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
         Column(
             modifier = Modifier.widthIn(max = 440.dp),
@@ -79,8 +81,13 @@ private fun SignInScreen(reason: SignedOutReason?, onSignIn: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Text(stringResource(Res.string.app_name), fontSize = 28.sp, fontWeight = FontWeight.SemiBold)
-            Text(stringResource(Res.string.sign_in_title), fontSize = 18.sp, textAlign = TextAlign.Center)
-            Text(stringResource(Res.string.sign_in_body), color = Palette.muted, textAlign = TextAlign.Center)
+            // FT-011: an invitation link opened while signed out says what signing in is for.
+            Text(stringResource(if (invited) Res.string.join_title else Res.string.sign_in_title), fontSize = 18.sp, textAlign = TextAlign.Center)
+            Text(
+                stringResource(if (invited) Res.string.join_sign_in_body else Res.string.sign_in_body),
+                color = Palette.muted,
+                textAlign = TextAlign.Center,
+            )
             val message = when (reason) {
                 SignedOutReason.SESSION_EXPIRED -> Res.string.session_expired
                 SignedOutReason.SIGN_IN_FAILED -> Res.string.sign_in_failed
@@ -120,6 +127,10 @@ private fun SignedInShell(state: AppState, controller: FamilyTreeController) {
                         ?.takeIf { it.treeId == route.treeId && it.personId == route.personId }
                         ?.let { PersonPage(it, account.value, controller) }
                         ?: LoadingPane()
+                    is Route.JoinTree -> state.joinScreen
+                        ?.takeIf { it.treeId == route.treeId }
+                        ?.let { JoinTreeScreen(it, controller) }
+                        ?: LoadingPane()
                 }
             }
         }
@@ -150,7 +161,7 @@ private fun Header(state: AppState, account: AccountDto?, controller: FamilyTree
         val treeName = when (state.route) {
             is Route.Tree -> state.treeScreen?.tree?.valueOrNull?.name
             is Route.Person -> state.personScreen?.tree?.valueOrNull?.name
-            Route.Trees -> null
+            Route.Trees, is Route.JoinTree -> null
         }
         if (treeName != null) {
             Text(treeName, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)

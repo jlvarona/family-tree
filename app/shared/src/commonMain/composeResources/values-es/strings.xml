@@ -211,4 +211,14 @@
     <string name="source_type_family_bible">Biblia familiar</string>
     <string name="source_type_oral_history">Historia oral</string>
     <string name="source_type_other">Otra fuente</string>
+
+    <!-- FT-011: aceptar una invitación -->
+    <string name="join_title">Te han invitado a un árbol genealógico</string>
+    <string name="join_sign_in_body">Inicia sesión para aceptar la invitación que te enviaron.</string>
+    <string name="join_body">Al aceptar, este árbol se añade a tus árboles con el acceso que eligió su propietario.</string>
+    <string name="join_accept">Aceptar invitación</string>
+    <string name="join_accepting">Aceptando…</string>
+    <string name="join_missing">Esta página ya no contiene una invitación. Vuelve a abrir el enlace que te enviaron, en esta pestaña.</string>
+    <string name="join_not_valid">Esta invitación ya no es válida: puede haber caducado, haberse retirado o haberse usado ya. Pide una nueva al propietario del árbol.</string>
+    <string name="join_cannot_accept">Esta invitación no se puede aceptar con esta cuenta. Puede que ya seas miembro del árbol, o el propietario tiene que enviarte otra invitación.</string>
 </resources>

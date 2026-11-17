@@ -27,6 +27,9 @@ enum class TreeViewKind(val token: String) {
  * - `#/` — the tree list
  * - `#/trees/{treeId}?view=ancestors&root={personId}` — a tree view
  * - `#/trees/{treeId}/people/{personId}` — a person's page (FT-006)
+ * - `#/trees/{treeId}/join` — accepting an invitation to the tree (FT-011). The link
+ *   the invitee opens also carries `?token=…`; [InvitationLink] takes the token out
+ *   of the address bar before anything else runs, so the route itself never holds it.
  *
  * IDs are opaque here; the API validates them and answers `404` for anything
  * that isn't a person or tree the caller can read.
@@ -42,6 +45,9 @@ sealed interface Route {
 
     data class Person(val treeId: String, val personId: String) : Route
 
+    /** FT-011: the join page for an invitation to [treeId]; the token is never part of the route. */
+    data class JoinTree(val treeId: String) : Route
+
     /** The fragment, without `#`. */
     fun toFragment(): String = when (this) {
         Trees -> "/"
@@ -54,6 +60,7 @@ sealed interface Route {
             if (!params.isEmpty()) append('?').append(params.formUrlEncode())
         }
         is Person -> "/trees/${treeId.encodeURLParameter()}/people/${personId.encodeURLParameter()}"
+        is JoinTree -> "/trees/${treeId.encodeURLParameter()}/$JOIN_SEGMENT"
     }
 
     companion object {
@@ -78,9 +85,13 @@ sealed interface Route {
                 segments.size == 4 && segments[0] == "trees" && segments[2] == "people" &&
                     segments[1].isNotBlank() && segments[3].isNotBlank() ->
                     Person(canonicalId(segments[1]), canonicalId(segments[3]))
+                segments.size == 3 && segments[0] == "trees" && segments[2] == JOIN_SEGMENT && segments[1].isNotBlank() ->
+                    JoinTree(canonicalId(segments[1]))
                 else -> Trees
             }
         }
+
+        internal const val JOIN_SEGMENT = "join"
 
         /**
          * A valid UUID in any spelling the API accepts (dashed or hex-only, any

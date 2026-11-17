@@ -67,7 +67,7 @@ object GrantScopeService {
         GrantScopeRepository.cached(treeId, grantId) ?: rebuild(treeId, grantId)
     }
 
-    private fun checkSnapshotIsolation() {
+    internal fun checkSnapshotIsolation() {
         val isolation = TransactionManager.currentOrNull()?.transactionIsolation
         check(isolation == Connection.TRANSACTION_REPEATABLE_READ || isolation == Connection.TRANSACTION_SERIALIZABLE) {
             "Grant scopes must be read in a repeatable read or serializable transaction"
