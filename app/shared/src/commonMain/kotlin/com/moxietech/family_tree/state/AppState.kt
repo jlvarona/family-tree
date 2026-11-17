@@ -1,12 +1,15 @@
 package com.moxietech.family_tree.state
 
 import com.moxietech.family_tree.api.AccountDto
+import com.moxietech.family_tree.api.CitationDto
 import com.moxietech.family_tree.api.EventDto
 import com.moxietech.family_tree.api.PersonDto
+import com.moxietech.family_tree.api.SourceDto
 import com.moxietech.family_tree.api.TreeDto
 import com.moxietech.family_tree.api.TreeGraphDto
 import com.moxietech.family_tree.auth.AuthState
 import com.moxietech.family_tree.client.ApiFailure
+import com.moxietech.family_tree.client.CitedTarget
 import com.moxietech.family_tree.domain.ChildRelation
 import com.moxietech.family_tree.domain.Sex
 import com.moxietech.family_tree.domain.UnionType
@@ -111,7 +114,8 @@ data class BranchKey(val view: TreeViewKind, val rootPersonId: String)
  * One opening of a person's page (FT-006). [tree] and [person] decide whether
  * the page can render at all; [graph] (the FT-004 bundle, for family links)
  * and [events] (the person's timeline) load afterwards and fail on their own,
- * so a failed section shows its own retry without hiding the rest.
+ * so a failed section shows its own retry without hiding the rest. The Sources
+ * section ([sources], [citations]) does the same.
  */
 data class PersonScreen(
     val treeId: String,
@@ -123,6 +127,23 @@ data class PersonScreen(
     val events: Loadable<List<EventDto>> = Loadable.Loading,
     /** The owner's profile-photo change in progress or failed (FT-008); dropped with the page. */
     val photo: PhotoUpload? = null,
+    /**
+     * The tree's sources, which label the citations below. Null until requested; never
+     * requested for a person the client already knows is hidden from the caller.
+     */
+    val sources: Loadable<List<SourceDto>>? = null,
+    /**
+     * Citations on the facts of this page (FT-002 routes): the person, each timeline
+     * event once [events] loaded, and each of the person's unions once [graph] loaded.
+     * Each target loads and fails on its own; only requested targets have an entry.
+     */
+    val citations: Map<CitedTarget, Loadable<List<CitationDto>>> = emptyMap(),
+    /**
+     * Citation scans the user opened on this page, oldest first (media IDs). Only these
+     * are fetched, and at most `FamilyTreeController.MAX_OPEN_SCANS` at once, so the
+     * images on screen stay within the photo cache.
+     */
+    val openScans: List<String> = emptyList(),
 )
 
 /**

@@ -182,4 +182,33 @@
     <string name="photo_load_failed">No se pudo cargar la foto.</string>
     <string name="merge_photo">Foto de perfil</string>
     <string name="merge_no_photo">Sin foto</string>
+
+    <!-- Fuentes y citas en la página de la persona (continuación de FT-006) -->
+    <string name="sources">Fuentes</string>
+    <string name="sources_empty">Todavía no se ha citado ninguna fuente para esta persona.</string>
+    <string name="sources_private">Las fuentes de las personas vivas solo se muestran a los miembros con acceso.</string>
+    <string name="sources_incomplete">Las fuentes de la cronología y la familia aparecerán cuando se carguen esas secciones.</string>
+    <string name="source_unknown">Fuente desconocida</string>
+    <string name="source_count_one">1 fuente</string>
+    <string name="source_count_many">%1$d fuentes</string>
+    <string name="source_none_yet">Sin fuente todavía</string>
+    <string name="citations_show">Mostrar fuentes</string>
+    <string name="citations_hide">Ocultar fuentes</string>
+    <string name="citation_supports">Respalda: %1$s</string>
+    <string name="citation_supports_person">los datos de esta persona</string>
+    <string name="citation_supports_union">%1$s con %2$s</string>
+    <string name="citation_detail">Detalle: %1$s</string>
+    <string name="citation_web_address">Dirección web: %1$s</string>
+    <string name="citation_confidence">Confianza %1$d de %2$d</string>
+    <string name="scan_show">Ver imagen escaneada</string>
+    <string name="scan_hide">Ocultar imagen escaneada</string>
+    <string name="scan_alt">Imagen escaneada citada de %1$s</string>
+    <string name="scan_load_failed">No se pudo cargar la imagen escaneada.</string>
+    <string name="source_type_vital_record">Registro civil</string>
+    <string name="source_type_census">Censo</string>
+    <string name="source_type_church_record">Registro parroquial</string>
+    <string name="source_type_newspaper">Periódico</string>
+    <string name="source_type_family_bible">Biblia familiar</string>
+    <string name="source_type_oral_history">Historia oral</string>
+    <string name="source_type_other">Otra fuente</string>
 </resources>

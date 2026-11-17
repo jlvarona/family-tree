@@ -182,4 +182,33 @@
     <string name="photo_load_failed">The photo couldn’t be loaded.</string>
     <string name="merge_photo">Profile photo</string>
     <string name="merge_no_photo">No photo</string>
+
+    <!-- Sources and citations on the person page (FT-006 follow-up) -->
+    <string name="sources">Sources</string>
+    <string name="sources_empty">No sources have been cited for this person yet.</string>
+    <string name="sources_private">Sources for living people are shown only to members with access.</string>
+    <string name="sources_incomplete">Sources for the timeline and family appear once those sections load.</string>
+    <string name="source_unknown">Unknown source</string>
+    <string name="source_count_one">1 source</string>
+    <string name="source_count_many">%1$d sources</string>
+    <string name="source_none_yet">No source yet</string>
+    <string name="citations_show">Show sources</string>
+    <string name="citations_hide">Hide sources</string>
+    <string name="citation_supports">Supports: %1$s</string>
+    <string name="citation_supports_person">this person’s details</string>
+    <string name="citation_supports_union">%1$s with %2$s</string>
+    <string name="citation_detail">Detail: %1$s</string>
+    <string name="citation_web_address">Web address: %1$s</string>
+    <string name="citation_confidence">Confidence %1$d of %2$d</string>
+    <string name="scan_show">View scan</string>
+    <string name="scan_hide">Hide scan</string>
+    <string name="scan_alt">Scan cited from %1$s</string>
+    <string name="scan_load_failed">The scan couldn’t be loaded.</string>
+    <string name="source_type_vital_record">Vital record</string>
+    <string name="source_type_census">Census</string>
+    <string name="source_type_church_record">Church record</string>
+    <string name="source_type_newspaper">Newspaper</string>
+    <string name="source_type_family_bible">Family Bible</string>
+    <string name="source_type_oral_history">Oral history</string>
+    <string name="source_type_other">Other source</string>
 </resources>

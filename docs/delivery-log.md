@@ -9,6 +9,93 @@ up to date in place, not logged chronologically.
 
 ---
 
+## 2026-11-16 — FT-006 follow-up: read-only citations on the person page
+
+FT-006 deferred source citations until FT-002 and FT-008 existed. The person page now
+shows them, read-only, from the existing routes: no server code, schema, realm or
+route changed, and no write controls were added (the mockup's "Add source" and
+"+ Add event" stay out of scope). The web client gained two calls in `FamilyTreeApi`:
+`sources(treeId)` (`GET …/sources`, FT-097) and `citations(treeId, target)`
+(`GET …/{people|events|unions}/{id}/citations`, FT-002); scans use the FT-008
+`…/media/{id}/download` link the profile photo already uses.
+
+**What the page shows** (laid out from [the mockup](mockups/person-page.dc.html)).
+- Timeline events carry the mockup's "N sources" pill once their citations have loaded;
+  it expands the event's citations in place. An event with none says "No source yet".
+- A **Sources** card under Family (right column; last on narrow screens) lists every
+  citation on the person, on each timeline event and on each of the person's unions,
+  in page order: source title, localized source type, author, publisher, repository
+  and date, "Supports: …" (this person's details, the event type and date, or the union
+  type with the partner's name), the cited detail, the note, the source's web address
+  and "Confidence n of 3" with the mockup's dots. A citation whose source isn't in the
+  tree's list shows "Unknown source".
+- **Scans are fetched only on demand.** "View scan" requests the short-lived link and
+  the image (fitted, not cropped); nothing is downloaded when the page opens. At most
+  two scans stay open (`MAX_OPEN_SCANS`; opening a third closes the oldest); open scans
+  are pinned in the bounded `AppState.photos` cache like the header photo, so the page's
+  images fit the 64 MiB budget at the 20 MiB limit, and a reopened scan comes from the
+  cache. A closed scan that failed is forgotten, so a retry doesn't fetch it.
+
+**Where it lives.** `state/PersonSources.kt` builds the section and the timeline links
+(`citedFacts`, `view`) through `Viewer`; `PersonScreen` gained `sources`, `citations`
+(per target) and `openScans`; `FamilyTreeController` gained `showScan` / `hideScan` and
+`loadPageCitations`; `ui/PersonPage.kt` renders the pill, the card and the citation rows.
+`StoredPhoto` takes an optional `contentScale`.
+
+**Loading and failures.** Each fact's citations are requested as soon as the fact is
+known: the person's and the source list when the person arrives, the events' when the
+timeline arrives, the unions' when the family arrives. Each target loads and fails on
+its own; the card lists what arrived, with a loading line or the localized failure and
+a retry below it. Retry fetches only the failed parts (source list or individual
+targets), and never the timeline or family unless they failed too. If the timeline or
+family failed, the card says their sources appear once those sections load. A `404` on
+a target's list (an event the server now hides, or a fact deleted meanwhile) is shown
+as no citations. Results apply only to the same opening of the page in the same
+session, as for the other sections: a late answer for an earlier person, after leaving
+the page or after the session ended is dropped.
+
+**Privacy and untrusted data.**
+- A living person hidden from the caller shows "Sources for living people are shown
+  only to members with access", and nothing is requested for them once the account is
+  known. Should a response carry citations anyway, they aren't presented.
+- A union is listed (and requested) only when every partner is visible, the server's
+  `citationsOn` rule; the family section still shows that union's type for a hidden
+  partner, unchanged. Before the account has loaded, every union of the person is
+  requested and the server applies the rule; the page still filters with `Viewer`.
+- Citations for another target, sources and records from another tree are dropped
+  (another tree's source leaves the citation as "Unknown source").
+- Source titles, details, pages, notes and web addresses are plain text after
+  `PersonProfile.cleanText` (control and bidi marks removed). **The web address is
+  inert text**: never opened, linked or validated, so a `javascript:` or other value can't run.
+- A scan can be opened only for a citation the page lists for the caller; the server's
+  `canSeeMedia` decides the download regardless.
+
+**EN/ES strings** for the card, counts, supports labels, confidence, scans and the
+seven `SourceType` names (anything else is "Other source"; FT-062 still decides which
+source types to prioritize).
+
+**Tests added (`:app:shared` commonTest).**
+- `PersonSourcesTest` (7): the owner's citations on person, event and union in page
+  order with source metadata, cleaned text, the inert web address and clamped
+  confidence, a stray citation for another target dropped; empty only once everything
+  answered, with no "unknown source" flash before the source list; a hidden living
+  person is private even if citations arrive; a member sees a deceased person's
+  citations but not those of a union with a hidden partner, whose type the family
+  section keeps; requests without the account; failures and a failed timeline stay in
+  the card; another tree's graph, events and sources are ignored.
+- `FamilyTreeControllerTest` (9 more): person, event and union citations load with the
+  page and no scan is fetched; an empty card; scans fetched only when opened, at most
+  two open, reopened from the cache, and only for a listed citation; a closed failed scan
+  isn't retried; failed citations and source list stay local and retry fetches only
+  them; an event's `404` is no citations; a member makes no citation requests for a
+  hidden person or a union with a hidden partner; late citations after leaving the page
+  and after the session expired are dropped.
+- `HttpFamilyTreeApiTest` (1 more): the sources and citation routes, encoded path IDs,
+  unknown fields tolerated.
+
+**Verification.** Not run in this session: the user runs Gradle (`:app:shared:jvmTest`,
+`:app:shared:jsTest`, `:app:shared:wasmJsTest`) and the browser check before publishing.
+
 ## 2026-11-16 — FT-008 photo upload with presigned URLs
 
 Owners upload profile photos and citation scans straight to an S3-compatible store;
@@ -90,8 +177,8 @@ strings added.
 **Person-page commitments supplied.** FT-006 deferred photos and citations: FT-008
 supplies the header profile photo (view, add, change, remove) and the citation-scan
 API. Still deferred: the per-person gallery and tagging (`MediaTag`), showing
-citations and their scans on the page, crop-to-avatar, thumbnails, and photo upload on
-mobile (FT-023).
+citations and their scans on the page (since added by the FT-006 follow-up),
+crop-to-avatar, thumbnails, and photo upload on mobile (FT-023).
 
 **Local store.** `docker-compose.yml` `s3`: `ghcr.io/chrislusf/seaweedfs:4.54`
 (`mini -dir=/data`, S3 on `127.0.0.1:8333`), credentials from the shell, bucket from
@@ -706,7 +793,7 @@ page uses only existing routes: the person, the FT-004 bundle (for family links)
 `GET …/people/{personId}/events` (for the timeline, newly added to `FamilyTreeApi`).
 Photos (FT-008) and source citations (FT-002) are not shown until their APIs exist;
 the header keeps an initials placeholder where the photo goes. (FT-008 has since added
-the header photo.)
+the header photo, and the FT-006 follow-up the read-only citations.)
 
 **Where it lives.** `state/PersonProfile.kt` turns the DTOs into the page model
 (header, family links, timeline, life facts) through `Viewer`, so privacy uses the
@@ -1776,8 +1863,12 @@ desktop/shared build repair.
   Implemented: the person page in `app/shared` (`state/PersonProfile.kt`,
   `ui/PersonPage.kt`) with header, life story, timeline and family links, loaded
   from the URL through the existing person, bundle and person-events routes. No
-  server, schema or realm change. FT-008 supplies profile photos. The FT-006 follow-up
-  covers web citation display.
+  server, schema or realm change. FT-008 supplies profile photos.
+
+  Deferred requirement delivered (FT-006 follow-up): read-only source citations on
+  the person page from the FT-002 lists, the tree's sources and on-demand FT-008 scans,
+  with timeline events linked to their citations and a Sources card. See the
+  "FT-006 follow-up" delivery entry.
 - **FT-007 Duplicate-merge workflow.** `Done · P1` — PR #19 adds an owner-only
   merge API and a web comparison from the duplicate notice, toolbar, and selected
   person. It preserves relationships, events, membership and citations on the

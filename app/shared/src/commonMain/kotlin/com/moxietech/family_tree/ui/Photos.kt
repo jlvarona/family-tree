@@ -14,9 +14,10 @@ import org.jetbrains.compose.resources.ExperimentalResourceApi
 import org.jetbrains.compose.resources.decodeToImageBitmap
 
 /**
- * FT-008: an image fetched from photo storage, cropped to [size] in [shape], or
- * [fallback] when it can't be decoded. The bytes are the server-cleaned JPEG or PNG
- * (metadata removed except orientation) from a short-lived presigned URL.
+ * FT-008: an image fetched from photo storage, cropped to [size] in [shape] (or
+ * fitted whole, for a citation scan, with [contentScale] `Fit`), or [fallback] when it
+ * can't be decoded. The bytes are the server-cleaned JPEG or PNG (metadata removed
+ * except orientation) from a short-lived presigned URL.
  */
 @Composable
 internal fun StoredPhoto(
@@ -24,6 +25,7 @@ internal fun StoredPhoto(
     description: String,
     size: Int,
     shape: Shape,
+    contentScale: ContentScale = ContentScale.Crop,
     fallback: @Composable () -> Unit,
 ) {
     val bitmap = remember(bytes) { decode(bytes) }
@@ -33,7 +35,7 @@ internal fun StoredPhoto(
         Image(
             bitmap = bitmap,
             contentDescription = description,
-            contentScale = ContentScale.Crop,
+            contentScale = contentScale,
             modifier = Modifier.size(size.dp).clip(shape),
         )
     }

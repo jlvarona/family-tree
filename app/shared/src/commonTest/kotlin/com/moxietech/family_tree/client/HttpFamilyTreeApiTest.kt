@@ -144,6 +144,36 @@ class HttpFamilyTreeApiTest {
     }
 
     @Test
+    fun sourcesAndCitationsAreReadFromTheirRoutesWithEncodedIds() = runTest {
+        val api = api(
+            Tokens(),
+            HttpStatusCode.OK to """[{"id":"s1","treeId":"t1","title":"Parish book","type":"CHURCH_RECORD","author":null,
+                "publisher":null,"repository":null,"url":"https://example.org/x","date":null,"version":1,"futureField":0}]""",
+            HttpStatusCode.OK to """[{"id":"c1","sourceId":"s1","targetType":"EVENT","targetId":"e/1","page":"p. 4",
+                "confidence":3,"note":null,"mediaId":"m1","futureField":"x"}]""",
+            HttpStatusCode.OK to "[]",
+            HttpStatusCode.OK to "[]",
+        )
+
+        assertEquals("Parish book", api.sources("t1").single().title)
+        val citation = api.citations("t1", CitedTarget(CitationKind.EVENT, "e/1")).single()
+        api.citations("t1", CitedTarget(CitationKind.PERSON, "p?1"))
+        api.citations("t1", CitedTarget(CitationKind.UNION, "u1"))
+
+        assertEquals("m1", citation.mediaId)
+        assertEquals(
+            listOf(
+                "http://localhost:3000/api/v1/trees/t1/sources",
+                "http://localhost:3000/api/v1/trees/t1/events/e%2F1/citations",
+                "http://localhost:3000/api/v1/trees/t1/people/p%3F1/citations",
+                "http://localhost:3000/api/v1/trees/t1/unions/u1/citations",
+            ),
+            seen.map { it.first },
+        )
+        assertTrue(sent.all { it.first == HttpMethod.Get && it.second == null })
+    }
+
+    @Test
     fun mergePostsTheWholeDecisionAndReadsTheSurvivor() = runTest {
         val api = api(
             Tokens(),

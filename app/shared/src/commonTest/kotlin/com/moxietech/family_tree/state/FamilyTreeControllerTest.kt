@@ -5,6 +5,10 @@ import com.moxietech.family_tree.FakeTransfer
 import com.moxietech.family_tree.TREE_ID
 import com.moxietech.family_tree.api.AccountDto
 import com.moxietech.family_tree.api.AddUnionChildRequest
+import com.moxietech.family_tree.api.CitationDto
+import com.moxietech.family_tree.api.SourceDto
+import com.moxietech.family_tree.client.CitationKind
+import com.moxietech.family_tree.client.CitedTarget
 import com.moxietech.family_tree.api.CreateMediaUploadRequest
 import com.moxietech.family_tree.api.MediaDownloadDto
 import com.moxietech.family_tree.api.MediaDto
@@ -228,6 +232,28 @@ class FamilyTreeControllerTest {
 
         fun replacePerson(person: PersonDto) {
             graph = graph.copy(people = graph.people.map { if (it.id == person.id) person else it })
+        }
+
+        // --- FT-006 follow-up: sources and citations ---------------------------------------
+        var sourceList = listOf(SourceDto("s1", TREE_ID, "Birth certificate", "VITAL_RECORD", null, null, null, null, null, 1))
+        val sourceFailures = ArrayDeque<ApiFailure>()
+        val citationsByTarget = mutableMapOf<CitedTarget, List<CitationDto>>()
+
+        /** Per target: the next call fails with the queued failure, or waits for the gate. */
+        val citationFailures = mutableMapOf<CitedTarget, ArrayDeque<ApiFailure>>()
+        val citationGates = mutableMapOf<CitedTarget, CompletableDeferred<Unit>>()
+
+        override suspend fun sources(treeId: String): List<SourceDto> {
+            calls += "sources"
+            sourceFailures.removeFirstOrNull()?.let { throw ApiException(it) }
+            return sourceList
+        }
+
+        override suspend fun citations(treeId: String, target: CitedTarget): List<CitationDto> {
+            calls += "citations:${target.kind}:${target.id}"
+            citationGates.remove(target)?.await()
+            citationFailures[target]?.removeFirstOrNull()?.let { throw ApiException(it) }
+            return citationsByTarget[target].orEmpty()
         }
     }
 
@@ -1229,6 +1255,182 @@ class FamilyTreeControllerTest {
         controller.submitMerge()
         runCurrent()
         assertEquals("RETIRED", api.mergeRequests.single().choices["PROFILE_PHOTO"])
+    }
+
+    // --- FT-006 follow-up: citations on the person page -----------------------------------
+
+    private val kidTarget = CitedTarget(CitationKind.PERSON, "kid")
+    private val kidBirth = CitedTarget(CitationKind.EVENT, "e-kid")
+
+    private fun citation(id: String, target: CitedTarget, mediaId: String? = null) =
+        CitationDto(id, "s1", target.kind.name, target.id, null, 2, null, mediaId)
+
+    /** The Sources section as the page renders it. */
+    private fun FamilyTreeController.sources(): SourcesView {
+        val state = state.value
+        val page = state.personScreen!!
+        val viewer = Viewer(page.tree.valueOrNull!!, state.account.valueOrNull!!)
+        return PersonSources.view(page.person.valueOrNull!!, viewer, page.events, page.graph, page.sources, page.citations)
+    }
+
+    @Test
+    fun personPageListsPersonEventAndUnionCitationsWithoutFetchingScans() = runTest {
+        api.citationsByTarget[kidTarget] = listOf(citation("c-person", kidTarget, mediaId = "scan-1"))
+        api.citationsByTarget[kidBirth] = listOf(citation("c-birth", kidBirth))
+        val controller = openPersonPage()
+
+        assertEquals(Loadable.Ready(api.sourceList), controller.page.sources)
+        assertEquals(setOf(kidTarget, kidBirth), controller.page.citations.keys)
+        val view = assertIs<SourcesView.Listed>(controller.sources())
+        assertEquals(listOf("c-person", "c-birth"), view.entries.map { it.citationId })
+        assertEquals("Birth certificate", view.entries.first().sourceTitle)
+        assertEquals(listOf("c-birth"), view.forEvent("e-kid").map { it.citationId }, "the timeline event links to its citation")
+        assertTrue(transfer.downloads.isEmpty() && api.calls.none { it.startsWith("download:") }, "no scan is fetched until opened")
+
+        // A partner's page also lists the union's citations, once the family has loaded.
+        val union = CitedTarget(CitationKind.UNION, "u1")
+        api.citationsByTarget[union] = listOf(citation("c-union", union))
+        controller.openPerson("mum")
+        runCurrent()
+        assertEquals(listOf("c-union"), (controller.sources() as SourcesView.Listed).entries.map { it.citationId })
+        assertEquals(2, api.calls.count { it == "sources" }, "once per page opening")
+    }
+
+    @Test
+    fun aVisiblePersonWithNoCitationsShowsAnEmptySection() = runTest {
+        val controller = openPersonPage()
+
+        val view = assertIs<SourcesView.Listed>(controller.sources())
+        assertTrue(view.isEmpty)
+        assertEquals(setOf("e-kid"), view.loadedEvents)
+    }
+
+    @Test
+    fun scansAreFetchedOnlyWhenOpenedAndAtMostTwoStayOpen() = runTest {
+        api.citationsByTarget[kidTarget] = listOf("a", "b", "c").map { citation("c-$it", kidTarget, mediaId = "scan-$it") }
+        val controller = openPersonPage()
+
+        controller.showScan("not-on-this-page")
+        runCurrent()
+        assertTrue(api.calls.none { it.startsWith("download:") }, "only a scan the page lists can be opened")
+
+        controller.showScan("scan-a")
+        controller.showScan("scan-b")
+        runCurrent()
+        assertEquals(listOf("download:scan-a", "download:scan-b"), api.calls.filter { it.startsWith("download:") })
+        assertIs<Loadable.Ready<*>>(controller.state.value.photos[PhotoKey(TREE_ID, "scan-a")])
+
+        controller.showScan("scan-c")
+        runCurrent()
+        assertEquals(listOf("scan-b", "scan-c"), controller.page.openScans, "the oldest scan closed")
+
+        controller.hideScan("scan-b")
+        controller.showScan("scan-a")
+        runCurrent()
+        assertEquals(listOf("scan-c", "scan-a"), controller.page.openScans)
+        assertEquals(1, api.calls.count { it == "download:scan-a" }, "reopened from the cache")
+    }
+
+    @Test
+    fun aClosedScanThatFailedIsNotRetried() = runTest {
+        api.citationsByTarget[kidTarget] = listOf(citation("c1", kidTarget, mediaId = "scan-1"))
+        api.downloadFailures += ApiFailure.UNAVAILABLE
+        val controller = openPersonPage()
+        controller.showScan("scan-1")
+        runCurrent()
+        assertEquals(Loadable.Failed(ApiFailure.UNAVAILABLE), controller.state.value.photos[PhotoKey(TREE_ID, "scan-1")])
+
+        controller.hideScan("scan-1")
+        controller.retry()
+        runCurrent()
+
+        assertEquals(1, api.calls.count { it == "download:scan-1" })
+    }
+
+    @Test
+    fun failedCitationsStayInTheSourcesSectionAndRetryFetchesOnlyThem() = runTest {
+        api.sourceFailures += ApiFailure.SERVER
+        api.citationFailures[kidBirth] = ArrayDeque(listOf(ApiFailure.UNAVAILABLE))
+        api.citationsByTarget[kidBirth] = listOf(citation("c-birth", kidBirth))
+        val controller = openPersonPage()
+
+        val failed = controller.page
+        assertEquals(Loadable.Failed(ApiFailure.SERVER), failed.sources)
+        assertEquals(Loadable.Failed(ApiFailure.UNAVAILABLE), failed.citations[kidBirth])
+        assertIs<Loadable.Ready<*>>(failed.events)
+        assertIs<Loadable.Ready<*>>(failed.graph)
+        assertEquals(ApiFailure.SERVER, (controller.sources() as SourcesView.Listed).failure)
+
+        controller.retry()
+        runCurrent()
+
+        assertEquals(listOf("c-birth"), (controller.sources() as SourcesView.Listed).entries.map { it.citationId })
+        assertEquals(2, api.calls.count { it == "sources" })
+        assertEquals(2, api.calls.count { it == "citations:EVENT:e-kid" })
+        assertEquals(1, api.calls.count { it == "citations:PERSON:kid" }, "loaded parts aren't fetched again")
+        assertEquals(1, api.calls.count { it == "events:kid" })
+        assertEquals(1, api.calls.count { it == "graph:$TREE_ID" })
+    }
+
+    @Test
+    fun anEventTheServerNowHidesHasNoCitations() = runTest {
+        api.citationFailures[kidBirth] = ArrayDeque(listOf(ApiFailure.NOT_FOUND))
+        val controller = openPersonPage()
+
+        assertEquals(Loadable.Ready(emptyList()), controller.page.citations[kidBirth])
+        assertTrue((controller.sources() as SourcesView.Listed).isEmpty)
+    }
+
+    @Test
+    fun aMemberRequestsNoCitationsForAHiddenPersonOrAUnionWithAHiddenPartner() = runTest {
+        api.tree = api.tree.copy(ownerAccountId = "someone-else")
+        api.replacePerson(personOf("kid", living = true))
+        api.replacePerson(personOf("dad", living = true))
+        val controller = openPersonPage()
+
+        assertEquals(SourcesView.Private, controller.sources())
+        assertTrue(api.calls.none { it.startsWith("citations:") || it == "sources" })
+
+        controller.openPerson("mum")
+        runCurrent()
+        assertTrue("citations:PERSON:mum" in api.calls)
+        assertTrue("citations:UNION:u1" !in api.calls, "mum's union with a hidden partner isn't requested")
+    }
+
+    @Test
+    fun citationsArrivingAfterLeavingThePageAreDropped() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        api.citationGates[kidTarget] = gate
+        api.citationsByTarget[kidTarget] = listOf(citation("c-kid", kidTarget))
+        val controller = openPersonPage()
+        assertEquals(Loadable.Loading, controller.page.citations[kidTarget])
+
+        controller.openPerson("mum")
+        runCurrent()
+        gate.complete(Unit)
+        runCurrent()
+
+        assertEquals("mum", controller.page.personId)
+        assertNull(controller.page.citations[kidTarget])
+        assertTrue((controller.sources() as SourcesView.Listed).entries.none { it.citationId == "c-kid" })
+    }
+
+    @Test
+    fun citationsArrivingAfterTheSessionEndedAreDropped() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        api.citationGates[kidTarget] = gate
+        api.citationsByTarget[kidTarget] = listOf(citation("old", kidTarget))
+        val controller = openPersonPage()
+
+        session.state.value = AuthState.SignedOut(SignedOutReason.SESSION_EXPIRED)
+        runCurrent()
+        gate.complete(Unit)
+        runCurrent()
+        assertNull(controller.state.value.personScreen)
+
+        api.citationsByTarget[kidTarget] = listOf(citation("new", kidTarget))
+        signIn("someone-new")
+        assertEquals(Loadable.Ready(listOf(citation("new", kidTarget))), controller.page.citations[kidTarget])
     }
 }
 

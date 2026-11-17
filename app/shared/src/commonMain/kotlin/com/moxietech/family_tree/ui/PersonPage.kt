@@ -29,10 +29,14 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -49,6 +53,9 @@ import com.moxietech.family_tree.api.TreeGraphDto
 import com.moxietech.family_tree.client.ApiFailure
 import com.moxietech.family_tree.domain.ChildRelation
 import com.moxietech.family_tree.domain.EventType
+import com.moxietech.family_tree.domain.SourceType
+import com.moxietech.family_tree.state.CitationEntry
+import com.moxietech.family_tree.state.CitedFact
 import com.moxietech.family_tree.state.FamilyTreeController
 import com.moxietech.family_tree.state.LifeFacts
 import com.moxietech.family_tree.state.Loadable
@@ -59,7 +66,9 @@ import com.moxietech.family_tree.state.PersonStatus
 import com.moxietech.family_tree.state.PhotoError
 import com.moxietech.family_tree.state.PhotoKey
 import com.moxietech.family_tree.state.PhotoUpload
+import com.moxietech.family_tree.state.PersonSources
 import com.moxietech.family_tree.state.RelativeLink
+import com.moxietech.family_tree.state.SourcesView
 import com.moxietech.family_tree.state.Timeline
 import com.moxietech.family_tree.state.TimelineEntry
 import com.moxietech.family_tree.state.Viewer
@@ -84,6 +93,33 @@ import family_tree.app.shared.generated.resources.photo_load_failed
 import family_tree.app.shared.generated.resources.photo_remove
 import family_tree.app.shared.generated.resources.photo_saving
 import family_tree.app.shared.generated.resources.children
+import family_tree.app.shared.generated.resources.citation_confidence
+import family_tree.app.shared.generated.resources.citation_detail
+import family_tree.app.shared.generated.resources.citation_supports
+import family_tree.app.shared.generated.resources.citation_supports_person
+import family_tree.app.shared.generated.resources.citation_supports_union
+import family_tree.app.shared.generated.resources.citation_web_address
+import family_tree.app.shared.generated.resources.citations_hide
+import family_tree.app.shared.generated.resources.citations_show
+import family_tree.app.shared.generated.resources.scan_alt
+import family_tree.app.shared.generated.resources.scan_hide
+import family_tree.app.shared.generated.resources.scan_load_failed
+import family_tree.app.shared.generated.resources.scan_show
+import family_tree.app.shared.generated.resources.source_count_many
+import family_tree.app.shared.generated.resources.source_count_one
+import family_tree.app.shared.generated.resources.source_none_yet
+import family_tree.app.shared.generated.resources.source_type_census
+import family_tree.app.shared.generated.resources.source_type_church_record
+import family_tree.app.shared.generated.resources.source_type_family_bible
+import family_tree.app.shared.generated.resources.source_type_newspaper
+import family_tree.app.shared.generated.resources.source_type_oral_history
+import family_tree.app.shared.generated.resources.source_type_other
+import family_tree.app.shared.generated.resources.source_type_vital_record
+import family_tree.app.shared.generated.resources.source_unknown
+import family_tree.app.shared.generated.resources.sources
+import family_tree.app.shared.generated.resources.sources_empty
+import family_tree.app.shared.generated.resources.sources_incomplete
+import family_tree.app.shared.generated.resources.sources_private
 import family_tree.app.shared.generated.resources.date_from
 import family_tree.app.shared.generated.resources.date_range
 import family_tree.app.shared.generated.resources.date_unknown
@@ -137,6 +173,9 @@ private object PersonColors {
     val avatar = Color(0xFFDCE6F0)
     val avatarText = Color(0xFF2B5C8A)
     val avatarPrivate = Color(0xFFE3E7E2)
+
+    /** The mockup's "No source yet". */
+    val noSource = Color(0xFFA9561A)
 }
 
 /**
@@ -150,8 +189,13 @@ private object PersonColors {
  * with no story or timeline, and union dates appear only when both partners are
  * visible (the union type always does). Bios and notes are rendered as plain
  * text only. The header shows the profile photo (FT-008) when the caller may see the
- * person, and the owner can add, change or remove it in place. Source citations and
- * the photo gallery are not shown yet.
+ * person, and the owner can add, change or remove it in place.
+ *
+ * Citations (FT-006 follow-up, read-only): timeline events say how many sources
+ * support them and expand to list them; the Sources section lists every citation on
+ * the person, their events and their unions with visible partners ([PersonSources]).
+ * Citation scans are fetched only when opened. Source web addresses are inert text.
+ * The photo gallery is not shown yet.
  *
  * Everything is in-page (no popups or dialogs), so Compose Web's accessibility
  * tree stays in sync, as in FT-005's forms.
@@ -180,6 +224,17 @@ private fun PersonContent(screen: PersonScreen, person: PersonDto, viewer: Viewe
     }
     val facts = remember(timeline) { timeline?.let(PersonProfile::lifeFacts) ?: LifeFacts(null, null, null) }
     val photos = controller.state.collectAsState().value.photos
+    val sources = remember(person, viewer, events, screen.graph, screen.sources, screen.citations) {
+        PersonSources.view(person, viewer, events, screen.graph, screen.sources, screen.citations)
+    }
+    val scans = ScanControls(
+        treeId = screen.treeId,
+        open = screen.openScans,
+        photos = photos,
+        onShow = controller::showScan,
+        onHide = controller::hideScan,
+        onRetry = controller::retry,
+    )
     // FT-008: the server sends a photo ID only when this caller may see the person.
     val photo = person.profileMediaId?.takeIf { header.status != PersonStatus.PRIVATE }?.let { photos[PhotoKey(screen.treeId, it)] }
     val photoControls = PhotoControls(
@@ -203,23 +258,28 @@ private fun PersonContent(screen: PersonScreen, person: PersonDto, viewer: Viewe
                 HeaderCard(header, facts, wide, photo, photoControls, onShowInTree = controller::showInTree)
                 val story: @Composable () -> Unit = { StorySection(header) }
                 val timelineSection: @Composable () -> Unit = {
-                    TimelineSection(header, events, timeline, onRetry = controller::retry)
+                    TimelineSection(header, events, timeline, sources, scans, onRetry = controller::retry)
                 }
                 val family: @Composable () -> Unit = {
                     FamilySection(screen.graph, person, viewer, onOpen = controller::openPerson, onRetry = controller::retry)
                 }
+                val sourcesSection: @Composable () -> Unit = { SourcesSection(sources, scans, onRetry = controller::retry) }
                 if (wide) {
                     Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(24.dp)) {
                             story()
                             timelineSection()
                         }
-                        Column(Modifier.width(380.dp)) { family() }
+                        Column(Modifier.width(380.dp), verticalArrangement = Arrangement.spacedBy(24.dp)) {
+                            family()
+                            sourcesSection()
+                        }
                     }
                 } else {
                     story()
                     timelineSection()
                     family()
+                    sourcesSection()
                 }
             }
         }
@@ -268,7 +328,7 @@ private fun HeaderCard(
             }
             val bytes = photo?.valueOrNull
             if (bytes != null && header.name != null) {
-                StoredPhoto(bytes, stringResource(Res.string.photo_alt, header.name), 120, RoundedCornerShape(16.dp), avatar)
+                StoredPhoto(bytes, stringResource(Res.string.photo_alt, header.name), 120, RoundedCornerShape(16.dp), fallback = avatar)
             } else {
                 avatar()
             }
@@ -427,7 +487,14 @@ private fun StorySection(header: PersonHeader) {
 }
 
 @Composable
-private fun TimelineSection(header: PersonHeader, events: Loadable<List<EventDto>>, timeline: Timeline?, onRetry: () -> Unit) {
+private fun TimelineSection(
+    header: PersonHeader,
+    events: Loadable<List<EventDto>>,
+    timeline: Timeline?,
+    sources: SourcesView,
+    scans: ScanControls,
+    onRetry: () -> Unit,
+) {
     SectionCard(Res.string.timeline) {
         when {
             // Decided from the person, not the response: nothing is listed for a private person.
@@ -438,7 +505,11 @@ private fun TimelineSection(header: PersonHeader, events: Loadable<List<EventDto
                 Text(stringResource(Res.string.timeline_empty), color = Palette.muted)
             timeline is Timeline.Entries -> Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 timeline.entries.forEachIndexed { index, entry ->
-                    TimelineRow(entry)
+                    // Null until this event's citations (and the source list) have loaded.
+                    val citations = (sources as? SourcesView.Listed)
+                        ?.takeIf { entry.eventId in it.loadedEvents }
+                        ?.forEvent(entry.eventId)
+                    TimelineRow(entry, citations, scans)
                     if (index < timeline.entries.lastIndex) HorizontalDivider(color = Palette.border)
                 }
             }
@@ -448,7 +519,8 @@ private fun TimelineSection(header: PersonHeader, events: Loadable<List<EventDto
 }
 
 @Composable
-private fun TimelineRow(entry: TimelineEntry) {
+private fun TimelineRow(entry: TimelineEntry, citations: List<CitationEntry>?, scans: ScanControls) {
+    var expanded by remember(entry.eventId) { mutableStateOf(false) }
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(
             entry.date ?: stringResource(Res.string.date_unknown),
@@ -464,7 +536,160 @@ private fun TimelineRow(entry: TimelineEntry) {
             Text(stringResource(eventLabel(entry.type)), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
             entry.place?.let { Text(it, fontSize = 13.sp, color = Palette.muted) }
             entry.notes?.let { Text(it, fontSize = 13.sp) }
+            when {
+                citations == null -> Unit
+                citations.isEmpty() -> Text(
+                    stringResource(Res.string.source_none_yet),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = PersonColors.noSource,
+                )
+                else -> {
+                    SourceCountChip(citations.size, expanded) { expanded = !expanded }
+                    if (expanded) {
+                        Column(Modifier.padding(start = 4.dp)) {
+                            citations.forEach { CitationRow(it, showSupports = false, scans = scans) }
+                        }
+                    }
+                }
+            }
         }
+    }
+}
+
+/** The mockup's "2 sources" pill: toggles the event's citations in place. */
+@Composable
+private fun SourceCountChip(count: Int, expanded: Boolean, onToggle: () -> Unit) {
+    val label = if (count == 1) stringResource(Res.string.source_count_one) else stringResource(Res.string.source_count_many, count)
+    Text(
+        label,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.SemiBold,
+        color = Palette.accent,
+        modifier = Modifier
+            .background(Palette.noticeBackground, RoundedCornerShape(999.dp))
+            .clickable(
+                role = Role.Button,
+                onClickLabel = stringResource(if (expanded) Res.string.citations_hide else Res.string.citations_show),
+                onClick = onToggle,
+            )
+            .padding(horizontal = 8.dp, vertical = 2.dp),
+    )
+}
+
+/** FT-006 follow-up: what the citation rows need to open, show and close scans. */
+private class ScanControls(
+    val treeId: String,
+    val open: List<String>,
+    val photos: Map<PhotoKey, Loadable<ByteArray>>,
+    val onShow: (String) -> Unit,
+    val onHide: (String) -> Unit,
+    val onRetry: () -> Unit,
+)
+
+/**
+ * Every citation on the person, their timeline events and their unions with visible
+ * partners. Loads and fails on its own: what arrived is listed, with a loading line
+ * or a failure and retry below it.
+ */
+@Composable
+private fun SourcesSection(view: SourcesView, scans: ScanControls, onRetry: () -> Unit) {
+    SectionCard(Res.string.sources, small = true) {
+        when (view) {
+            // Decided from the person, not the responses: nothing is listed for a private person.
+            SourcesView.Private -> Text(stringResource(Res.string.sources_private), color = Palette.muted)
+            is SourcesView.Listed -> {
+                view.entries.forEachIndexed { index, entry ->
+                    CitationRow(entry, showSupports = true, scans = scans)
+                    if (index < view.entries.lastIndex) HorizontalDivider(color = Palette.border)
+                }
+                if (view.isEmpty) Text(stringResource(Res.string.sources_empty), color = Palette.muted)
+                if (view.incomplete) Text(stringResource(Res.string.sources_incomplete), fontSize = 13.sp, color = Palette.muted)
+                view.failure?.let { SectionFailure(it, onRetry) }
+                if (view.loading) SectionLoading()
+            }
+        }
+    }
+}
+
+/**
+ * One citation, read-only: the source's title, type and details, what it supports,
+ * the cited detail and note, the confidence, and its scan on demand. All text is plain
+ * `Text`; the source's web address is shown but never opened or linked.
+ */
+@Composable
+private fun CitationRow(entry: CitationEntry, showSupports: Boolean, scans: ScanControls) {
+    val title = entry.sourceTitle ?: stringResource(Res.string.source_unknown)
+    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        val meta = buildList {
+            entry.sourceType?.let { add(stringResource(sourceTypeLabel(it))) }
+            addAll(entry.sourceDetails)
+        }
+        if (meta.isNotEmpty()) Text(meta.joinToString(" · "), fontSize = 12.sp, color = Palette.muted)
+        if (showSupports) Text(stringResource(Res.string.citation_supports, factLabel(entry.fact)), fontSize = 12.sp, color = Palette.muted)
+        entry.page?.let { Text(stringResource(Res.string.citation_detail, it), fontSize = 12.sp, color = Palette.muted) }
+        entry.note?.let { Text(it, fontSize = 13.sp) }
+        entry.sourceUrl?.let { Text(stringResource(Res.string.citation_web_address, it), fontSize = 12.sp, color = Palette.muted) }
+        ConfidenceLine(entry.confidence)
+        entry.mediaId?.let { ScanView(it, title, scans) }
+    }
+}
+
+@Composable
+private fun factLabel(fact: CitedFact): String = when (fact) {
+    is CitedFact.Profile -> stringResource(Res.string.citation_supports_person)
+    is CitedFact.Event -> listOfNotNull(stringResource(eventLabel(fact.type)), fact.date).joinToString(" · ")
+    is CitedFact.Union -> {
+        val type = stringResource(unionTypeLabel(fact.unionType))
+        fact.partnerName?.let { stringResource(Res.string.citation_supports_union, type, it) } ?: type
+    }
+}
+
+/** The mockup's three dots, filled up to the confidence, and the same as text. */
+@Composable
+private fun ConfidenceLine(confidence: Int) {
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(horizontalArrangement = Arrangement.spacedBy(3.dp), modifier = Modifier.clearAndSetSemantics {}) {
+            repeat(PersonSources.MAX_CONFIDENCE) { index ->
+                Box(Modifier.size(8.dp).background(if (index < confidence) Palette.accent else Palette.border, CircleShape))
+            }
+        }
+        Text(
+            stringResource(Res.string.citation_confidence, confidence, PersonSources.MAX_CONFIDENCE),
+            fontSize = 12.sp,
+            color = Palette.muted,
+        )
+    }
+}
+
+/** A citation scan: fetched only when the user opens it, then shown whole. */
+@Composable
+private fun ScanView(mediaId: String, sourceTitle: String, scans: ScanControls) {
+    val open = mediaId in scans.open
+    TextButton(onClick = { if (open) scans.onHide(mediaId) else scans.onShow(mediaId) }) {
+        Text(stringResource(if (open) Res.string.scan_hide else Res.string.scan_show))
+    }
+    if (!open) return
+    val failed: @Composable () -> Unit = {
+        Text(stringResource(Res.string.scan_load_failed), fontSize = 12.sp, color = Palette.muted)
+    }
+    when (val image = scans.photos[PhotoKey(scans.treeId, mediaId)]) {
+        is Loadable.Ready -> StoredPhoto(
+            image.value,
+            stringResource(Res.string.scan_alt, sourceTitle),
+            280,
+            RoundedCornerShape(8.dp),
+            contentScale = ContentScale.Fit,
+            fallback = failed,
+        )
+        is Loadable.Failed -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            failed()
+            if (image.failure != ApiFailure.NOT_FOUND && image.failure != ApiFailure.FORBIDDEN) {
+                OutlinedButton(onClick = scans.onRetry) { Text(stringResource(Res.string.retry)) }
+            }
+        }
+        else -> SectionLoading()
     }
 }
 
@@ -573,6 +798,16 @@ private fun relationLabel(relation: String): StringResource? = when (relation) {
     ChildRelation.STEP.name -> Res.string.relation_step
     ChildRelation.FOSTER.name -> Res.string.relation_foster
     else -> null
+}
+
+private fun sourceTypeLabel(type: String): StringResource = when (type) {
+    SourceType.VITAL_RECORD.name -> Res.string.source_type_vital_record
+    SourceType.CENSUS.name -> Res.string.source_type_census
+    SourceType.CHURCH_RECORD.name -> Res.string.source_type_church_record
+    SourceType.NEWSPAPER.name -> Res.string.source_type_newspaper
+    SourceType.FAMILY_BIBLE.name -> Res.string.source_type_family_bible
+    SourceType.ORAL_HISTORY.name -> Res.string.source_type_oral_history
+    else -> Res.string.source_type_other
 }
 
 private fun eventLabel(type: String): StringResource = when (type) {
