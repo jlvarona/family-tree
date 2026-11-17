@@ -26,7 +26,16 @@ import kotlin.uuid.Uuid
  *
  * Citation writers don't take it: they lock their target `FOR KEY SHARE` before
  * inserting (FT-002), which waits on the merge's lock of the person and then finds
- * a retired person gone (404). Deletes and relation-only updates add no references.
+ * a retired person gone (404).
+ *
+ * FT-010 adds two uses:
+ * - Grant creates and updates take it shared (the anchor is a person reference), so a
+ *   merge sees every grant anchored at the retired person and no new one appears.
+ * - A grant-scope rebuild (`GrantScopeService`) takes it exclusive, so it reads the
+ *   graph with no graph writer in flight. For that, every writer that advances the
+ *   tree's graph generation takes it shared too, including person create and delete,
+ *   union delete and child-link update and delete, which add no references. Shared
+ *   holders still don't block each other.
  *
  * The key is derived from the tree ID; two trees sharing a key only serialize more.
  */

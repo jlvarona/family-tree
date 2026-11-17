@@ -37,6 +37,10 @@ object Validation {
         return emptyList()
     }
 
+    /** A branch depth is unlimited (null) or a positive number of generations, as [com.moxietech.family_tree.domain.Branch] requires. */
+    fun validateBranchDepth(depth: Int?): List<String> =
+        if (depth != null && depth < 1) listOf("Depth must be empty (unlimited) or a positive number of generations") else emptyList()
+
     fun validateConfidence(level: Int): List<String> =
         if (level !in 0..3) listOf("Confidence must be between 0 and 3") else emptyList()
 }

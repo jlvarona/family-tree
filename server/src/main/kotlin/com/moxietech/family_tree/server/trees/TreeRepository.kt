@@ -6,6 +6,7 @@ import com.moxietech.family_tree.domain.Tree
 import com.moxietech.family_tree.domain.TreeId
 import com.moxietech.family_tree.server.db.MembershipTable
 import com.moxietech.family_tree.server.db.TreeTable
+import com.moxietech.family_tree.server.permissions.GraphGeneration
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
@@ -43,6 +44,7 @@ object TreeRepository {
             it[TreeTable.ownerAccountId] = Uuid.parse(ownerAccountId.value)
             it[TreeTable.version] = 1
         }
+        GraphGeneration.create(id)
         findById(id) ?: error("Tree $id was just inserted but cannot be read back")
     }
 

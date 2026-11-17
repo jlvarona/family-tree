@@ -4,6 +4,7 @@ import com.moxietech.family_tree.server.config.DatabaseDispatcher
 import com.moxietech.family_tree.server.db.CitationTable
 import com.moxietech.family_tree.server.db.EventTable
 import com.moxietech.family_tree.server.db.MembershipTable
+import com.moxietech.family_tree.server.db.TreeGrantTable
 import com.moxietech.family_tree.server.db.UnionChildTable
 import com.moxietech.family_tree.server.db.UnionTable
 import com.moxietech.family_tree.server.errors.referenced
@@ -27,7 +28,9 @@ import kotlin.uuid.Uuid
  * Incoming references, from V1/V2 (every one is same-tree since V2; FT-007's
  * `PersonMergeService` moves exactly the person references below):
  * - person ← union_record.partner1_id / partner2_id, union_child.child_id,
- *   event.person_id, membership.person_id (foreign keys); citation target PERSON
+ *   event.person_id, membership.person_id, tree_grant.anchor_person_id (FT-010)
+ *   (foreign keys); citation target PERSON. grant_scope.person_id is derived cache,
+ *   not a reference: it cascades (V7), so it never makes a person "referenced"
  * - union_record ← union_child.union_id, event.union_id (foreign keys); citation target UNION
  * - event ← citation target EVENT (no foreign key)
  * - place ← event.place_id (foreign key)
@@ -54,6 +57,9 @@ internal object RecordDeletion {
         "union_child_child_id_fkey", "union_child_child_same_tree_fkey",
         "event_person_id_fkey", "event_person_same_tree_fkey",
         "membership_person_id_fkey", "membership_person_same_tree_fkey",
+        // FT-010: a grant's anchor is a real reference. grant_scope's person key is
+        // not listed: it cascades, so the derived cache never blocks a delete.
+        "tree_grant_anchor_same_tree_fkey",
     )
     val UNION_FOREIGN_KEYS = setOf(
         "union_child_union_id_fkey", "union_child_union_same_tree_fkey",
@@ -86,6 +92,7 @@ internal object RecordDeletion {
             exists(UnionChildTable) { (UnionChildTable.treeId eq treeId) and (UnionChildTable.childId eq personId) } ||
             exists(EventTable) { (EventTable.treeId eq treeId) and (EventTable.personId eq personId) } ||
             exists(MembershipTable) { (MembershipTable.treeId eq treeId) and (MembershipTable.personId eq personId) } ||
+            exists(TreeGrantTable) { (TreeGrantTable.treeId eq treeId) and (TreeGrantTable.anchorPersonId eq personId) } ||
             isCited(treeId, PERSON, personId)
 
     fun unionIsReferenced(treeId: Uuid, unionId: Uuid): Boolean =

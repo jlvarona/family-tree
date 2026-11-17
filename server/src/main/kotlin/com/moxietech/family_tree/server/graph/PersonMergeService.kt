@@ -23,6 +23,8 @@ import com.moxietech.family_tree.server.errors.ValidationException
 import com.moxietech.family_tree.server.errors.parseUuidField
 import com.moxietech.family_tree.server.errors.requireValid
 import com.moxietech.family_tree.server.errors.staleVersion
+import com.moxietech.family_tree.server.permissions.GrantRepository
+import com.moxietech.family_tree.server.permissions.GraphGeneration
 import com.moxietech.family_tree.server.sources.CitationRepository
 import com.moxietech.family_tree.server.sources.CitationTargetKind
 import com.moxietech.family_tree.server.sources.CitationTargetRef
@@ -40,6 +42,8 @@ import kotlin.uuid.Uuid
 const val MERGE_SAME_PERSON_MESSAGE = "A person can't be merged with themselves"
 const val MERGE_UNKNOWN_FIELD_MESSAGE = "choices names an unknown field"
 const val MERGE_UNKNOWN_SIDE_MESSAGE = "Each choice must be SURVIVOR or RETIRED"
+const val MERGE_RETIRED_GRANT_ANCHOR_MESSAGE =
+    "The person to retire is the anchor of a member's grant; re-anchor or remove that grant first"
 
 /**
  * FT-007: merges two records of one person in a tree (owner only,
@@ -57,10 +61,14 @@ const val MERGE_UNKNOWN_SIDE_MESSAGE = "Each choice must be SURVIVOR or RETIRED"
  * 3. Every row referring to either person (V1-V5 + FT-002 inventory, as in
  *    [RecordDeletion]) is locked in a fixed order: unions by partner (by ID), child
  *    links (by union, child), the retired person's events (by ID), memberships (by
- *    account), the retired person's citations (by ID).
+ *    account), the retired person's citations (by ID), grants anchored at the retired
+ *    person (by ID, `FOR SHARE`, FT-010).
  * 4. The merged graph must stay valid ([PersonMerge.relationshipConflicts] on every
  *    union of the tree, read under the exclusive lock) and every link must keep one
- *    unambiguous value; otherwise a 409 that writes nothing.
+ *    unambiguous value; otherwise a 409 that writes nothing. The retired person must
+ *    not anchor a grant (409, FT-010): a merge never re-anchors a grant implicitly.
+ *    Then the tree's graph generation advances (FT-010), so cached grant scopes are
+ *    rebuilt from the merged graph.
  * 5. References move to the survivor keeping their IDs, each with its version
  *    advanced where it has one; the survivor gets the chosen values and a new
  *    version; the retired person is deleted at its reviewed version.
@@ -155,6 +163,8 @@ object PersonMergeService {
             val events = EventRepository.lockByPerson(treeId, retiredId)
             val memberships = MembershipRepository.lockByPeople(treeId, both)
             val citations = CitationRepository.lockOnPerson(treeId, retiredId)
+            // FT-010: grant writers take GraphWriteLock shared, so this list can't grow now.
+            val anchoredGrants = GrantRepository.lockAnchoredAt(treeId, retiredId)
 
             // 4. The result must be a valid graph with unambiguous links.
             val conflicts = PersonMerge.relationshipConflicts(survivorKey.value, retiredKey.value, treeUnions())
@@ -162,6 +172,14 @@ object PersonMergeService {
             if (memberships.any { it.personId == survivorKey } && memberships.any { it.personId == retiredKey }) {
                 throw ConflictException("Both people are linked to member accounts; only one account can be linked to the merged person")
             }
+            // FT-010: moving a grant's anchor to the survivor would hand its holder a
+            // different branch without anyone deciding it, so the owner re-anchors or
+            // removes those grants first. A grant anchored at the survivor stays, and its
+            // scope follows the merged relationships like any other relationship change.
+            if (anchoredGrants.isNotEmpty()) {
+                throw ConflictException(MERGE_RETIRED_GRANT_ANCHOR_MESSAGE)
+            }
+            GraphGeneration.advance(treeId)
 
             // 5-6. Move every reference, then the survivor's profile, then retire the person.
             unions.filter { it.partner1Id == retiredKey || it.partner2Id == retiredKey }.forEach(::movePartner)

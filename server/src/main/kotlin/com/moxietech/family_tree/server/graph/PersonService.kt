@@ -20,6 +20,7 @@ import com.moxietech.family_tree.server.errors.parseOptionalUuidField
 import com.moxietech.family_tree.server.errors.parseUuidField
 import com.moxietech.family_tree.server.media.MediaAttachments
 import com.moxietech.family_tree.server.media.mediaInUse
+import com.moxietech.family_tree.server.permissions.GraphGeneration
 import com.moxietech.family_tree.server.errors.parseVersionParam
 import com.moxietech.family_tree.server.errors.referenced
 import com.moxietech.family_tree.server.errors.requireValid
@@ -51,6 +52,8 @@ object PersonService {
 
         return withContext(DatabaseDispatcher) {
             transaction {
+                // Excludes a grant-scope rebuild while the person is added (FT-010).
+                GraphWriteLock.shared(Uuid.parse(treeId.value))
                 val existing = PersonRepository.listByTree(Uuid.parse(treeId.value))
                 val duplicates = ViewerPolicy(tree, callerAccountId).duplicateCandidates(
                     givenNames = request.givenNames,
@@ -69,6 +72,8 @@ object PersonService {
                     bio = request.bio,
                     createdByAccountId = Uuid.parse(callerAccountId.value),
                 )
+                // A new person joins every whole-tree grant scope (FT-010).
+                GraphGeneration.advance(Uuid.parse(treeId.value))
 
                 AuditLogRepository.append(
                     treeId = Uuid.parse(treeId.value),
@@ -207,11 +212,17 @@ object PersonService {
         val expected = parseVersionParam(version)
         val treeUuid = Uuid.parse(treeId.value)
         RecordDeletion.guarded("Person", personUuid.toString(), RecordDeletion.PERSON_FOREIGN_KEYS) {
+            // First, before the person's row lock: a grant-scope rebuild (which needs
+            // FOR KEY SHARE on the people it stores) never runs while this holds the
+            // person FOR UPDATE (FT-010).
+            GraphWriteLock.shared(treeUuid)
             val before = TreeScopedLookups.requirePerson(treeUuid, personUuid)
             if (before.version != expected) throw staleVersion("Person", before.id.value)
             if (RecordDeletion.personIsReferenced(treeUuid, personUuid)) throw referenced("Person", before.id.value)
+            // The person's cached grant-scope rows are derived and cascade with it (V7).
             if (PersonRepository.delete(treeUuid, personUuid, expected) == 0) throw staleVersion("Person", before.id.value)
             if (RecordDeletion.isCited(treeUuid, RecordDeletion.PERSON, personUuid)) throw referenced("Person", before.id.value)
+            GraphGeneration.advance(treeUuid)
             AuditLogRepository.append(
                 treeId = treeUuid,
                 actorAccountId = Uuid.parse(callerAccountId.value),
