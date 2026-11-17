@@ -6,27 +6,30 @@ import com.moxietech.family_tree.api.PersonDto
 import com.moxietech.family_tree.api.SourceDto
 import com.moxietech.family_tree.api.TreeGraphDto
 import com.moxietech.family_tree.client.ApiFailure
-import com.moxietech.family_tree.client.CitationKind
-import com.moxietech.family_tree.client.CitedTarget
+import com.moxietech.family_tree.client.apiType
+import com.moxietech.family_tree.client.targetId
+import com.moxietech.family_tree.domain.CitationTarget
 import com.moxietech.family_tree.domain.Confidence
+import com.moxietech.family_tree.domain.EventId
+import com.moxietech.family_tree.domain.PersonId
+import com.moxietech.family_tree.domain.UnionId
 import com.moxietech.family_tree.navigation.Route
 
-/** A fact on the person page that citations can support (FT-002 targets). */
+/** A fact on the person page that citations can support (FT-002 targets, `:core` [CitationTarget]). */
 sealed interface CitedFact {
-    val target: CitedTarget
+    val target: CitationTarget
 
     /** The person's own record. */
-    data class Profile(override val target: CitedTarget) : CitedFact
+    data class Profile(override val target: CitationTarget.OnPerson) : CitedFact
 
     /** One timeline event; [type] is the API's event type, [date] its cleaned display text. */
-    data class Event(override val target: CitedTarget, val type: String, val date: String?) : CitedFact
+    data class Event(override val target: CitationTarget.OnEvent, val type: String, val date: String?) : CitedFact
 
     /**
      * One of the person's unions, listed only when every partner is visible to the caller.
-     * [partnerName] is null for a union with no second partner (or before the account is
-     * known, when only the target matters).
+     * [partnerName] is null for a union with no second partner.
      */
-    data class Union(override val target: CitedTarget, val unionType: String, val partnerName: String?) : CitedFact
+    data class Union(override val target: CitationTarget.OnUnion, val unionType: String, val partnerName: String?) : CitedFact
 }
 
 /**
@@ -74,7 +77,7 @@ sealed interface SourcesView {
         val isEmpty: Boolean get() = entries.isEmpty() && !loading && failure == null && !incomplete
 
         fun forEvent(eventId: String): List<CitationEntry> =
-            entries.filter { (it.fact as? CitedFact.Event)?.target?.id == eventId }
+            entries.filter { (it.fact as? CitedFact.Event)?.target?.eventId?.value == eventId }
     }
 }
 
@@ -91,18 +94,17 @@ object PersonSources {
     /**
      * The facts of [person]'s page that can carry citations, in page order: the profile,
      * the timeline's events (once [events] loaded), then the person's unions (once
-     * [graph] loaded). With a [viewer], nothing for a hidden person and no union with a
-     * hidden partner; the family section still shows that union's type. Without one (the
-     * account isn't loaded yet) every union of the person is listed, as the server applies
-     * the same rule to what it returns.
+     * [graph] loaded). Nothing for a person hidden from [viewer], and no union with a
+     * hidden partner (the server's `citationsOn` rule); the family section still shows
+     * that union's type. The controller requests exactly these, so it waits for the account.
      */
-    fun citedFacts(person: PersonDto, events: List<EventDto>?, graph: TreeGraphDto?, viewer: Viewer?): List<CitedFact> {
-        if (viewer != null && !viewer.canSeeDetails(person)) return emptyList()
+    fun citedFacts(person: PersonDto, events: List<EventDto>?, graph: TreeGraphDto?, viewer: Viewer): List<CitedFact> {
+        if (!viewer.canSeeDetails(person)) return emptyList()
         fun sameTree(treeId: String) = treeId.equals(person.treeId, ignoreCase = true)
-        val facts = mutableListOf<CitedFact>(CitedFact.Profile(CitedTarget(CitationKind.PERSON, person.id)))
+        val facts = mutableListOf<CitedFact>(CitedFact.Profile(CitationTarget.OnPerson(PersonId(person.id))))
         events?.let { list ->
             PersonProfile.personEvents(person, list).forEach { event ->
-                facts += CitedFact.Event(CitedTarget(CitationKind.EVENT, event.id), event.type, PersonProfile.dateText(event.date))
+                facts += CitedFact.Event(CitationTarget.OnEvent(EventId(event.id)), event.type, PersonProfile.dateText(event.date))
             }
         }
         if (graph != null && sameTree(graph.treeId)) {
@@ -113,12 +115,8 @@ object PersonSources {
                 val partnerId = partners.firstOrNull { it != person.id }
                 val partner = partnerId?.let { people[it] }
                 // An unknown or hidden partner: the union's citations would describe them.
-                if (partnerId != null && (partner == null || (viewer != null && !viewer.canSeeDetails(partner)))) return@forEach
-                facts += CitedFact.Union(
-                    CitedTarget(CitationKind.UNION, union.id),
-                    union.type,
-                    partner?.takeIf { viewer != null }?.let(PersonProfile::displayName),
-                )
+                if (partnerId != null && (partner == null || !viewer.canSeeDetails(partner))) return@forEach
+                facts += CitedFact.Union(CitationTarget.OnUnion(UnionId(union.id)), union.type, partner?.let(PersonProfile::displayName))
             }
         }
         return facts
@@ -130,7 +128,7 @@ object PersonSources {
         events: Loadable<List<EventDto>>,
         graph: Loadable<TreeGraphDto>,
         sources: Loadable<List<SourceDto>>?,
-        citations: Map<CitedTarget, Loadable<List<CitationDto>>>,
+        citations: Map<CitationTarget, Loadable<List<CitationDto>>>,
     ): SourcesView {
         if (!viewer.canSeeDetails(person)) return SourcesView.Private
         val facts = citedFacts(person, events.valueOrNull, graph.valueOrNull, viewer)
@@ -148,9 +146,9 @@ object PersonSources {
                 is Loadable.Ready -> {
                     // Entries wait for the source list, so a title never appears as "unknown" first.
                     if (byId == null) return@forEach
-                    if (fact is CitedFact.Event) loadedEvents += fact.target.id
+                    if (fact is CitedFact.Event) loadedEvents += fact.target.eventId.value
                     result.value
-                        .filter { it.targetType == fact.target.kind.name && Route.sameId(it.targetId, fact.target.id) }
+                        .filter { it.targetType == fact.target.apiType && Route.sameId(it.targetId, fact.target.targetId) }
                         .distinctBy { it.id }
                         .forEach { entries += entry(it, fact, byId[Route.canonicalId(it.sourceId)]) }
                 }

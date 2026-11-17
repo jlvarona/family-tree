@@ -21,6 +21,7 @@ import com.moxietech.family_tree.api.TreeDto
 import com.moxietech.family_tree.api.TreeGraphDto
 import com.moxietech.family_tree.api.UnionDto
 import com.moxietech.family_tree.auth.AccessTokenSource
+import com.moxietech.family_tree.domain.CitationTarget
 import com.moxietech.family_tree.auth.TokenResult
 import io.ktor.client.HttpClient
 import io.ktor.client.request.bearerAuth
@@ -126,18 +127,31 @@ interface FamilyTreeApi {
      * (`GET …/{people|events|unions}/{id}/citations`). The server returns an empty list
      * for a person or union with a hidden subject, and `404` for an event it hides.
      */
-    suspend fun citations(treeId: String, target: CitedTarget): List<CitationDto>
+    suspend fun citations(treeId: String, target: CitationTarget): List<CitationDto>
 }
 
-/** What a citation is attached to (FT-002); the names are the API's `targetType` values. */
-enum class CitationKind(internal val collection: String) {
-    PERSON("people"),
-    EVENT("events"),
-    UNION("unions"),
-}
+/** The API's `targetType` for a `:core` citation target (FT-002). */
+val CitationTarget.apiType: String
+    get() = when (this) {
+        is CitationTarget.OnPerson -> "PERSON"
+        is CitationTarget.OnEvent -> "EVENT"
+        is CitationTarget.OnUnion -> "UNION"
+    }
 
-/** One cited fact: a person, an event or a union, by ID. */
-data class CitedTarget(val kind: CitationKind, val id: String)
+/** The ID of the cited person, event or union. */
+val CitationTarget.targetId: String
+    get() = when (this) {
+        is CitationTarget.OnPerson -> personId.value
+        is CitationTarget.OnEvent -> eventId.value
+        is CitationTarget.OnUnion -> unionId.value
+    }
+
+private val CitationTarget.collection: String
+    get() = when (this) {
+        is CitationTarget.OnPerson -> "people"
+        is CitationTarget.OnEvent -> "events"
+        is CitationTarget.OnUnion -> "unions"
+    }
 
 /**
  * [FamilyTreeApi] over HTTP. Every call carries the session's access token
@@ -216,8 +230,8 @@ class HttpFamilyTreeApi(
     override suspend fun sources(treeId: String): List<SourceDto> =
         get("/trees/${seg(treeId)}/sources", ListSerializer(SourceDto.serializer()))
 
-    override suspend fun citations(treeId: String, target: CitedTarget): List<CitationDto> = get(
-        "/trees/${seg(treeId)}/${target.kind.collection}/${seg(target.id)}/citations",
+    override suspend fun citations(treeId: String, target: CitationTarget): List<CitationDto> = get(
+        "/trees/${seg(treeId)}/${target.collection}/${seg(target.targetId)}/citations",
         ListSerializer(CitationDto.serializer()),
     )
 

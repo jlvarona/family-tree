@@ -9,7 +9,7 @@ import com.moxietech.family_tree.api.TreeDto
 import com.moxietech.family_tree.api.TreeGraphDto
 import com.moxietech.family_tree.auth.AuthState
 import com.moxietech.family_tree.client.ApiFailure
-import com.moxietech.family_tree.client.CitedTarget
+import com.moxietech.family_tree.domain.CitationTarget
 import com.moxietech.family_tree.domain.ChildRelation
 import com.moxietech.family_tree.domain.Sex
 import com.moxietech.family_tree.domain.UnionType
@@ -128,8 +128,8 @@ data class PersonScreen(
     /** The owner's profile-photo change in progress or failed (FT-008); dropped with the page. */
     val photo: PhotoUpload? = null,
     /**
-     * The tree's sources, which label the citations below. Null until requested; never
-     * requested for a person the client already knows is hidden from the caller.
+     * The tree's sources, which label the citations below. Null until requested: only
+     * once the account is known and the person is visible to the caller.
      */
     val sources: Loadable<List<SourceDto>>? = null,
     /**
@@ -137,7 +137,7 @@ data class PersonScreen(
      * event once [events] loaded, and each of the person's unions once [graph] loaded.
      * Each target loads and fails on its own; only requested targets have an entry.
      */
-    val citations: Map<CitedTarget, Loadable<List<CitationDto>>> = emptyMap(),
+    val citations: Map<CitationTarget, Loadable<List<CitationDto>>> = emptyMap(),
     /**
      * Citation scans the user opened on this page, oldest first (media IDs). Only these
      * are fetched, and at most `FamilyTreeController.MAX_OPEN_SCANS` at once, so the

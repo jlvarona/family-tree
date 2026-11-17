@@ -6,6 +6,10 @@ import com.moxietech.family_tree.api.PresignedUploadDto
 import com.moxietech.family_tree.api.SetProfilePhotoRequest
 import com.moxietech.family_tree.auth.AccessTokenSource
 import com.moxietech.family_tree.auth.TokenResult
+import com.moxietech.family_tree.domain.CitationTarget
+import com.moxietech.family_tree.domain.EventId
+import com.moxietech.family_tree.domain.PersonId
+import com.moxietech.family_tree.domain.UnionId
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
@@ -156,9 +160,9 @@ class HttpFamilyTreeApiTest {
         )
 
         assertEquals("Parish book", api.sources("t1").single().title)
-        val citation = api.citations("t1", CitedTarget(CitationKind.EVENT, "e/1")).single()
-        api.citations("t1", CitedTarget(CitationKind.PERSON, "p?1"))
-        api.citations("t1", CitedTarget(CitationKind.UNION, "u1"))
+        val citation = api.citations("t1", CitationTarget.OnEvent(EventId("e/1"))).single()
+        api.citations("t1", CitationTarget.OnPerson(PersonId("p?1")))
+        api.citations("t1", CitationTarget.OnUnion(UnionId("u1")))
 
         assertEquals("m1", citation.mediaId)
         assertEquals(

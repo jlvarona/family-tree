@@ -8,8 +8,10 @@ import com.moxietech.family_tree.api.SourceDto
 import com.moxietech.family_tree.api.TreeDto
 import com.moxietech.family_tree.api.TreeGraphDto
 import com.moxietech.family_tree.client.ApiFailure
-import com.moxietech.family_tree.client.CitationKind
-import com.moxietech.family_tree.client.CitedTarget
+import com.moxietech.family_tree.domain.CitationTarget
+import com.moxietech.family_tree.domain.EventId
+import com.moxietech.family_tree.domain.PersonId
+import com.moxietech.family_tree.domain.UnionId
 import com.moxietech.family_tree.event
 import com.moxietech.family_tree.person
 import com.moxietech.family_tree.union
@@ -46,15 +48,22 @@ class PersonSourcesTest {
     )
     private val parish = SourceDto("s2", TREE_ID, "Parish book", "CHURCH_RECORD", null, null, null, null, null, 1)
 
+    /** The API's `targetType` values, to build both the `:core` targets and the DTOs. */
+    private enum class CitationKind { PERSON, EVENT, UNION }
+
     private fun cite(id: String, kind: CitationKind, target: String, source: String = "s1", confidence: Int = 3, page: String? = null, note: String? = null, mediaId: String? = null) =
         CitationDto(id, source, kind.name, target, page, confidence, note, mediaId)
 
-    private fun target(kind: CitationKind, id: String) = CitedTarget(kind, id)
+    private fun target(kind: CitationKind, id: String): CitationTarget = when (kind) {
+        CitationKind.PERSON -> CitationTarget.OnPerson(PersonId(id))
+        CitationKind.EVENT -> CitationTarget.OnEvent(EventId(id))
+        CitationKind.UNION -> CitationTarget.OnUnion(UnionId(id))
+    }
 
     private fun ready(vararg citations: CitationDto) = Loadable.Ready(citations.toList())
 
     /** Every fact of Antonio's page answered: [citations] by target, the rest empty. */
-    private fun allLoaded(citations: Map<CitedTarget, Loadable<List<CitationDto>>>): Map<CitedTarget, Loadable<List<CitationDto>>> =
+    private fun allLoaded(citations: Map<CitationTarget, Loadable<List<CitationDto>>>): Map<CitationTarget, Loadable<List<CitationDto>>> =
         listOf(
             target(CitationKind.PERSON, "antonio"),
             target(CitationKind.EVENT, "birth"),
@@ -99,13 +108,13 @@ class PersonSourcesTest {
         assertEquals("Vol. 3, p. 12", birthCitation.page)
         assertEquals("Copied by <b>Carmen</b>", birthCitation.note)
         assertEquals("scan-1", birthCitation.mediaId)
-        assertEquals(CitedFact.Event(target(CitationKind.EVENT, "birth"), "BIRTH", "1930"), birthCitation.fact)
+        assertEquals(CitedFact.Event(CitationTarget.OnEvent(EventId("birth")), "BIRTH", "1930"), birthCitation.fact)
         assertEquals(listOf(birthCitation), view.forEvent("birth"))
         assertTrue(view.forEvent("death").isEmpty(), "the stray citation isn't attached to death either")
 
         val unionCitation = view.entries[2]
         assertEquals("Parish book", unionCitation.sourceTitle)
-        assertEquals(CitedFact.Union(target(CitationKind.UNION, "u1"), "MARRIED", "Carmen Díaz"), unionCitation.fact)
+        assertEquals(CitedFact.Union(CitationTarget.OnUnion(UnionId("u1")), "MARRIED", "Carmen Díaz"), unionCitation.fact)
     }
 
     @Test
@@ -169,14 +178,6 @@ class PersonSourcesTest {
     }
 
     @Test
-    fun withoutTheAccountEveryUnionIsRequestedAndNoNameIsUsed() {
-        val facts = PersonSources.citedFacts(antonio, null, graph, viewer = null)
-
-        assertEquals(listOf("antonio", "u1", "u2"), facts.map { it.target.id })
-        assertTrue(facts.filterIsInstance<CitedFact.Union>().all { it.partnerName == null })
-    }
-
-    @Test
     fun sectionFailuresAndMissingSectionsStayInTheSourcesSection() {
         val citations = allLoaded(
             mapOf(
@@ -201,7 +202,10 @@ class PersonSourcesTest {
     @Test
     fun recordsFromAnotherTreeAreIgnored() {
         val foreignGraph = graph.copy(treeId = "tree-2")
-        assertEquals(listOf("antonio"), PersonSources.citedFacts(antonio, listOf(event("x", "antonio", "BIRTH", treeId = "tree-2")), foreignGraph, owner).map { it.target.id })
+        assertEquals(
+            listOf(target(CitationKind.PERSON, "antonio")),
+            PersonSources.citedFacts(antonio, listOf(event("x", "antonio", "BIRTH", treeId = "tree-2")), foreignGraph, owner).map { it.target },
+        )
 
         val foreignSource = registry.copy(treeId = "tree-2")
         val view = PersonSources.view(

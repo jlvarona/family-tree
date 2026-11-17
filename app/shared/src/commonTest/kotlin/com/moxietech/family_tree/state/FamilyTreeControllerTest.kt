@@ -7,8 +7,13 @@ import com.moxietech.family_tree.api.AccountDto
 import com.moxietech.family_tree.api.AddUnionChildRequest
 import com.moxietech.family_tree.api.CitationDto
 import com.moxietech.family_tree.api.SourceDto
-import com.moxietech.family_tree.client.CitationKind
-import com.moxietech.family_tree.client.CitedTarget
+import com.moxietech.family_tree.client.apiType
+import com.moxietech.family_tree.client.targetId
+import com.moxietech.family_tree.domain.CitationTarget
+import com.moxietech.family_tree.domain.EventId
+import com.moxietech.family_tree.domain.PersonId
+import com.moxietech.family_tree.domain.UnionId
+import kotlinx.coroutines.CancellationException
 import com.moxietech.family_tree.api.CreateMediaUploadRequest
 import com.moxietech.family_tree.api.MediaDownloadDto
 import com.moxietech.family_tree.api.MediaDto
@@ -92,7 +97,14 @@ class FamilyTreeControllerTest {
         var personCreationGate: CompletableDeferred<Unit>? = null
         private var unionCount = 0
 
-        override suspend fun me() = account.also { calls += "me" }
+        /** When set, `me` waits for it: the account arrives after the rest of the page. */
+        var meGate: CompletableDeferred<Unit>? = null
+
+        override suspend fun me(): AccountDto {
+            calls += "me"
+            meGate?.await()
+            return account
+        }
 
         override suspend fun trees() = listOf(tree).also { calls += "trees" }
 
@@ -237,11 +249,19 @@ class FamilyTreeControllerTest {
         // --- FT-006 follow-up: sources and citations ---------------------------------------
         var sourceList = listOf(SourceDto("s1", TREE_ID, "Birth certificate", "VITAL_RECORD", null, null, null, null, null, 1))
         val sourceFailures = ArrayDeque<ApiFailure>()
-        val citationsByTarget = mutableMapOf<CitedTarget, List<CitationDto>>()
+        val citationsByTarget = mutableMapOf<CitationTarget, List<CitationDto>>()
 
         /** Per target: the next call fails with the queued failure, or waits for the gate. */
-        val citationFailures = mutableMapOf<CitedTarget, ArrayDeque<ApiFailure>>()
-        val citationGates = mutableMapOf<CitedTarget, CompletableDeferred<Unit>>()
+        val citationFailures = mutableMapOf<CitationTarget, ArrayDeque<ApiFailure>>()
+        val citationGates = mutableMapOf<CitationTarget, CompletableDeferred<Unit>>()
+
+        /** When set, every citation call started meanwhile waits for it (a stalled server). */
+        var citationStall: CompletableDeferred<Unit>? = null
+
+        /** Citation calls running now, the most at once, and those cancelled while running. */
+        var activeCitations = 0
+        var maxActiveCitations = 0
+        var cancelledCitations = 0
 
         override suspend fun sources(treeId: String): List<SourceDto> {
             calls += "sources"
@@ -249,11 +269,21 @@ class FamilyTreeControllerTest {
             return sourceList
         }
 
-        override suspend fun citations(treeId: String, target: CitedTarget): List<CitationDto> {
-            calls += "citations:${target.kind}:${target.id}"
-            citationGates.remove(target)?.await()
-            citationFailures[target]?.removeFirstOrNull()?.let { throw ApiException(it) }
-            return citationsByTarget[target].orEmpty()
+        override suspend fun citations(treeId: String, target: CitationTarget): List<CitationDto> {
+            calls += "citations:${target.apiType}:${target.targetId}"
+            activeCitations++
+            maxActiveCitations = maxOf(maxActiveCitations, activeCitations)
+            try {
+                citationStall?.await()
+                citationGates.remove(target)?.await()
+                citationFailures[target]?.removeFirstOrNull()?.let { throw ApiException(it) }
+                return citationsByTarget[target].orEmpty()
+            } catch (e: CancellationException) {
+                cancelledCitations++
+                throw e
+            } finally {
+                activeCitations--
+            }
         }
     }
 
@@ -1259,11 +1289,14 @@ class FamilyTreeControllerTest {
 
     // --- FT-006 follow-up: citations on the person page -----------------------------------
 
-    private val kidTarget = CitedTarget(CitationKind.PERSON, "kid")
-    private val kidBirth = CitedTarget(CitationKind.EVENT, "e-kid")
+    private val kidTarget: CitationTarget = CitationTarget.OnPerson(PersonId("kid"))
+    private val kidBirth: CitationTarget = CitationTarget.OnEvent(EventId("e-kid"))
 
-    private fun citation(id: String, target: CitedTarget, mediaId: String? = null) =
-        CitationDto(id, "s1", target.kind.name, target.id, null, 2, null, mediaId)
+    private fun citation(id: String, target: CitationTarget, mediaId: String? = null) =
+        CitationDto(id, "s1", target.apiType, target.targetId, null, 2, null, mediaId)
+
+    /** Eighteen events on kid's timeline, as in the reviewed browser run. */
+    private fun eighteenEvents() = (1..18).map { eventOf("e$it", "kid", "RESIDENCE", "${1910 + it}", "${1910 + it}-01-01") }
 
     /** The Sources section as the page renders it. */
     private fun FamilyTreeController.sources(): SourcesView {
@@ -1288,7 +1321,7 @@ class FamilyTreeControllerTest {
         assertTrue(transfer.downloads.isEmpty() && api.calls.none { it.startsWith("download:") }, "no scan is fetched until opened")
 
         // A partner's page also lists the union's citations, once the family has loaded.
-        val union = CitedTarget(CitationKind.UNION, "u1")
+        val union = CitationTarget.OnUnion(UnionId("u1"))
         api.citationsByTarget[union] = listOf(citation("c-union", union))
         controller.openPerson("mum")
         runCurrent()
@@ -1424,6 +1457,7 @@ class FamilyTreeControllerTest {
 
         session.state.value = AuthState.SignedOut(SignedOutReason.SESSION_EXPIRED)
         runCurrent()
+        assertEquals(1, api.cancelledCitations, "the running request was cancelled with the session")
         gate.complete(Unit)
         runCurrent()
         assertNull(controller.state.value.personScreen)
@@ -1431,6 +1465,117 @@ class FamilyTreeControllerTest {
         api.citationsByTarget[kidTarget] = listOf(citation("new", kidTarget))
         signIn("someone-new")
         assertEquals(Loadable.Ready(listOf(citation("new", kidTarget))), controller.page.citations[kidTarget])
+    }
+
+    @Test
+    fun aStalledTimelineRunsOnlyAFewCitationRequestsAtOnce() = runTest {
+        val stall = CompletableDeferred<Unit>()
+        api.citationStall = stall
+        api.events = eighteenEvents()
+        val controller = openPersonPage()
+
+        val max = FamilyTreeController.MAX_ACTIVE_CITATION_REQUESTS
+        assertEquals(max, api.calls.count { it.startsWith("citations:") }, "the rest wait their turn")
+        assertEquals(max, api.activeCitations)
+        val queued = controller.page.citations.values.count { it == Loadable.Loading }
+        assertEquals(19, queued, "the person and 18 events show as loading meanwhile")
+
+        api.citationStall = null
+        stall.complete(Unit)
+        runCurrent()
+
+        assertEquals(19, api.calls.count { it.startsWith("citations:") }, "each target once")
+        assertEquals(max, api.maxActiveCitations)
+        assertTrue(controller.page.citations.values.all { it is Loadable.Ready })
+        assertEquals(18, (controller.sources() as SourcesView.Listed).loadedEvents.size)
+    }
+
+    @Test
+    fun leavingTheProfileCancelsRunningAndQueuedCitationRequests() = runTest {
+        val stall = CompletableDeferred<Unit>()
+        api.citationStall = stall
+        api.events = eighteenEvents()
+        val controller = openPersonPage()
+        val started = api.calls.count { it.startsWith("citations:") }
+
+        // Navigation within the same tree: back to the canvas.
+        controller.backToTree()
+        runCurrent()
+
+        assertEquals(FamilyTreeController.MAX_ACTIVE_CITATION_REQUESTS, api.cancelledCitations)
+        assertEquals(0, api.activeCitations)
+        stall.complete(Unit)
+        runCurrent()
+        assertEquals(started, api.calls.count { it.startsWith("citations:") }, "queued requests never start")
+    }
+
+    @Test
+    fun openingARelativeStopsTheEarlierProfilesCitationsAndLoadsTheNewOnes() = runTest {
+        val stall = CompletableDeferred<Unit>()
+        api.citationStall = stall
+        api.events = eighteenEvents()
+        val union = CitationTarget.OnUnion(UnionId("u1"))
+        api.citationsByTarget[union] = listOf(citation("c-union", union))
+        val controller = openPersonPage()
+
+        api.citationStall = null
+        controller.openPerson("mum")
+        runCurrent()
+        stall.complete(Unit)
+        runCurrent()
+
+        assertEquals(FamilyTreeController.MAX_ACTIVE_CITATION_REQUESTS, api.cancelledCitations)
+        assertTrue(api.calls.none { it == "citations:EVENT:e18" }, "kid's queued events were never requested")
+        assertEquals(listOf("c-union"), (controller.sources() as SourcesView.Listed).entries.map { it.citationId })
+        assertTrue(controller.page.citations.values.all { it is Loadable.Ready })
+    }
+
+    @Test
+    fun citationsWaitForTheAccountAndThenLoadIfTheProfileIsStillOpen() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        api.meGate = gate
+        api.citationsByTarget[kidTarget] = listOf(citation("c-person", kidTarget))
+        val controller = openPersonPage()
+
+        assertIs<Loadable.Ready<*>>(controller.page.person)
+        assertIs<Loadable.Ready<*>>(controller.page.events)
+        assertTrue(api.calls.none { it.startsWith("citations:") || it == "sources" }, "nothing before the viewer is known")
+        assertNull(controller.page.sources)
+
+        gate.complete(Unit)
+        runCurrent()
+
+        assertEquals(listOf("c-person"), (controller.sources() as SourcesView.Listed).entries.map { it.citationId })
+        assertEquals(1, api.calls.count { it == "citations:EVENT:e-kid" })
+    }
+
+    @Test
+    fun aHiddenProfileLoadedBeforeTheAccountNeverRequestsCitations() = runTest {
+        api.tree = api.tree.copy(ownerAccountId = "someone-else")
+        api.replacePerson(personOf("kid", living = true))
+        val gate = CompletableDeferred<Unit>()
+        api.meGate = gate
+        val controller = openPersonPage()
+
+        gate.complete(Unit)
+        runCurrent()
+
+        assertEquals(SourcesView.Private, controller.sources())
+        assertTrue(api.calls.none { it.startsWith("citations:") || it == "sources" })
+    }
+
+    @Test
+    fun anAccountArrivingAfterLeavingTheProfileRequestsNothing() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        api.meGate = gate
+        val controller = openPersonPage()
+
+        controller.backToTree()
+        runCurrent()
+        gate.complete(Unit)
+        runCurrent()
+
+        assertTrue(api.calls.none { it.startsWith("citations:") || it == "sources" })
     }
 }
 

@@ -38,13 +38,22 @@ route changed, and no write controls were added (the mockup's "Add source" and
 
 **Where it lives.** `state/PersonSources.kt` builds the section and the timeline links
 (`citedFacts`, `view`) through `Viewer`; `PersonScreen` gained `sources`, `citations`
-(per target) and `openScans`; `FamilyTreeController` gained `showScan` / `hideScan` and
-`loadPageCitations`; `ui/PersonPage.kt` renders the pill, the card and the citation rows.
-`StoredPhoto` takes an optional `contentScale`.
+(keyed by the `:core` `CitationTarget`) and `openScans`; `FamilyTreeController` gained
+`showScan` / `hideScan`, `loadPageCitations` and the per-page `CitationWork`;
+`ui/PersonPage.kt` renders the pill, the card and the citation rows. `StoredPhoto` takes
+an optional `contentScale`. The client maps `CitationTarget` to the API's `targetType`,
+ID and route segment (`apiType`, `targetId`).
 
-**Loading and failures.** Each fact's citations are requested as soon as the fact is
-known: the person's and the source list when the person arrives, the events' when the
-timeline arrives, the unions' when the family arrives. Each target loads and fails on
+**Loading and failures.** Nothing is requested until the account is known, since the
+viewer decides what may be requested; when the account arrives and the profile is still
+open, the requests start then. After that, each fact's citations are requested as soon
+as the fact is known: the person's and the source list with the person, the events' with
+the timeline, the unions' with the family. They run in the page's own scope, a child of
+the session's, with at most `MAX_ACTIVE_CITATION_REQUESTS` (4) citation and source
+requests at once; the rest wait in order and show as loading. Every route change
+(another profile, back to the tree in the same tree, the tree list), a full reload of the
+profile and the end of the session cancel that scope, so running and queued requests
+stop and never compete with the next profile. Each target loads and fails on
 its own; the card lists what arrived, with a loading line or the localized failure and
 a retry below it. Retry fetches only the failed parts (source list or individual
 targets), and never the timeline or family unless they failed too. If the timeline or
@@ -56,12 +65,12 @@ the page or after the session ended is dropped.
 
 **Privacy and untrusted data.**
 - A living person hidden from the caller shows "Sources for living people are shown
-  only to members with access", and nothing is requested for them once the account is
-  known. Should a response carry citations anyway, they aren't presented.
+  only to members with access", and nothing is requested for them, even when their
+  record arrives before the account. Should a response carry citations anyway, they
+  aren't presented.
 - A union is listed (and requested) only when every partner is visible, the server's
   `citationsOn` rule; the family section still shows that union's type for a hidden
-  partner, unchanged. Before the account has loaded, every union of the person is
-  requested and the server applies the rule; the page still filters with `Viewer`.
+  partner, unchanged.
 - Citations for another target, sources and records from another tree are dropped
   (another tree's source leaves the citation as "Unknown source").
 - Source titles, details, pages, notes and web addresses are plain text after
@@ -75,26 +84,49 @@ seven `SourceType` names (anything else is "Other source"; FT-062 still decides 
 source types to prioritize).
 
 **Tests added (`:app:shared` commonTest).**
-- `PersonSourcesTest` (7): the owner's citations on person, event and union in page
+- `PersonSourcesTest` (6): the owner's citations on person, event and union in page
   order with source metadata, cleaned text, the inert web address and clamped
   confidence, a stray citation for another target dropped; empty only once everything
   answered, with no "unknown source" flash before the source list; a hidden living
   person is private even if citations arrive; a member sees a deceased person's
   citations but not those of a union with a hidden partner, whose type the family
-  section keeps; requests without the account; failures and a failed timeline stay in
-  the card; another tree's graph, events and sources are ignored.
-- `FamilyTreeControllerTest` (9 more): person, event and union citations load with the
+  section keeps; failures and a failed timeline stay in the card; another tree's graph,
+  events and sources are ignored.
+- `FamilyTreeControllerTest` (15 more): person, event and union citations load with the
   page and no scan is fetched; an empty card; scans fetched only when opened, at most
   two open, reopened from the cache, and only for a listed citation; a closed failed scan
   isn't retried; failed citations and source list stay local and retry fetches only
   them; an event's `404` is no citations; a member makes no citation requests for a
   hidden person or a union with a hidden partner; late citations after leaving the page
-  and after the session expired are dropped.
+  and after the session expired (the running request cancelled) are dropped. Review
+  regressions: a stalled 18-event timeline runs only 4 citation requests at once and
+  each target once after the stall; back to the tree cancels the 4 running requests and
+  the queued ones never start; opening a relative stops the earlier profile's requests
+  and loads the new ones; nothing is requested until the account arrives, then the
+  profile's citations load; a hidden profile loaded before the account never requests
+  citations; an account arriving after leaving the profile requests nothing.
 - `HttpFamilyTreeApiTest` (1 more): the sources and citation routes, encoded path IDs,
   unknown fields tolerated.
 
-**Verification.** Not run in this session: the user runs Gradle (`:app:shared:jvmTest`,
-`:app:shared:jsTest`, `:app:shared:wasmJsTest`) and the browser check before publishing.
+**Review fix in PR #21 for citation request limits and navigation.** The first draft
+passed the full suites (after the reviewer removed a duplicate test `page` helper) and
+the English JS browser check of visible citations, source counts, on-demand scans and
+hidden person/union privacy. With 18 timeline events and stalled citation responses in
+Edge, it started all 18 event requests at once, in the session scope, so they outlived
+navigation to another profile; and a profile that arrived before the account could
+request a hidden person's or partner's citations, leaving the server to withhold them.
+The fix runs citation and source requests in a per-page `CitationWork` (child scope and a
+4-permit semaphore), cancels it on every route change, full reload and session end, and
+waits for the account before requesting anything (`loadAccount` then starts them if the
+profile is still open). `PersonSources.citedFacts` now always takes the viewer. The 404,
+partial loading, independent failures, retry and scan behaviour are unchanged.
+
+**Verification.** Gradle passed 63 core tests, 152 server tests, and 158 shared
+tests on each of JVM, JS and Wasm. One opt-in Keycloak test was skipped in Gradle.
+In Edge, an 18-event timeline started four citation requests while responses were
+stalled. Leaving the page cancelled the remaining work. English JS and Spanish
+Wasm runs against local Keycloak, PostgreSQL and S3 verified person and timeline
+citations, on-demand scans, private records and the visible union type.
 
 ## 2026-11-16 — FT-008 photo upload with presigned URLs
 

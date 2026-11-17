@@ -38,6 +38,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 /**
  * Drives the web workflow: session, routing, loading and the owner's create
@@ -486,18 +488,22 @@ class FamilyTreeController(
     /**
      * Requests what the Sources section needs and doesn't have yet: the tree's sources
      * and the citations of every fact on the page ([PersonSources.citedFacts]). Called
-     * when the person, the timeline or the family arrives, so each fact's citations are
-     * requested as soon as the fact is known. Nothing is requested for a person the client
-     * already knows is hidden. Failed parts are fetched again only on [retryFailed].
+     * when the person, the timeline, the family or the account arrives, so each fact's
+     * citations are requested as soon as the fact is known. Nothing is requested before
+     * the account is known (the viewer decides what may be requested), nor for a hidden
+     * person or a union with a hidden partner. Failed parts are fetched again only on
+     * [retryFailed]. The requests run in the page's [CitationWork]: at most
+     * [MAX_ACTIVE_CITATION_REQUESTS] at once, cancelled with the page.
      */
     private fun loadPageCitations(instance: Long, retryFailed: Boolean = false) {
         val page = currentPersonScreen(instance) ?: return
         val person = page.person.valueOrNull ?: return
-        val facts = PersonSources.citedFacts(person, page.events.valueOrNull, page.graph.valueOrNull, pageViewer(page))
+        val viewer = pageViewer(page) ?: return
+        val facts = PersonSources.citedFacts(person, page.events.valueOrNull, page.graph.valueOrNull, viewer)
         if (facts.isEmpty()) return
         if (page.sources == null || (retryFailed && page.sources is Loadable.Failed)) {
             updatePersonScreen(instance) { it.copy(sources = Loadable.Loading) }
-            inSession { owner ->
+            inCitationWork(instance) { owner ->
                 val sources = load { api.sources(page.treeId) }
                 if (isCurrent(owner)) updatePersonScreen(instance) { it.copy(sources = sources) }
             }
@@ -512,7 +518,7 @@ class FamilyTreeController(
         if (wanted.isEmpty()) return
         updatePersonScreen(instance) { current -> current.copy(citations = current.citations + wanted.associateWith { Loadable.Loading }) }
         wanted.forEach { target ->
-            inSession { owner ->
+            inCitationWork(instance) { owner ->
                 val result: Loadable<List<CitationDto>> = try {
                     Loadable.Ready(api.citations(page.treeId, target))
                 } catch (e: ApiException) {
@@ -522,6 +528,42 @@ class FamilyTreeController(
                 if (isCurrent(owner)) updatePersonScreen(instance) { it.copy(citations = it.citations + (target to result)) }
             }
         }
+    }
+
+    /**
+     * The citation and source requests of one person page ([instance]): a scope that is a
+     * child of the session's, and a fixed number of permits. Queued requests wait for a
+     * permit inside the scope, so cancelling it stops both running and queued work.
+     */
+    private class CitationWork(val instance: Long, val scope: CoroutineScope, val permits: Semaphore)
+
+    private var citationWork: CitationWork? = null
+
+    /**
+     * Runs [block] in the page's [CitationWork] once a permit is free, if that page and
+     * session are still current by then. A different page replaces (and cancels) the work.
+     */
+    private fun inCitationWork(instance: Long, block: suspend (CoroutineScope) -> Unit) {
+        val owner = sessionScope
+        val work = citationWork?.takeIf { it.instance == instance && it.scope.isActive } ?: run {
+            cancelCitationWork()
+            CitationWork(
+                instance,
+                CoroutineScope(owner.coroutineContext + SupervisorJob(owner.coroutineContext[Job])),
+                Semaphore(MAX_ACTIVE_CITATION_REQUESTS),
+            ).also { citationWork = it }
+        }
+        work.scope.launch {
+            work.permits.withPermit {
+                if (isCurrent(owner) && currentPersonScreen(instance) != null) block(owner)
+            }
+        }
+    }
+
+    /** Stops the person page's citation and source requests, running and queued. */
+    private fun cancelCitationWork() {
+        citationWork?.scope?.cancel()
+        citationWork = null
     }
 
     private fun pageViewer(page: PersonScreen): Viewer? {
@@ -733,6 +775,9 @@ class FamilyTreeController(
 
     private fun showRoute(route: Route) {
         formVersion++
+        // Every route change leaves the person page on screen (a person route opens a new
+        // one), so its citation and source requests stop, running or queued.
+        cancelCitationWork()
         _state.update { it.copy(route = route, form = FormState()) }
         if (_state.value.auth !is AuthState.SignedIn) return
         when (route) {
@@ -762,6 +807,10 @@ class FamilyTreeController(
     private fun loadAccount() = inSession { owner ->
         val result = load { api.me() }
         applyIf(owner) { it.copy(account = result) }
+        // Citations wait for the viewer: request them now if a person page is still open.
+        if (isCurrent(owner) && result is Loadable.Ready) {
+            _state.value.personScreen?.takeIf { isOnRoute(_state.value.route, it) }?.let { loadPageCitations(it.instance) }
+        }
     }
 
     private fun loadTrees() = inSession { owner ->
@@ -830,6 +879,8 @@ class FamilyTreeController(
      */
     private fun loadPersonScreen(instance: Long) {
         val target = currentPersonScreen(instance) ?: return
+        // A full reload starts the Sources section over, so earlier requests stop.
+        cancelCitationWork()
         updatePersonScreen(instance) {
             it.copy(
                 tree = Loadable.Loading,
@@ -962,6 +1013,7 @@ class FamilyTreeController(
         CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
 
     private fun resetSession() {
+        cancelCitationWork()
         sessionScope.cancel()
         sessionScope = newSessionScope()
     }
@@ -984,6 +1036,9 @@ class FamilyTreeController(
     companion object {
         /** Images kept for display at once (FT-008); the least recently used is dropped first. */
         internal const val MAX_CACHED_PHOTOS = 40
+
+        /** Citation and source requests a person page runs at once; the rest wait their turn. */
+        const val MAX_ACTIVE_CITATION_REQUESTS = 4
 
         /**
          * Citation scans open on a person page at once. With the profile photo that is the
