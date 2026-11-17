@@ -6,6 +6,10 @@ import com.moxietech.family_tree.api.PresignedUploadDto
 import com.moxietech.family_tree.api.SetProfilePhotoRequest
 import com.moxietech.family_tree.auth.AccessTokenSource
 import com.moxietech.family_tree.auth.TokenResult
+import com.moxietech.family_tree.domain.CitationTarget
+import com.moxietech.family_tree.domain.EventId
+import com.moxietech.family_tree.domain.PersonId
+import com.moxietech.family_tree.domain.UnionId
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
@@ -141,6 +145,36 @@ class HttpFamilyTreeApiTest {
         assertEquals("http://localhost:3000/api/v1/trees/t1/people/p%2F1/events", seen.single().first)
         assertEquals("abt 1890", events.single().date?.displayText)
         assertEquals("Toledo", events.single().place?.name)
+    }
+
+    @Test
+    fun sourcesAndCitationsAreReadFromTheirRoutesWithEncodedIds() = runTest {
+        val api = api(
+            Tokens(),
+            HttpStatusCode.OK to """[{"id":"s1","treeId":"t1","title":"Parish book","type":"CHURCH_RECORD","author":null,
+                "publisher":null,"repository":null,"url":"https://example.org/x","date":null,"version":1,"futureField":0}]""",
+            HttpStatusCode.OK to """[{"id":"c1","sourceId":"s1","targetType":"EVENT","targetId":"e/1","page":"p. 4",
+                "confidence":3,"note":null,"mediaId":"m1","futureField":"x"}]""",
+            HttpStatusCode.OK to "[]",
+            HttpStatusCode.OK to "[]",
+        )
+
+        assertEquals("Parish book", api.sources("t1").single().title)
+        val citation = api.citations("t1", CitationTarget.OnEvent(EventId("e/1"))).single()
+        api.citations("t1", CitationTarget.OnPerson(PersonId("p?1")))
+        api.citations("t1", CitationTarget.OnUnion(UnionId("u1")))
+
+        assertEquals("m1", citation.mediaId)
+        assertEquals(
+            listOf(
+                "http://localhost:3000/api/v1/trees/t1/sources",
+                "http://localhost:3000/api/v1/trees/t1/events/e%2F1/citations",
+                "http://localhost:3000/api/v1/trees/t1/people/p%3F1/citations",
+                "http://localhost:3000/api/v1/trees/t1/unions/u1/citations",
+            ),
+            seen.map { it.first },
+        )
+        assertTrue(sent.all { it.first == HttpMethod.Get && it.second == null })
     }
 
     @Test

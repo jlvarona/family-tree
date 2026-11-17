@@ -2,6 +2,7 @@ package com.moxietech.family_tree.client
 
 import com.moxietech.family_tree.api.AccountDto
 import com.moxietech.family_tree.api.AddUnionChildRequest
+import com.moxietech.family_tree.api.CitationDto
 import com.moxietech.family_tree.api.CreatePersonRequest
 import com.moxietech.family_tree.api.CreatePersonResponse
 import com.moxietech.family_tree.api.CreateMediaUploadRequest
@@ -15,10 +16,12 @@ import com.moxietech.family_tree.api.SetProfilePhotoRequest
 import com.moxietech.family_tree.api.MergePeopleRequest
 import com.moxietech.family_tree.api.MergePeopleResponse
 import com.moxietech.family_tree.api.PersonDto
+import com.moxietech.family_tree.api.SourceDto
 import com.moxietech.family_tree.api.TreeDto
 import com.moxietech.family_tree.api.TreeGraphDto
 import com.moxietech.family_tree.api.UnionDto
 import com.moxietech.family_tree.auth.AccessTokenSource
+import com.moxietech.family_tree.domain.CitationTarget
 import com.moxietech.family_tree.auth.TokenResult
 import io.ktor.client.HttpClient
 import io.ktor.client.request.bearerAuth
@@ -115,7 +118,40 @@ interface FamilyTreeApi {
 
     /** FT-008: sets or removes (null) a person's profile photo at the person's [version]. */
     suspend fun setProfilePhoto(treeId: String, personId: String, mediaId: String?, version: Long): PersonDto
+
+    /** The tree's sources (`GET …/sources`, any active member): the metadata citations point at. */
+    suspend fun sources(treeId: String): List<SourceDto>
+
+    /**
+     * FT-002: the citations on one person, event or union
+     * (`GET …/{people|events|unions}/{id}/citations`). The server returns an empty list
+     * for a person or union with a hidden subject, and `404` for an event it hides.
+     */
+    suspend fun citations(treeId: String, target: CitationTarget): List<CitationDto>
 }
+
+/** The API's `targetType` for a `:core` citation target (FT-002). */
+val CitationTarget.apiType: String
+    get() = when (this) {
+        is CitationTarget.OnPerson -> "PERSON"
+        is CitationTarget.OnEvent -> "EVENT"
+        is CitationTarget.OnUnion -> "UNION"
+    }
+
+/** The ID of the cited person, event or union. */
+val CitationTarget.targetId: String
+    get() = when (this) {
+        is CitationTarget.OnPerson -> personId.value
+        is CitationTarget.OnEvent -> eventId.value
+        is CitationTarget.OnUnion -> unionId.value
+    }
+
+private val CitationTarget.collection: String
+    get() = when (this) {
+        is CitationTarget.OnPerson -> "people"
+        is CitationTarget.OnEvent -> "events"
+        is CitationTarget.OnUnion -> "unions"
+    }
 
 /**
  * [FamilyTreeApi] over HTTP. Every call carries the session's access token
@@ -189,6 +225,14 @@ class HttpFamilyTreeApi(
             json.encodeToString(SetProfilePhotoRequest.serializer(), SetProfilePhotoRequest(mediaId, version)),
         ),
         PersonDto.serializer(),
+    )
+
+    override suspend fun sources(treeId: String): List<SourceDto> =
+        get("/trees/${seg(treeId)}/sources", ListSerializer(SourceDto.serializer()))
+
+    override suspend fun citations(treeId: String, target: CitationTarget): List<CitationDto> = get(
+        "/trees/${seg(treeId)}/${target.collection}/${seg(target.targetId)}/citations",
+        ListSerializer(CitationDto.serializer()),
     )
 
     private suspend fun <T> get(path: String, result: DeserializationStrategy<T>): T =

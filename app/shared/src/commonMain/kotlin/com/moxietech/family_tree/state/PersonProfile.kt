@@ -136,9 +136,7 @@ object PersonProfile {
 
     fun timeline(person: PersonDto, events: List<EventDto>, viewer: Viewer): Timeline {
         if (!viewer.canSeeDetails(person)) return Timeline.Private
-        val entries = events
-            .filter { it.personId == person.id && it.treeId.equals(person.treeId, ignoreCase = true) }
-            .sortedWith(eventOrder)
+        val entries = personEvents(person, events)
             .map { event ->
                 TimelineEntry(
                     eventId = event.id,
@@ -152,6 +150,11 @@ object PersonProfile {
             }
         return Timeline.Entries(entries)
     }
+
+    /** [person]'s own events in this tree, in timeline order (no visibility check). */
+    internal fun personEvents(person: PersonDto, events: List<EventDto>): List<EventDto> = events
+        .filter { it.personId == person.id && it.treeId.equals(person.treeId, ignoreCase = true) }
+        .sortedWith(eventOrder)
 
     fun lifeFacts(timeline: Timeline): LifeFacts {
         val entries = (timeline as? Timeline.Entries)?.entries ?: return LifeFacts(null, null, null)
@@ -183,9 +186,10 @@ object PersonProfile {
     fun paragraphs(text: String): List<String> = text.split(Regex("\n\\s*\n")).map { it.trim() }.filter { it.isNotEmpty() }
 
     /** The `:core`-formatted name, as plain text on one line. */
-    private fun displayName(person: PersonDto): String = Viewer.fullName(person).let { cleanLine(it) ?: it }
+    internal fun displayName(person: PersonDto): String = Viewer.fullName(person).let { cleanLine(it) ?: it }
 
-    private fun cleanLine(text: String?): String? = cleanText(text)?.replace(Regex("\\s+"), " ")
+    /** [cleanText] on one line: runs of whitespace, line breaks included, become one space. */
+    internal fun cleanLine(text: String?): String? = cleanText(text)?.replace(Regex("\\s+"), " ")
 
     private fun isUnsafe(c: Char): Boolean =
         c < ' ' || c in '\u007F'..'\u009F' || c in '‪'..'‮' || c in '⁦'..'⁩'
@@ -214,6 +218,9 @@ object PersonProfile {
     private fun UnionDto.partnerIds(): List<String> = listOfNotNull(partner1Id, partner2Id)
 
     private fun GedcomDateDto?.text(): String? = this?.displayTextOrNull()?.let(::cleanLine)
+
+    /** A date's display text as one cleaned line, or null. */
+    internal fun dateText(date: GedcomDateDto?): String? = date.text()
 
     /**
      * Birth first, death then burial last; within each group, dated events by

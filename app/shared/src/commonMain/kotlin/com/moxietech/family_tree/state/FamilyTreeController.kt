@@ -1,6 +1,7 @@
 package com.moxietech.family_tree.state
 
 import com.moxietech.family_tree.api.AddUnionChildRequest
+import com.moxietech.family_tree.api.CitationDto
 import com.moxietech.family_tree.api.CreatePersonRequest
 import com.moxietech.family_tree.api.CreateUnionRequest
 import com.moxietech.family_tree.api.MergePeopleRequest
@@ -37,6 +38,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 /**
  * Drives the web workflow: session, routing, loading and the owner's create
@@ -114,6 +117,9 @@ class FamilyTreeController(
                 // Only the failed sections are fetched again; the rest stays on screen.
                 if (page.graph is Loadable.Failed) loadPersonFamily(page.instance)
                 if (page.events is Loadable.Failed) loadPersonTimeline(page.instance)
+                if (page.sources is Loadable.Failed || page.citations.values.any { it is Loadable.Failed }) {
+                    loadPageCitations(page.instance, retryFailed = true)
+                }
             }
         }
     }
@@ -451,6 +457,121 @@ class FamilyTreeController(
         updatePersonScreen(page.instance) { it.copy(photo = null) }
     }
 
+    // --- FT-006 follow-up: citations and their scans on the person page --------------
+
+    /**
+     * Opens a citation scan shown on the person page and fetches it through a
+     * short-lived link (once; the bounded photo cache keeps it). Only a scan of a
+     * citation the page lists for the caller can be opened. At most [MAX_OPEN_SCANS]
+     * stay open; opening another closes the oldest, so the images on screen stay within
+     * the cache.
+     */
+    fun showScan(mediaId: String) {
+        val page = _state.value.personScreen?.takeIf { isOnRoute(_state.value.route, it) } ?: return
+        if (mediaId in page.openScans) return
+        val person = page.person.valueOrNull ?: return
+        val viewer = pageViewer(page) ?: return
+        val view = PersonSources.view(person, viewer, page.events, page.graph, page.sources, page.citations)
+        if ((view as? SourcesView.Listed)?.entries?.none { it.mediaId == mediaId } != false) return
+        updatePersonScreen(page.instance) { it.copy(openScans = (it.openScans + mediaId).takeLast(MAX_OPEN_SCANS)) }
+        loadPhoto(page.treeId, mediaId)
+    }
+
+    /** Closes a scan. One that failed to load is forgotten, so a later retry doesn't fetch it. */
+    fun hideScan(mediaId: String) {
+        val page = _state.value.personScreen ?: return
+        updatePersonScreen(page.instance) { it.copy(openScans = it.openScans - mediaId) }
+        val key = PhotoKey(page.treeId, mediaId)
+        if (_state.value.photos[key] is Loadable.Failed) _state.update { it.copy(photos = it.photos - key) }
+    }
+
+    /**
+     * Requests what the Sources section needs and doesn't have yet: the tree's sources
+     * and the citations of every fact on the page ([PersonSources.citedFacts]). Called
+     * when the person, the timeline, the family or the account arrives, so each fact's
+     * citations are requested as soon as the fact is known. Nothing is requested before
+     * the account is known (the viewer decides what may be requested), nor for a hidden
+     * person or a union with a hidden partner. Failed parts are fetched again only on
+     * [retryFailed]. The requests run in the page's [CitationWork]: at most
+     * [MAX_ACTIVE_CITATION_REQUESTS] at once, cancelled with the page.
+     */
+    private fun loadPageCitations(instance: Long, retryFailed: Boolean = false) {
+        val page = currentPersonScreen(instance) ?: return
+        val person = page.person.valueOrNull ?: return
+        val viewer = pageViewer(page) ?: return
+        val facts = PersonSources.citedFacts(person, page.events.valueOrNull, page.graph.valueOrNull, viewer)
+        if (facts.isEmpty()) return
+        if (page.sources == null || (retryFailed && page.sources is Loadable.Failed)) {
+            updatePersonScreen(instance) { it.copy(sources = Loadable.Loading) }
+            inCitationWork(instance) { owner ->
+                val sources = load { api.sources(page.treeId) }
+                if (isCurrent(owner)) updatePersonScreen(instance) { it.copy(sources = sources) }
+            }
+        }
+        val wanted = facts.map { it.target }.filter { target ->
+            when (page.citations[target]) {
+                null -> true
+                is Loadable.Failed -> retryFailed
+                else -> false
+            }
+        }
+        if (wanted.isEmpty()) return
+        updatePersonScreen(instance) { current -> current.copy(citations = current.citations + wanted.associateWith { Loadable.Loading }) }
+        wanted.forEach { target ->
+            inCitationWork(instance) { owner ->
+                val result: Loadable<List<CitationDto>> = try {
+                    Loadable.Ready(api.citations(page.treeId, target))
+                } catch (e: ApiException) {
+                    // A fact that is gone, or an event the server now hides, has nothing to show.
+                    if (e.failure == ApiFailure.NOT_FOUND) Loadable.Ready(emptyList()) else Loadable.Failed(e.failure)
+                }
+                if (isCurrent(owner)) updatePersonScreen(instance) { it.copy(citations = it.citations + (target to result)) }
+            }
+        }
+    }
+
+    /**
+     * The citation and source requests of one person page ([instance]): a scope that is a
+     * child of the session's, and a fixed number of permits. Queued requests wait for a
+     * permit inside the scope, so cancelling it stops both running and queued work.
+     */
+    private class CitationWork(val instance: Long, val scope: CoroutineScope, val permits: Semaphore)
+
+    private var citationWork: CitationWork? = null
+
+    /**
+     * Runs [block] in the page's [CitationWork] once a permit is free, if that page and
+     * session are still current by then. A different page replaces (and cancels) the work.
+     */
+    private fun inCitationWork(instance: Long, block: suspend (CoroutineScope) -> Unit) {
+        val owner = sessionScope
+        val work = citationWork?.takeIf { it.instance == instance && it.scope.isActive } ?: run {
+            cancelCitationWork()
+            CitationWork(
+                instance,
+                CoroutineScope(owner.coroutineContext + SupervisorJob(owner.coroutineContext[Job])),
+                Semaphore(MAX_ACTIVE_CITATION_REQUESTS),
+            ).also { citationWork = it }
+        }
+        work.scope.launch {
+            work.permits.withPermit {
+                if (isCurrent(owner) && currentPersonScreen(instance) != null) block(owner)
+            }
+        }
+    }
+
+    /** Stops the person page's citation and source requests, running and queued. */
+    private fun cancelCitationWork() {
+        citationWork?.scope?.cancel()
+        citationWork = null
+    }
+
+    private fun pageViewer(page: PersonScreen): Viewer? {
+        val tree = page.tree.valueOrNull ?: return null
+        val account = _state.value.account.valueOrNull ?: return null
+        return Viewer(tree, account)
+    }
+
     /** Removes the person's profile photo (the image stays stored, unattached; owner-readable only). */
     fun removePhoto() {
         val page = editablePhotoPage() ?: return
@@ -599,8 +720,8 @@ class FamilyTreeController(
     /**
      * Stores [value] as the most recently used image, then evicts least recently used
      * entries until the cache is within [photoCacheBytes] of encoded data and
-     * [MAX_CACHED_PHOTOS] entries. Images on screen (the person page's photo, both
-     * records of an open merge) and the one just stored are never evicted, so the
+     * [MAX_CACHED_PHOTOS] entries. Images on screen (the person page's photo and open
+     * citation scans, both records of an open merge) and the one just stored are never evicted, so the
      * previews in use stay; an evicted image is fetched again when it's next shown.
      */
     private fun putPhoto(key: PhotoKey, value: Loadable<ByteArray>) = _state.update { state ->
@@ -619,6 +740,7 @@ class FamilyTreeController(
     private fun photosOnScreen(state: AppState): Set<PhotoKey> = buildSet {
         state.personScreen?.let { page ->
             page.person.valueOrNull?.profileMediaId?.let { add(PhotoKey(page.treeId, it)) }
+            page.openScans.forEach { add(PhotoKey(page.treeId, it)) }
         }
         state.treeScreen?.let { screen ->
             screen.merge?.records?.valueOrNull?.let { pair ->
@@ -653,6 +775,9 @@ class FamilyTreeController(
 
     private fun showRoute(route: Route) {
         formVersion++
+        // Every route change leaves the person page on screen (a person route opens a new
+        // one), so its citation and source requests stop, running or queued.
+        cancelCitationWork()
         _state.update { it.copy(route = route, form = FormState()) }
         if (_state.value.auth !is AuthState.SignedIn) return
         when (route) {
@@ -682,6 +807,10 @@ class FamilyTreeController(
     private fun loadAccount() = inSession { owner ->
         val result = load { api.me() }
         applyIf(owner) { it.copy(account = result) }
+        // Citations wait for the viewer: request them now if a person page is still open.
+        if (isCurrent(owner) && result is Loadable.Ready) {
+            _state.value.personScreen?.takeIf { isOnRoute(_state.value.route, it) }?.let { loadPageCitations(it.instance) }
+        }
     }
 
     private fun loadTrees() = inSession { owner ->
@@ -750,8 +879,18 @@ class FamilyTreeController(
      */
     private fun loadPersonScreen(instance: Long) {
         val target = currentPersonScreen(instance) ?: return
+        // A full reload starts the Sources section over, so earlier requests stop.
+        cancelCitationWork()
         updatePersonScreen(instance) {
-            it.copy(tree = Loadable.Loading, person = Loadable.Loading, graph = Loadable.Loading, events = Loadable.Loading)
+            it.copy(
+                tree = Loadable.Loading,
+                person = Loadable.Loading,
+                graph = Loadable.Loading,
+                events = Loadable.Loading,
+                sources = null,
+                citations = emptyMap(),
+                openScans = emptyList(),
+            )
         }
         inSession { owner ->
             val tree = load { api.tree(target.treeId).also { requireRoute(it.id, target.treeId) } }
@@ -773,6 +912,7 @@ class FamilyTreeController(
             updatePersonScreen(instance) { it.copy(tree = tree, person = person) }
             loadPersonFamily(instance)
             loadPersonTimeline(instance)
+            loadPageCitations(instance)
             // FT-008: the server sends a photo ID only for a person this caller may see.
             (person as? Loadable.Ready)?.value?.profileMediaId?.let { loadPhoto(target.treeId, it) }
         }
@@ -783,7 +923,10 @@ class FamilyTreeController(
         updatePersonScreen(instance) { it.copy(graph = Loadable.Loading) }
         inSession { owner ->
             val graph = load { api.graph(target.treeId).also { requireRoute(it.treeId, target.treeId) } }
-            if (isCurrent(owner)) updatePersonScreen(instance) { it.copy(graph = graph) }
+            if (!isCurrent(owner)) return@inSession
+            updatePersonScreen(instance) { it.copy(graph = graph) }
+            // The person's unions are now known: their citations can be requested.
+            if (graph is Loadable.Ready) loadPageCitations(instance)
         }
     }
 
@@ -792,7 +935,10 @@ class FamilyTreeController(
         updatePersonScreen(instance) { it.copy(events = Loadable.Loading) }
         inSession { owner ->
             val events = load { api.events(target.treeId, target.personId) }
-            if (isCurrent(owner)) updatePersonScreen(instance) { it.copy(events = events) }
+            if (!isCurrent(owner)) return@inSession
+            updatePersonScreen(instance) { it.copy(events = events) }
+            // The timeline's events are now known: their citations can be requested.
+            if (events is Loadable.Ready) loadPageCitations(instance)
         }
     }
 
@@ -867,6 +1013,7 @@ class FamilyTreeController(
         CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
 
     private fun resetSession() {
+        cancelCitationWork()
         sessionScope.cancel()
         sessionScope = newSessionScope()
     }
@@ -889,6 +1036,15 @@ class FamilyTreeController(
     companion object {
         /** Images kept for display at once (FT-008); the least recently used is dropped first. */
         internal const val MAX_CACHED_PHOTOS = 40
+
+        /** Citation and source requests a person page runs at once; the rest wait their turn. */
+        const val MAX_ACTIVE_CITATION_REQUESTS = 4
+
+        /**
+         * Citation scans open on a person page at once. With the profile photo that is the
+         * three images [DEFAULT_PHOTO_CACHE_BYTES] has room for at the upload limit.
+         */
+        const val MAX_OPEN_SCANS = 2
 
         /**
          * Encoded image bytes kept for display (FT-008). Room for the three images a screen
