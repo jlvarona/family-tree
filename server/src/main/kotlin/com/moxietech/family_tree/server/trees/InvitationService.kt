@@ -50,8 +50,8 @@ import java.time.Instant
 import kotlin.uuid.Uuid
 
 const val INVITATION_NOT_FOUND_MESSAGE = "Invitation not found or no longer valid"
-const val INVITATION_EMAIL_REDEMPTION_PENDING_MESSAGE =
-    "This invitation was sent by email, and accepting email invitations isn't available yet; ask for a link invitation"
+/** One answer for a wrong, unverified or missing email, so none of them is distinguishable. */
+const val INVITATION_EMAIL_NOT_CLAIMABLE_MESSAGE = "This invitation can't be accepted with the account you're signed in with"
 const val INVITATION_ALREADY_MEMBER_MESSAGE = "You are already a member of this tree"
 const val INVITATION_PERSON_LINKED_MESSAGE = "That person is already linked to a member of this tree"
 const val INVITATION_PERSON_PENDING_MESSAGE = "That person already has a pending invitation; revoke it first"
@@ -97,8 +97,9 @@ private const val INVITATION_PERSON_UNIQUE = "invitation_tree_person_key"
  *    token of another tree, or one a concurrent redemption or revocation already used,
  *    finds nothing (`404`);
  * 3. with the time read after that lock, reject an expired invitation (`404`, same
- *    message), an email invitation (`409`, pending product decision), or one whose
- *    creator is no longer the active owner (`404`);
+ *    message), an email-addressed invitation whose address isn't the caller's verified
+ *    email ([InvitationEmails.claims]; one generic `409`, nothing written, the invitation
+ *    stays usable), or one whose creator is no longer the active owner (`404`);
  * 4. lock the caller's membership; an ACTIVE one is a `409`;
  * 5. reserve the linked person and refuse one already linked to another member (`409`,
  *    also enforced by `membership_tree_person_key`); lock each grant anchor
@@ -109,8 +110,10 @@ private const val INVITATION_PERSON_UNIQUE = "invitation_tree_person_key"
  * A unique violation from a concurrent writer (same account, same person) is a `409`
  * after rollback.
  *
- * The caller is the account bound to the token's verified issuer and subject (FT-003);
- * email plays no part in who redeems.
+ * The caller is the account bound to the token's verified issuer and subject (FT-003).
+ * Email never finds or links an account: for an email-addressed invitation it is only a
+ * condition checked against the same token's verified email. Link invitations carry no
+ * address and need only a signed-in account.
  */
 class InvitationService(
     private val settings: InvitationSettings = InvitationSettings(),
@@ -208,8 +211,16 @@ class InvitationService(
      * a malformed tree ID or token, an unknown tree, a token of another tree and an
      * expired, revoked or used token are all the same `404`, and none of them writes or
      * locks the invitation they may belong to.
+     *
+     * [verifiedEmail] is the caller's token `email` when that token's `email_verified` is
+     * the boolean `true`, else null ([com.moxietech.family_tree.server.config.verifiedEmail]).
      */
-    suspend fun redeem(treeId: String, account: Account, request: RedeemInvitationRequest): RedeemInvitationResponse {
+    suspend fun redeem(
+        treeId: String,
+        account: Account,
+        request: RedeemInvitationRequest,
+        verifiedEmail: String? = null,
+    ): RedeemInvitationResponse {
         requireEnabled()
         val treeUuid = Uuid.parseOrNull(treeId) ?: throw NotFoundException(INVITATION_NOT_FOUND_MESSAGE)
         val digest = InvitationTokens.digestOrNull(request.token) ?: throw NotFoundException(INVITATION_NOT_FOUND_MESSAGE)
@@ -222,9 +233,13 @@ class InvitationService(
             // The time is read after the row lock: an invitation that expired while this
             // redemption waited behind another transaction is refused like any expired one.
             if (invitation.isExpired(clock())) throw NotFoundException(INVITATION_NOT_FOUND_MESSAGE)
-            // Undecided product rule (see the FT-011 delivery entry): until it is decided, an
-            // email invitation is never honoured by token alone, and nothing is written.
-            if (invitation.email != null) throw ConflictException(INVITATION_EMAIL_REDEMPTION_PENDING_MESSAGE)
+            // Decided (concept doc, "Invitation email claims"): an email-addressed invitation is
+            // claimed only by an account whose token carries that address as verified. A miss
+            // writes nothing and keeps the invitation for the right account.
+            val invitedEmail = invitation.email
+            if (invitedEmail != null && !InvitationEmails.claims(invitedEmail, verifiedEmail)) {
+                throw ConflictException(INVITATION_EMAIL_NOT_CLAIMABLE_MESSAGE)
+            }
 
             // The owner policy at redemption time: the creator must still be the tree's
             // active owner, or the invitation is void.

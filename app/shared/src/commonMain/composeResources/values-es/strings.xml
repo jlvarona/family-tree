@@ -220,5 +220,5 @@
     <string name="join_accepting">Aceptando…</string>
     <string name="join_missing">Esta página ya no contiene una invitación. Vuelve a abrir el enlace que te enviaron, en esta pestaña.</string>
     <string name="join_not_valid">Esta invitación ya no es válida: puede haber caducado, haberse retirado o haberse usado ya. Pide una nueva al propietario del árbol.</string>
-    <string name="join_cannot_accept">Esta invitación no se puede aceptar con esta cuenta. Puede que ya seas miembro del árbol, o el propietario tiene que enviarte otra invitación.</string>
+    <string name="join_cannot_accept">Esta cuenta no puede aceptar la invitación. Si se envió a otra dirección de correo, inicia sesión con la cuenta que tiene esa dirección verificada y vuelve a abrir el enlace. Si ya perteneces al árbol, ábrelo desde tu lista de árboles.</string>
 </resources>

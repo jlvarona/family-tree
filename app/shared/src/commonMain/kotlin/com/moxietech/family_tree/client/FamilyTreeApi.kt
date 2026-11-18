@@ -135,7 +135,8 @@ interface FamilyTreeApi {
      * FT-011: accepts an invitation to [treeId] (`POST …/trees/{treeId}/invitations/redeem`)
      * with [token] in the body only. `404`: not a valid invitation (unknown, expired,
      * revoked, already used, another tree's or invitations are off); `409`: this account
-     * can't accept it (already a member, the person is taken, or an email invitation).
+     * can't accept it (already a member, the person is taken, or an email invitation for an
+     * address this account hasn't verified).
      */
     suspend fun redeemInvitation(treeId: String, token: String): RedeemInvitationResponse
 }

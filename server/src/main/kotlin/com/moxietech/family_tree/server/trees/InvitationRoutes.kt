@@ -4,6 +4,7 @@ import com.moxietech.family_tree.api.CreateInvitationRequest
 import com.moxietech.family_tree.api.LinkMemberPersonRequest
 import com.moxietech.family_tree.api.RedeemInvitationRequest
 import com.moxietech.family_tree.server.config.OIDC_AUTH_NAME
+import com.moxietech.family_tree.server.config.verifiedEmail
 import com.moxietech.family_tree.server.graph.requirePathParam
 import com.moxietech.family_tree.server.graph.requireTreeId
 import com.moxietech.family_tree.server.graph.requireTreeWriter
@@ -12,6 +13,8 @@ import com.moxietech.family_tree.server.identity.currentAccount
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
 import io.ktor.server.auth.authenticate
+import io.ktor.server.auth.jwt.JWTPrincipal
+import io.ktor.server.auth.principal
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
@@ -32,7 +35,7 @@ import io.ktor.server.routing.route
  * - `DELETE /api/v1/trees/{treeId}/invitations/{invitationId}?version=N` (owner) — revoke.
  * - `POST   /api/v1/trees/{treeId}/invitations/redeem` (any signed-in account) — accept; the
  *   tree is the link's, the token is in the body only. Not a member check: the caller
- *   isn't a member yet.
+ *   isn't a member yet. An email-addressed invitation also needs the token's verified email.
  * - `GET    /api/v1/trees/{treeId}/members` (owner) — members and their linked people.
  * - `PUT    /api/v1/trees/{treeId}/members/{accountId}/person` (owner) — link or unlink a person.
  */
@@ -62,7 +65,9 @@ fun Route.invitationRoutes(invitations: InvitationService, members: MemberServic
                 val account = call.currentAccount()
                 val treeId = call.requirePathParam("treeId")
                 val request = call.receive<RedeemInvitationRequest>()
-                call.respond(invitations.redeem(treeId, account, request))
+                // From the same validated token whose issuer and subject named the account.
+                val verifiedEmail = call.principal<JWTPrincipal>()?.verifiedEmail
+                call.respond(invitations.redeem(treeId, account, request, verifiedEmail))
             }
         }
         route("/api/v1/trees/{treeId}/members") {

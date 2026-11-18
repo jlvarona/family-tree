@@ -268,7 +268,7 @@ enum class JoinError {
     /** `404` (or `400`): unknown, expired, revoked, already used, or another tree's. The token is dropped. */
     NOT_VALID,
 
-    /** `409` or `403`: this account can't accept it (already a member, the person is taken, an email invitation). Dropped. */
+    /** `409` or `403`: this account can't accept it (already a member, the person is taken, another verified email). Dropped. */
     CANNOT_ACCEPT,
 
     /** The API couldn't be reached; the token is kept for a retry. */

@@ -220,5 +220,5 @@
     <string name="join_accepting">Accepting…</string>
     <string name="join_missing">This page no longer holds an invitation. Open the link you were sent again, in this tab.</string>
     <string name="join_not_valid">This invitation isn’t valid any more: it may have expired, been withdrawn or already been used. Ask the tree owner for a new one.</string>
-    <string name="join_cannot_accept">This invitation can’t be accepted with this account. You may already be a member of the tree, or the owner needs to send you a different invitation.</string>
+    <string name="join_cannot_accept">This account can’t accept the invitation. If it was sent to another email address, sign in with the account that has that verified address and reopen the link. If you already belong to the tree, open it from your tree list.</string>
 </resources>

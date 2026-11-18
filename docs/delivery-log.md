@@ -9,15 +9,14 @@ up to date in place, not logged chronologically.
 
 ---
 
-## 2026-11-17 — FT-011 invitations and account-to-person linking (in progress, gated)
+## 2026-11-17 — FT-011 invitations and account-to-person linking
 
 Invitations, redemption, member-to-person linking and derived home branches on the
 server, and a web join page for link invitations, all behind `INVITATIONS_ENABLED`
 (default `false`). The backlog keeps invitations off for users until FT-012 to FT-014
-cover shared-tree authorization, redaction and proposals. The story stays
-**In progress**. One product decision is pending: who may claim an email-addressed
-invitation (concept doc, "Still open"). The owner also has no web UI to create
-invitations yet. The schema is under "Database design" (V9).
+cover shared-tree authorization, redaction and proposals. The email-claim rule is now
+decided and implemented (below). Owners create invitations through the API. The
+schema is under "Database design" (V9).
 
 - **Gate.** While off, the invitation and member routes aren't installed: every caller,
   anonymous or signed in, gets the plain `404` of an unknown route, and the services
@@ -60,8 +59,16 @@ invitations yet. The schema is under "Database design" (V9).
   `capture` (one `.eml` per invitation in a local directory, Spanish or English from
   `i18n/InvitationMail*.properties`). No SMTP, SES or other external mail. A delivery
   failure keeps the invitation, answers `delivery: FAILED` and logs only the invitation
-  ID and the failure type. **The token alone never claims an email-addressed
-  invitation** (`409`) until the claim rule is decided. Link invitations are unaffected.
+  ID and the failure type.
+- **Email claims** (decisions table, "Invitation email claims"). An email-addressed
+  invitation is claimed only when the redeemer's access token, the same validated token
+  that names the account, carries the invited address in `email` with `email_verified`
+  as the JSON boolean `true` (`JWTPrincipal.verifiedEmail`). Comparison is trimmed and
+  with ASCII case folded and no aliases (`InvitationEmails`). A wrong address, or a false,
+  missing or string claim, gets one generic `409` with nothing written, and the
+  invitation stays for the right account. Email never finds or links an account. Link
+  invitations need only a signed-in account. The web copy for a refusal now mentions
+  signing in with the invited, verified address (ES/EN).
 - **Linking.** `PUT …/members/{accountId}/person` (owner) links or unlinks at the
   membership's `version`; a person linked elsewhere or promised to a pending invitation
   is a `409`. `GET …/members` lists members (display name, person, status, version; no
@@ -87,13 +94,18 @@ invitations yet. The schema is under "Database design" (V9).
   (`MERGE_RETIRED_INVITATION_MESSAGE`) until the owner revokes the invitation. Merges
   now advance the moved membership's version.
 
-**Verification.** Passed 79 core JVM tests, 186 server tests and 166 shared client
+**Verification.** Passed 79 core JVM tests, 187 server tests and 166 shared client
 tests on each of JVM and Wasm. The opt-in Keycloak test was skipped. The V8-to-V9
 upgrade, owner checks, and invitation races ran on PostgreSQL. Separate browser
 checks with disposable Keycloak and PostgreSQL opened share links in English JS
 and Spanish Wasm, signed in, accepted once and rejected replay. The token was removed
 from the URL and cleared after acceptance. The checks also exercised wrong-tree
 redemption, inactive routes and local Spanish `.eml` capture.
+
+The verified-email HTTP test rejects a wrong address, an alias, a Unicode case
+lookalike, and a matching address with a missing, false or string verification claim.
+A live Keycloak test rejected a different verified email, then accepted the invited
+account once and rejected replay of the same token.
 
 ---
 
@@ -1866,7 +1878,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 
 ### Status board
 
-**Done (31)** · **In progress (1)** · **To do (23)** · **Blocked (0)**
+**Done (32)** · **In progress (0)** · **To do (23)** · **Blocked (0)**
 
 | Order | ID | Story | Epic | Priority | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -1901,7 +1913,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 | — | FT-008 | Photo upload (S3 presigned URLs) | E1 | P1 | Done |
 | — | FT-064 | Make compose host ports configurable | E7 | P2 | Done |
 | — | FT-010 | `Grant` + `GrantScope` tables, branch resolution | E2 | P1 | Done |
-| 6 | FT-011 | Invitations + account-to-person linking | E2 | P1 | In progress |
+| — | FT-011 | Invitations + account-to-person linking | E2 | P1 | Done |
 | 7 | FT-012 | Grant-based authorization | E2 | P1 | To do |
 | 8 | FT-013 | Grant-based living-person redaction | E2 | P1 | To do |
 | 9 | FT-014 | `ChangeProposal` workflow | E2 | P1 | To do |
@@ -2088,12 +2100,12 @@ desktop/shared build repair.
   consistent with committed changes, and a read-only snapshot API serves FT-012/FT-013.
   Grant writes are owner-only and audited. See the FT-010 entry.
 - **FT-011 Invitations** (email or link) **and account-to-person linking.**
-  `In progress · P1 · #6` — derives each member's home branch automatically once linked.
+  `Done · P1` — derives each member's home branch automatically once linked.
   Enable invitations for users after FT-072 passes and FT-012 through FT-014 cover
   shared-tree authorization and proposals. Server side and the web join page built
-  behind the default-off `INVITATIONS_ENABLED` (2026-11-17 entry). Open: who may claim
-  an email-addressed invitation (concept doc, "Still open"), and an owner UI for
-  creating invitations.
+  behind the default-off `INVITATIONS_ENABLED` (2026-11-17 entry), with email-addressed
+  invitations claimable only by the matching verified email. Owners use the API to
+  create invitations.
 - **FT-012 Real grant-based authorization.** `To do · P1 · #7` — replaces today's
   Phase 1 owner-only write policy from FT-068 with resolution against `GrantScope`.
   Keep the active membership requirement and pair grant checks with FT-014.

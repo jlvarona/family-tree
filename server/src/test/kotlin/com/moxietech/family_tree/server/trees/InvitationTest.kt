@@ -135,6 +135,9 @@ class InvitationTest {
             if (::dataSource.isInitialized) dataSource.close()
         }
 
+        /** [Actor.tokenWith]: leave `email_verified` out of the token. */
+        private val NO_CLAIM = Any()
+
         private fun settings(
             enabled: Boolean = true,
             transport: InvitationSettings.MailTransport = InvitationSettings.MailTransport.NONE,
@@ -157,6 +160,20 @@ class InvitationTest {
         )
         val id get() = account.id
         val token: String get() = jwks.accessToken(ISSUER, email = "$subject@example.test") { withSubject(subject) }
+
+        /**
+         * A token for this account (same issuer and subject) with [email] and an
+         * `email_verified` claim of [verified]: a Boolean, a String, or [NO_CLAIM] to leave it out.
+         */
+        fun tokenWith(email: String, verified: Any?): String = jwks.accessToken(ISSUER, email = email) {
+            withSubject(subject)
+            when (verified) {
+                is Boolean -> withClaim("email_verified", verified)
+                is String -> withClaim("email_verified", verified)
+                NO_CLAIM -> Unit
+                else -> error("unsupported claim $verified")
+            }
+        }
     }
 
     private fun actor(role: String) = Actor("ft011-$role-${Uuid.random().toHexString().take(8)}")
@@ -257,10 +274,16 @@ class InvitationTest {
             client.block()
         }
 
-    /** [actor] null sends no token (an anonymous caller). */
-    private suspend fun HttpClient.send(method: String, path: String, actor: Actor?, body: String? = null): HttpResponse {
+    /** [actor] null sends no token (an anonymous caller); [token] overrides the actor's default token. */
+    private suspend fun HttpClient.send(
+        method: String,
+        path: String,
+        actor: Actor?,
+        body: String? = null,
+        token: String? = actor?.token,
+    ): HttpResponse {
         val build: io.ktor.client.request.HttpRequestBuilder.() -> Unit = {
-            if (actor != null) bearerAuth(actor.token)
+            if (token != null) bearerAuth(token)
             if (body != null) {
                 contentType(ContentType.Application.Json)
                 setBody(body)
@@ -573,7 +596,7 @@ class InvitationTest {
     }
 
     @Test
-    fun `email invitations are captured locally and not redeemable until the rule is decided`() = runBlocking {
+    fun `email invitations are captured locally and the token alone never claims one`() = runBlocking {
         val f = newFamily()
         val dir = Files.createTempDirectory("ft011-mail")
         val capturing = service(settings(transport = InvitationSettings.MailTransport.CAPTURE, captureDir = dir))
@@ -593,7 +616,7 @@ class InvitationTest {
         val before = state(f)
         // The token alone never claims an email-addressed invitation, whoever presents it.
         val e = assertFailsWith<ConflictException> { capturing.redeem(f.tree.value, actor("emailed").account, RedeemInvitationRequest(created.token)) }
-        assertEquals(INVITATION_EMAIL_REDEMPTION_PENDING_MESSAGE, e.message)
+        assertEquals(INVITATION_EMAIL_NOT_CLAIMABLE_MESSAGE, e.message)
         assertEquals(before, state(f))
 
         // No transport: email invitations are refused before anything is written.
@@ -606,6 +629,65 @@ class InvitationTest {
         val kept = failing.create(f.tree, f.owner.account, CreateInvitationRequest(email = "y@example.test", locale = "EN"))
         assertEquals(InvitationDelivery.FAILED, kept.delivery)
         assertEquals(2, pendingCount(f))
+    }
+
+    @Test
+    fun `an email invitation is claimed only over HTTP by an account whose token verifies that address`() = runBlocking {
+        val f = newFamily()
+        val dir = Files.createTempDirectory("ft011-claim")
+        val settings = settings(transport = InvitationSettings.MailTransport.CAPTURE, captureDir = dir)
+        val invitations = service(settings)
+        val created = invitations.create(
+            f.tree, f.owner.account,
+            CreateInvitationRequest(email = "Invitee.Name@Example.test", personId = f.id("me"), grants = listOf(viewerGrant(f.id("gp1")))),
+        )
+        val invitee = actor("invitee")
+        val stranger = actor("stranger")
+        val path = "/api/v1/trees/${f.tree.value}/invitations/redeem"
+        val body = json.encodeToString(RedeemInvitationRequest(created.token))
+        val before = state(f)
+
+        http(settings, invitations) {
+            // Each refusal is the same generic 409, writes nothing and keeps the invitation.
+            val refused = listOf(
+                stranger.tokenWith("other@example.test", true), // a different, verified address
+                stranger.tokenWith("invitee.name+tag@example.test", true), // no provider aliases
+                stranger.tokenWith("\u0131nvitee.name@example.test", true), // no Unicode case equivalences
+                invitee.tokenWith("invitee.name@example.test", NO_CLAIM), // the right address, unverified...
+                invitee.tokenWith("invitee.name@example.test", false),
+                invitee.tokenWith("invitee.name@example.test", "true"), // ...a string isn't the boolean true
+            )
+            for (token in refused) {
+                assertContains(
+                    send("POST", path, null, body, token = token).expect(HttpStatusCode.Conflict),
+                    INVITATION_EMAIL_NOT_CLAIMABLE_MESSAGE,
+                )
+                assertEquals(before, state(f))
+                assertEquals(1, pendingCount(f))
+            }
+            assertNull(MembershipRepository.find(f.treeUuid, Uuid.parse(invitee.id.value)))
+
+            // The same invitation, then claimed by the matching verified address (any case, trimmed).
+            val redeemed = json.decodeFromString<RedeemInvitationResponse>(
+                send("POST", path, null, body, token = invitee.tokenWith(" INVITEE.name@example.TEST ", true)).expect(HttpStatusCode.OK),
+            )
+            assertEquals(invitee.id.value, redeemed.member.accountId)
+            assertEquals(f.id("me"), redeemed.member.personId)
+            assertEquals(1, redeemed.grants.size)
+            assertEquals(0, pendingCount(f))
+            assertEquals(before[3] + 1, memberships(f))
+
+            // Once only, even for another account with the same verified address.
+            for (account in listOf(invitee, stranger)) {
+                assertContains(
+                    send("POST", path, null, body, token = account.tokenWith("invitee.name@example.test", true)).expect(HttpStatusCode.NotFound),
+                    INVITATION_NOT_FOUND_MESSAGE,
+                )
+            }
+        }
+        assertNull(MembershipRepository.find(f.treeUuid, Uuid.parse(stranger.id.value)))
+        // The invited address never reaches the audit log.
+        assertEquals(0, count("select count(*) from audit_log where lower(coalesce(before_json, '') || coalesce(after_json, '')) like '%invitee.name%'"))
     }
 
     @Test

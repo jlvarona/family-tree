@@ -392,13 +392,17 @@ Routes (owner = the tree's active owner, the Phase 1 write rule):
   account) — accept a link invitation: the caller's account (by token issuer and subject,
   never by email) becomes an active member linked to the invitation's person, with the
   proposed grants. The token works once and only in its own tree; anything else is the
-  same `404`. Email-addressed invitations can't be accepted yet (`409`) until the rule for
-  who may claim them is decided.
+  same `404`. An email-addressed invitation also needs the caller's access token to carry
+  that address as `email` with `email_verified: true` (compared trimmed and
+  with ASCII case folded); otherwise a generic `409`, and the invitation stays open for the
+  right account.
 - `GET /api/v1/trees/{treeId}/members` and `PUT /api/v1/trees/{treeId}/members/{accountId}/person`
   with `{personId|null, version}` (owner) — list members and link or unlink their person.
 
 **Accepting in the browser.** Open the link (from the create response's `link` or the
-captured `.eml`) in the web client with a second, disposable Keycloak user. The page
+captured `.eml`) in the web client with a second, disposable Keycloak user. For an
+email invitation, give that user the invited address and tick "Email verified" in
+Keycloak; Keycloak's default `email` scope puts `email_verified` in access tokens. The page
 signs in if needed, then shows "Accept invitation"; accepting opens the tree. The owner
 has no web UI for creating invitations yet: create them with `curl` and the owner's
 access token as in "Running a local copy end to end".
@@ -574,7 +578,9 @@ person, invitation and proposed-grant constraints and its preflight, FT-011) and
 and signed in; the owner policy; a link invitation redeemed once over HTTP with no token
 or digest in request logs or audit; another tree's token; expired, revoked and malformed
 tokens; expiry while waiting for the row lock; replacing an expired invitation;
-conflicts; local `.eml` mail capture; delete and merge blocks; concurrent redemptions,
+conflicts; local `.eml` mail capture; email claims over HTTP (wrong, aliased,
+unverified, `false` and string `"true"` refused with no writes, then the verified match
+claims it once); delete and merge blocks; concurrent redemptions,
 redemption against revocation, and invitation create against owner linking for one
 person; person linking and home branches).
 

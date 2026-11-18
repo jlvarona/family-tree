@@ -83,6 +83,15 @@ fun AuthenticationConfig.configureOidc(settings: OidcSettings = OidcSettings()) 
 
 val JWTPrincipal.email: String get() = payload.getClaim("email").asString()
 
+/**
+ * FT-011: the token's `email` only when the same verified token carries `email_verified`
+ * as the JSON boolean `true`; null for `false`, a missing claim or any non-boolean such
+ * as the string `"true"`. Used only to check an email-addressed invitation's address,
+ * never to find or link an account.
+ */
+val JWTPrincipal.verifiedEmail: String?
+    get() = if (payload.getClaim("email_verified")?.asBoolean() == true) payload.getClaim("email")?.asString() else null
+
 val JWTPrincipal.displayName: String
     get() = payload.getClaim("name")?.asString()
         ?: payload.getClaim("preferred_username")?.asString()
