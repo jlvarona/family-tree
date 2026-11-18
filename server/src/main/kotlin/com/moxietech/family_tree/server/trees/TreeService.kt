@@ -70,6 +70,22 @@ object TreeService {
     }
 
     /**
+     * FT-013: the read gate of [getTreeForReader] and the read itself in one read-only
+     * REPEATABLE READ snapshot, so whatever [read] decides about visibility (grants and
+     * their scopes, `ReadAccess`) comes from the same data it returns. Same 404 and 403.
+     */
+    internal suspend fun <T> readAsMember(treeId: TreeId, callerAccountId: AccountId, read: (Tree) -> T): T =
+        withContext(DatabaseDispatcher) {
+            transaction(transactionIsolation = Connection.TRANSACTION_REPEATABLE_READ, readOnly = true) {
+                val (tree, membership) = loadTreeAndMembership(treeId, callerAccountId)
+                if (!TreePermissions.canRead(tree, callerAccountId, membership)) {
+                    throw ForbiddenException("Not a member of tree ${treeId.value}")
+                }
+                read(tree)
+            }
+        }
+
+    /**
      * Owner-only operations ([TreePermissions.canWrite]): since FT-012 these are the
      * ownership and lifecycle operations (person merges, invitations, member linking,
      * grant writes). Their routes call it (via `requireTreeOwner`) before decoding the

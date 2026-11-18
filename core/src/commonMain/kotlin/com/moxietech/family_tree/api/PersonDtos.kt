@@ -1,7 +1,10 @@
 package com.moxietech.family_tree.api
 
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class PersonDto(
     val id: String,
@@ -16,6 +19,16 @@ data class PersonDto(
     /** Rich-text bio, or null when redacted (living person outside caller's grants). */
     val bio: String?,
     val version: Long,
+    /**
+     * FT-013: true when the server returned this person as the private placeholder
+     * (a living person no grant of the caller covers). Clients show their localized
+     * placeholder from this flag alone, never by guessing from the name or from tree
+     * ownership. The wire placeholder name stays `"Private"` for older clients.
+     * Omitted when false (absent means a full record), so audit snapshots, which are
+     * never redacted, keep their pre-FT-013 shape.
+     */
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
+    val redacted: Boolean = false,
 )
 
 @Serializable

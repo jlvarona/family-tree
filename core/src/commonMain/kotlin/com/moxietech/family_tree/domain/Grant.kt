@@ -4,8 +4,10 @@ package com.moxietech.family_tree.domain
  * FT-010: a branch-scoped permission held by one membership (account in a tree).
  * Grants union: a member's reach is every grant's resolved person set, and the
  * highest role on a person wins (concept-architecture.md "Rules"). Since FT-012 they
- * decide who may write ([com.moxietech.family_tree.permissions.EditAuthority]); FT-013
- * (redaction) and FT-014 (proposals) are still to come.
+ * decide who may write ([com.moxietech.family_tree.permissions.EditAuthority]) and since
+ * FT-013 which living people a member sees
+ * ([com.moxietech.family_tree.permissions.PersonVisibility]); FT-014 (proposals) is still
+ * to come.
  */
 data class Grant(
     val id: GrantId,

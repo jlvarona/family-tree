@@ -131,8 +131,8 @@ class InvitationService(
     init {
         if (settings.enabled) {
             log.warn(
-                "Invitations are enabled (INVITATIONS_ENABLED=true) before FT-013 and FT-014 complete shared-tree " +
-                    "redaction and proposals; use disposable test accounts and data only",
+                "Invitations are enabled (INVITATIONS_ENABLED=true) before FT-014 completes shared-tree " +
+                    "change proposals; use disposable test accounts and data only",
             )
         }
     }

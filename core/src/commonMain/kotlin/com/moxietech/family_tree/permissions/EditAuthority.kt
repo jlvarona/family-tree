@@ -96,6 +96,12 @@ class EditAuthority(
         }
     }
 
+    /**
+     * The people this member created that are still unattached and have no account, which
+     * they edit live by that rule alone (the create-then-attach workflow).
+     */
+    val ownUnattachedEditable: Set<PersonId> = ownUnattached - accountHolders
+
     /** A relationship between [people] (its partners, a child): live when any one of them is. */
     fun relationshipAccess(people: Collection<PersonId>): EditAccess = when {
         isTreeWide -> EditAccess.LIVE

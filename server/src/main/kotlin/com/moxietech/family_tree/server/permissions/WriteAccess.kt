@@ -14,6 +14,7 @@ import com.moxietech.family_tree.domain.Tree
 import com.moxietech.family_tree.domain.TreeId
 import com.moxietech.family_tree.permissions.EditAccess
 import com.moxietech.family_tree.permissions.EditAuthority
+import com.moxietech.family_tree.permissions.PersonVisibility
 import com.moxietech.family_tree.permissions.TreePermissions
 import com.moxietech.family_tree.server.errors.ForbiddenException
 import com.moxietech.family_tree.server.errors.NotFoundException
@@ -38,7 +39,7 @@ import kotlin.uuid.Uuid
  * READ COMMITTED (checked): after each lock is granted, the next statement reads the
  * latest committed data. (A REPEATABLE READ snapshot is taken by the first statement,
  * before a lock wait ends, so it could miss what the lock waited for; the read-side
- * snapshot API of [GrantScopeService] stays for reads, FT-013.)
+ * snapshot API of [GrantScopeService] serves reads, FT-013 [ReadAccess].)
  *
  * [begin] (person, union, child link, event and citation writes):
  * 1. The tree is read (404). Its owner can't change (there is no transfer).
@@ -74,6 +75,14 @@ internal object WriteAccess {
     fun widensReachMessage(treeId: String) =
         "This change would let you edit people outside your branches in tree $treeId; ask the tree owner or an admin to make it"
 
+    /**
+     * FT-013: a write that would reveal living people's details the caller can't see: a
+     * graph change widening their read scope, marking a hidden person deceased, or moving a
+     * union or event (with its citations and scans) away from a hidden person.
+     */
+    fun revealsPrivateMessage(treeId: String) =
+        "This change would reveal private details you can't see in tree $treeId; ask the tree owner or an admin to make it"
+
     /** See the class comment. [ownerTakesSharedLock]: the owner path's previous [GraphWriteLock] use. */
     fun begin(treeUuid: Uuid, caller: AccountId, ownerTakesSharedLock: Boolean): WriteScope {
         checkReadCommitted()
@@ -84,12 +93,13 @@ internal object WriteAccess {
             ownerTakesSharedLock -> GraphWriteLock.shared(treeUuid)
         }
         val membership = activeMembership(tree, caller, lock = !isOwner)
-        if (isOwner) return WriteScope(tree, treeUuid, caller, membership, emptyList(), EditAuthority.owner())
+        if (isOwner) return WriteScope(tree, treeUuid, caller, membership, emptyList(), emptyList(), EditAuthority.owner())
         val callerUuid = Uuid.parse(caller.value)
         val grants = lockGrants(treeUuid, callerUuid)
-        val authority = authorityFor(treeUuid, callerUuid, membership, grants)
+        val scoped = scopedGrantsFor(treeUuid, grants)
+        val authority = authorityFor(treeUuid, callerUuid, membership, scoped)
         if (!authority.canContribute) throw ForbiddenException(noEditAccessMessage(tree.id.value))
-        return WriteScope(tree, treeUuid, caller, membership, grants, authority)
+        return WriteScope(tree, treeUuid, caller, membership, grants, scoped, authority)
     }
 
     /** Tree-wide records: the owner or a whole-tree admin, decided under the membership and grant locks. */
@@ -164,19 +174,24 @@ internal object WriteAccess {
         return TreePermissions.canWriteTreeWide(tree, inviter, membership, lockGrants(treeUuid, inviterUuid))
     }
 
-    /** The caller's authority from the current graph; [begin] has taken the locks. */
-    internal fun authorityFor(treeUuid: Uuid, callerUuid: Uuid, membership: Membership, grants: List<Grant>): EditAuthority {
+    /**
+     * The people each of the locked [grants] covers in the graph as this transaction sees
+     * it now ([GrantScopeService.scopesForWriter]; [begin] has taken the locks).
+     */
+    internal fun scopedGrantsFor(treeUuid: Uuid, grants: List<Grant>): List<EditAuthority.ScopedGrant> {
         val scopes = GrantScopeService.scopesForWriter(treeUuid, grants)
-        return EditAuthority(
+        return grants.map { grant -> EditAuthority.ScopedGrant(grant.role, grant.branch, scopes.getValue(grant.id).toPersonIds()) }
+    }
+
+    /** The caller's authority from [scoped] (their locked grants) and the current graph. */
+    internal fun authorityFor(treeUuid: Uuid, callerUuid: Uuid, membership: Membership, scoped: List<EditAuthority.ScopedGrant>): EditAuthority =
+        EditAuthority(
             isOwner = false,
-            grants = grants.map { grant ->
-                EditAuthority.ScopedGrant(grant.role, grant.branch, scopes.getValue(grant.id).toPersonIds())
-            },
+            grants = scoped,
             homeBranch = HomeBranchService.homeBranchForWriter(treeUuid, membership).toPersonIds(),
             accountHolders = linkedPeople(treeUuid).toPersonIds(),
             ownUnattached = unattachedCreatedBy(treeUuid, callerUuid).toPersonIds(),
         )
-    }
 
     /**
      * The caller's ACTIVE membership, or the "Not a member" 403. A non-owner's is locked
@@ -290,11 +305,11 @@ internal object WriteAccess {
         }
     }
 
-    /** Every person ID of [treeUuid], for the reach comparison after a graph change. */
-    internal fun peopleOf(treeUuid: Uuid): Set<Uuid> = withJdbc { connection ->
-        connection.prepareStatement("select id from person where tree_id = ?").use { st ->
+    /** Every person of [treeUuid] with whether they are living, for the reach comparison after a graph change. */
+    internal fun peopleOf(treeUuid: Uuid): Map<Uuid, Boolean> = withJdbc { connection ->
+        connection.prepareStatement("select id, is_living from person where tree_id = ?").use { st ->
             st.setUuid(1, treeUuid)
-            st.executeQuery().use { rs -> buildSet { while (rs.next()) add(Uuid.parse(rs.getString(1))) } }
+            st.executeQuery().use { rs -> buildMap { while (rs.next()) put(Uuid.parse(rs.getString(1)), rs.getBoolean(2)) } }
         }
     }
 
@@ -317,10 +332,53 @@ internal class WriteScope(
     val caller: AccountId,
     private val membership: Membership,
     private val grants: List<Grant>,
+    scopedGrants: List<EditAuthority.ScopedGrant>,
     private val authority: EditAuthority,
 ) {
     val isOwner: Boolean get() = authority.isOwner
     val isTreeWide: Boolean get() = authority.isTreeWide
+
+    /** FT-013: what the caller could see when the write began, from the grants it locked and their scopes then. */
+    private val visibleBefore: PersonVisibility =
+        if (authority.isOwner) PersonVisibility.owner() else PersonVisibility.member(scopedGrants)
+
+    /** Set by [requireNoGainedReach]: what the caller sees after this write's graph change. */
+    private var visibleAfter: PersonVisibility? = null
+
+    /**
+     * FT-013: what this caller may see, for refusals that must not reveal a hidden fact,
+     * for the reveal checks and for write responses shaped like reads. The owner sees
+     * everyone; anyone else through the scopes of the grants [WriteAccess.begin] locked,
+     * computed once at the start under the exclusive graph lock (no new read). After a
+     * graph change ([requireNoGainedReach]) only people visible both before and after it
+     * count, so a response never shows more than either state allows. The home branch
+     * reveals no one.
+     */
+    fun viewer(): ViewerPolicy = ViewerPolicy(visibleAfter?.let(visibleBefore::both) ?: visibleBefore)
+
+    /**
+     * FT-013: 403 when [person] is living, hidden from this caller, and the change would
+     * mark them deceased, which would expose their earlier photo, events and citations to
+     * every member. Editors who can see the person change it as usual.
+     */
+    fun requireNotRevealedByDeath(person: Person, becomesLiving: Boolean) {
+        if (person.isLiving && !becomesLiving && !visibleBefore.canSeeDetails(person)) {
+            throw ForbiddenException(WriteAccess.revealsPrivateMessage(tree.id.value))
+        }
+    }
+
+    /**
+     * FT-013: 403 when a union or an event moves away from a person hidden from this
+     * caller. Its ID, events, citations and scans stay with it and can describe the person
+     * it leaves, so they would become readable through the remaining or new people. Changes
+     * that keep the same people are shaped by the read policy as usual.
+     */
+    fun requireNoHiddenSubjectRemoved(before: List<Person>, afterIds: Collection<Uuid>) {
+        val after = afterIds.mapTo(mutableSetOf()) { it.toString() }
+        if (before.any { it.id.value !in after && !visibleBefore.canSeeDetails(it) }) {
+            throw ForbiddenException(WriteAccess.revealsPrivateMessage(tree.id.value))
+        }
+    }
 
     fun personAccess(person: Uuid): EditAccess = authority.personAccess(person.toPersonId())
 
@@ -342,7 +400,7 @@ internal class WriteScope(
     fun requireFact(subjects: List<Person>, missing: (() -> Throwable)? = null) {
         val access = relationshipAccess(subjects.map { Uuid.parse(it.id.value) })
         if (access == EditAccess.LIVE) return
-        if (missing != null && !ViewerPolicy(tree, caller).canSeeAll(subjects)) throw missing()
+        if (missing != null && !viewer().canSeeAll(subjects)) throw missing()
         enforce(access)
     }
 
@@ -352,17 +410,29 @@ internal class WriteScope(
     }
 
     /**
-     * After a graph change in this transaction (and its generation advance): 403 when
-     * the caller could now edit anyone live they couldn't before, which rolls the change
-     * back. Nothing to check for tree-wide callers, who edit everyone either way.
+     * After a graph change in this transaction (and its generation advance), under the same
+     * exclusive graph lock and locked grants: 403 when the caller could now edit anyone live
+     * they couldn't before (FT-012), or see the details of a living person who was hidden
+     * from them (FT-013: a VIEWER grant with partners, say, would reveal a new partner of
+     * someone the caller can edit). Either rolls the change back. The caller's own
+     * unattached creations are exempt from the read check, so create-then-attach still
+     * works: they entered those details themselves. Nothing to check for tree-wide callers,
+     * who edit and see everyone either way. FT-014 turns these refusals into proposals.
      */
     fun requireNoGainedReach() {
         if (authority.isTreeWide) return
-        val after = WriteAccess.authorityFor(treeUuid, Uuid.parse(caller.value), membership, grants)
-        val people = WriteAccess.peopleOf(treeUuid).toPersonIds()
-        if (authority.gainedBy(after, people).isNotEmpty()) {
+        val scopedAfter = WriteAccess.scopedGrantsFor(treeUuid, grants)
+        val after = WriteAccess.authorityFor(treeUuid, Uuid.parse(caller.value), membership, scopedAfter)
+        val people = WriteAccess.peopleOf(treeUuid)
+        if (authority.gainedBy(after, people.keys.toPersonIds()).isNotEmpty()) {
             throw ForbiddenException(WriteAccess.widensReachMessage(tree.id.value))
         }
+        val seenAfter = PersonVisibility.member(scopedAfter)
+        val living = people.filterValues { it }.keys.toPersonIds()
+        if (visibleBefore.revealedBy(seenAfter, living, exempt = authority.ownUnattachedEditable).isNotEmpty()) {
+            throw ForbiddenException(WriteAccess.revealsPrivateMessage(tree.id.value))
+        }
+        visibleAfter = seenAfter
     }
 
     private fun enforce(access: EditAccess) = when (access) {

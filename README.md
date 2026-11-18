@@ -354,8 +354,8 @@ empty, `MEDIA_S3_BUCKET` and `MEDIA_S3_REGION`; never set `MEDIA_S3_CREATE_BUCKE
 ## Invitations
 
 Invitations, member linking, and grant management are **off by default**. Keep them
-off for real users until FT-013 living-person redaction and FT-014 change proposals
-are done. While off, the invitation, member, and grant routes aren't
+off for real users until FT-014 change proposals are done (FT-013 grant-based
+living-person redaction is). While off, the invitation, member, and grant routes aren't
 installed: every caller, signed in or not, gets the plain `404` of an unknown route, and
 nothing is read or written. Turn them on only on a local stack with disposable accounts
 and data:

@@ -9,6 +9,102 @@ up to date in place, not logged chronologically.
 
 ---
 
+## 2026-11-18 — FT-013 grant-based living-person redaction
+
+Status: implemented and revised after review; verification pending, so the story stays
+`In progress` until the user's test runs and live check pass.
+
+Living people are now visible to the tree owner and to an active member whose explicit
+grants cover them, on every response route and in the web client. No schema change.
+Invitations (and grant routes) stay off for users (`INVITATIONS_ENABLED`) until FT-014,
+so with only the owner as a member in practice, behaviour for real users is unchanged.
+Decisions table: "Grant-based living-person redaction (FT-013)" (the grant-only read
+rule is settled; no open question).
+
+- **Rule (`:core` `PersonVisibility`, now a class).** Deceased people: every active
+  member, as before. Living people: the owner, or a member one of whose grants with an
+  effective role (`GrantRules.effectiveRole`) resolves to them. VIEWER counts; grants
+  union; a whole-tree ADMIN covers everyone; a stored ADMIN on a limited branch carries
+  nothing (FT-012 fail-closed), so it reveals no one. The home branch is a write rule
+  only and reveals no one by itself, not even the member's own linked person.
+- **Reads (`permissions/ReadAccess`, `TreeService.readAsMember`).** One read-only
+  `REPEATABLE READ` transaction loads the tree (404), checks the active membership (403),
+  reads the caller's grants and scopes (`GrantScopeService.scopedGrantsInSnapshot`: the
+  FT-010 snapshot entry point, cached scope when its stamps match, otherwise the CTE on
+  the same snapshot, never written; a limited ADMIN isn't resolved), then runs the read.
+  Used by person list, detail, ancestors and descendants, the whole-tree bundle, unions,
+  person events, per-target citations and media downloads (photos and scans), which
+  previously authorized in a separate transaction (and person reads outside any
+  snapshot). Review fix: the ancestor and descendant CTEs (`PersonRepository.rawQuery`)
+  opened their own pooled connection, outside any snapshot; they now run on the current
+  transaction's connection (`withJdbc`).
+- **Writes (`WriteScope.viewer`).** The scopes of the grants `WriteAccess.begin` locked,
+  computed once there under the exclusive graph lock and reused (no second read). After
+  a graph change, a response shows only people visible both before and after it. Used
+  for person update and photo responses, union and child-link responses, duplicate
+  candidates on person create, and the missing-event `404` of `requireFact` (event
+  updates and deletes, citation creates). The owner path is unchanged.
+- **No indirect reveals (review fixes, `WriteScope`).** FT-012's no-gained-reach guard
+  compared only edit reach: a member with CONTRIBUTOR on A's descendants (no partners)
+  and VIEWER on A's descendants with partners could create a union between A and a hidden
+  living B and then read B (reproduced live: `201`, then B in full). `requireNoGainedReach`
+  now also recomputes visibility from the same locked grants after the change and refuses
+  any living person it would newly reveal (`:core` `PersonVisibility.revealedBy`), except
+  the writer's own unattached creations (`EditAuthority.ownUnattachedEditable`), so
+  create-then-attach still works. Also refused, before anything is written:
+  `requireNotRevealedByDeath` (marking a hidden living person deceased would open their
+  earlier photo, events and citations), and `requireNoHiddenSubjectRemoved` (a union
+  update dropping a hidden partner, an event update moving off a hidden person: the
+  record keeps its ID, events, citations and scans). All are `403`
+  `revealsPrivateMessage`; FT-014 should map them, like FT-012's refusals, to proposals.
+- **Media boundary.** A revocation stops new presigned download links at once; a link
+  already issued (FT-008, 5 minutes) stays usable until it expires, for photos and
+  scans.
+- **Projection (`ViewerPolicy(visibility)`).** Unchanged envelope: a hidden person keeps
+  ID, tree, `isLiving` and version with name "Private", sex `UNKNOWN`, no surnames, bio
+  or photo; their events are omitted; unions keep type and partner and child links, with
+  dates only when both partners are visible; citations need every subject visible; a
+  hidden event reads as missing; photos and scans follow their people; unattached images
+  stay the owner's only (a whole-tree admin included). New: `PersonDto.redacted = true`
+  on placeholders, omitted when false (`@EncodeDefault(NEVER)`), so full records and
+  audit snapshots keep their shape and older clients still see "Private".
+- **Web client.** `Viewer.canSeeDetails` is now `!person.redacted`: the tree canvas, side
+  panel, person page header, family, timeline and Sources card, the duplicate notice and
+  the photo controls render the server's projection instead of recomputing privacy from
+  tree ownership or the "Private" name. Localized placeholder labels are unchanged.
+- **Not in scope.** No proposals (FT-014); invitations stay gated. Places and sources
+  are tree-wide records, listed to every member as before. No audit read route exists yet
+  (FT-016).
+
+**Reproducible scenario** (`GrantPrivacyTest`, HTTP through the production routes on
+PostgreSQL 16): one family with deceased grandparents and living relatives, and members
+holding a VIEWER grant on an aunt's descendants (linked to another branch), a
+CONTRIBUTOR grant with partners on their own mother's descendants, a whole-tree ADMIN, a
+stored limited ADMIN, no grant, an INVITED membership with a whole-tree grant, and a
+member of another tree. For each reader it checks person list, detail, graph, ancestors,
+descendants, unions (dates vs. links), events, citations (person, event 404, union) and
+photo downloads; that a revoked grant (through the grant API, after a stored cache
+refresh) hides at once, events, citations and new photo links included, and a child added
+inside a branch shows at once; that the home branch reveals no one; write responses,
+duplicate candidates and the missing-event 404 for writers. Review additions: a VIEWER
+grant revealing one living partner while the other stays private (union type and links
+kept, dates, union and union-event citations withheld), opened by a second grant and
+restored by revoking it; the union that would reveal a hidden partner (create and
+partner swap) refused with no union, audit, version or generation change in either tree;
+own create-then-attach still allowed; marking a hidden person deceased, dropping a
+hidden union partner and moving an event off a hidden person refused the same way, while
+edits keeping the same people go through.
+
+**Verification.** Passed 104 core JVM tests, 227 PostgreSQL-backed server tests
+(one opt-in Keycloak skip), and 171 shared client tests on each of JVM and Wasm.
+The focused privacy suite also passed a regression that commits a change outside
+an active read transaction and checks both relationship traversals still use the
+original snapshot. With disposable Keycloak, PostgreSQL and SeaweedFS, a viewer
+grant revealed the intended profile, kept union type and links for a hidden
+partner, and withheld hidden dates, citations and scans. The prior relationship
+bypass returned 403 after the fix and the living person stayed redacted.
+
+---
 ## 2026-11-18 — FT-012 grant-based authorization
 
 Every person, union, child-link, event and citation write is now authorized from the
@@ -1954,7 +2050,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 
 ### Status board
 
-**Done (33)** · **In progress (0)** · **To do (22)** · **Blocked (0)**
+**Done (34)** · **In progress (0)** · **To do (21)** · **Blocked (0)**
 
 | Order | ID | Story | Epic | Priority | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -1991,7 +2087,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 | — | FT-010 | `Grant` + `GrantScope` tables, branch resolution | E2 | P1 | Done |
 | — | FT-011 | Invitations + account-to-person linking | E2 | P1 | Done |
 | — | FT-012 | Grant-based authorization | E2 | P1 | Done |
-| 8 | FT-013 | Grant-based living-person redaction | E2 | P1 | To do |
+| — | FT-013 | Grant-based living-person redaction | E2 | P1 | Done |
 | 9 | FT-014 | `ChangeProposal` workflow | E2 | P1 | To do |
 | 10 | FT-015 | Maternal/paternal "side" views | E2 | P1 | To do |
 | 11 | FT-016 | Activity feed UI + revert | E2 | P1 | To do |
@@ -2192,8 +2288,16 @@ desktop/shared build repair.
   uploads; whole-tree admins manage invitations and grants behind the invitation gate;
   merges and member linking stay owner-only; out-of-branch writes are refused with
   nothing written until FT-014.
-- **FT-013 Grant-based living-person redaction.** `To do · P1 · #8` — extend the
+- **FT-013 Grant-based living-person redaction.** `Done · P1` — extend the
   response policy from FT-066 to allow visibility when a grant covers the person.
+
+  See the 2026-11-18 FT-013 entry. A living person is
+  visible to the owner and to an active member one of whose effective explicit grants
+  covers them (any role; a limited ADMIN fails closed; the home branch reveals no one),
+  decided from the FT-010 snapshot scopes in the same transaction as every read
+  projection, and from the locked grants inside writes, which also may not reveal hidden
+  people indirectly. `PersonDto.redacted` marks placeholders; the web client renders it
+  instead of recomputing privacy. Invitations stay off until FT-014.
 - **FT-014 `ChangeProposal` workflow.** `To do · P1 · #9` — out-of-branch edits become
   a proposal with a before/after diff, approved per field by the branch owner or the
   tree owner.
@@ -2787,7 +2891,8 @@ migration if that changes.
   database (FT-065). FT-017 tracks RLS as a later defense-in-depth measure.
 - **No `change_proposal` table yet.** It comes with FT-014. Grants and their resolved
   scopes exist since V7 (FT-010) and invitations since V9 (FT-011, off by default).
-  Grants and home branches decide writes since FT-012; read redaction follows in FT-013.
+  Grants and home branches decide writes since FT-012; grants (not home branches) decide
+  living-person read redaction since FT-013.
   FT-012 needed no migration.
 - **No `media_tag` table yet.** FT-008 covers profile photos and citation scans; the
   per-person gallery and tagging several people in one photo (`MediaTag`) come later.

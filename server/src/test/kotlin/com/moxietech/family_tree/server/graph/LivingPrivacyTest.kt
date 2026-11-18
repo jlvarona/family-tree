@@ -12,6 +12,7 @@ import com.moxietech.family_tree.domain.MembershipStatus
 import com.moxietech.family_tree.domain.PersonId
 import com.moxietech.family_tree.domain.Tree
 import com.moxietech.family_tree.domain.UnionId
+import com.moxietech.family_tree.permissions.PersonVisibility
 import com.moxietech.family_tree.server.config.AppDatabase
 import com.moxietech.family_tree.server.config.DatabaseConfig
 import com.moxietech.family_tree.server.config.DatabaseSettings
@@ -206,13 +207,13 @@ class LivingPrivacyTest {
         val everyone = PersonRepository.listByTree(Uuid.parse(tree.id.value))
 
         // Policy boundary: a known hidden name produces no candidate, not even a placeholder or score.
-        val asRelative = ViewerPolicy(tree, relative.id).duplicateCandidates("Carmen", "López", null, everyone)
+        val asRelative = ViewerPolicy(PersonVisibility.member(emptyList())).duplicateCandidates("Carmen", "López", null, everyone)
         assertEquals(emptyList(), asRelative)
         // ...while a visible near-match still does, so the check itself still works.
-        val luisMatch = ViewerPolicy(tree, relative.id).duplicateCandidates("Luis", "Ortega", null, everyone)
+        val luisMatch = ViewerPolicy(PersonVisibility.member(emptyList())).duplicateCandidates("Luis", "Ortega", null, everyone)
         assertEquals(listOf(luis), luisMatch.map { it.person.id })
 
-        val asOwner = ViewerPolicy(tree, owner.id).duplicateCandidates("Carmen", "López", null, everyone)
+        val asOwner = ViewerPolicy(PersonVisibility.owner()).duplicateCandidates("Carmen", "López", null, everyone)
         assertEquals("Carmen López", asOwner.single().person.fullName)
 
         // Service boundary: a non-owner can't reach the duplicate check at all in Phase 1 (FT-068)...
@@ -235,6 +236,7 @@ class LivingPrivacyTest {
         assertNull(dto.profileMediaId, dto.id)
         assertEquals("UNKNOWN", dto.sex, dto.id)
         assertTrue(dto.isLiving, dto.id)
+        assertTrue(dto.redacted, dto.id)
         assertNotNull(dto.id)
     }
 }

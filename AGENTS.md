@@ -20,9 +20,10 @@ The Phase 1 server foundation and shared domain model are implemented. The web c
 signs in with Keycloak and covers the owner workflow, tree views, the person page (FT-006, with
 read-only source citations) and profile photo upload through presigned URLs (FT-008). Phase 2 has started: grants
 and their cached branch scopes are stored and resolved (FT-010), and since FT-012 they and the home branch decide
-server-side writes (out-of-branch edits are refused until FT-014 turns them into proposals; read redaction still
-follows FT-066 until FT-013). Invitations, account-to-person linking and home branches (FT-011) exist server-side,
-with a web join page for invitation links, behind `INVITATIONS_ENABLED`, which stays off until FT-013 and FT-014 land. Android, iOS and desktop still use the starter UI. See [the delivery log](docs/delivery-log.md) for the current backlog and verification.
+server-side writes (out-of-branch edits are refused until FT-014 turns them into proposals), and since FT-013 grants
+also decide which living people a member sees (the home branch reveals no one; clients render the server's `redacted`
+flag). Invitations, account-to-person linking and home branches (FT-011) exist server-side,
+with a web join page for invitation links, behind `INVITATIONS_ENABLED`, which stays off until FT-014 lands. Android, iOS and desktop still use the starter UI. See [the delivery log](docs/delivery-log.md) for the current backlog and verification.
 
 Current roadmap phase: **1. Foundations** — accounts, trees, people, unions, events, sources; full-tree and
 ancestor/descendant views on web; photo upload.

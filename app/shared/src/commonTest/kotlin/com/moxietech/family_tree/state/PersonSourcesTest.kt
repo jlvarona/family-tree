@@ -14,6 +14,7 @@ import com.moxietech.family_tree.domain.PersonId
 import com.moxietech.family_tree.domain.UnionId
 import com.moxietech.family_tree.event
 import com.moxietech.family_tree.person
+import com.moxietech.family_tree.placeholder
 import com.moxietech.family_tree.union
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -143,18 +144,25 @@ class PersonSourcesTest {
     @Test
     fun hiddenLivingPersonShowsNoCitationsEvenIfSomeArrive() {
         val citations = mapOf(target(CitationKind.PERSON, "javier") to ready(cite("c1", CitationKind.PERSON, "javier", note = "secret")))
+        // As the server sends him to a caller no grant of theirs covers (FT-013), even with details attached.
+        val hidden = javier.copy(redacted = true)
+        val hiddenGraph = graph.copy(people = listOf(antonio, carmen, hidden))
 
-        assertEquals(SourcesView.Private, PersonSources.view(javier, member, Loadable.Ready(emptyList()), Loadable.Ready(graph), Loadable.Ready(listOf(registry)), citations))
-        assertTrue(PersonSources.citedFacts(javier, emptyList(), graph, member).isEmpty(), "nothing to request")
-        // The owner sees the same person's citations.
-        val forOwner = PersonSources.view(javier, owner, Loadable.Ready(emptyList()), Loadable.Ready(graph), Loadable.Ready(listOf(registry)), citations)
-        assertEquals(listOf("c1"), (forOwner as SourcesView.Listed).entries.map { it.citationId })
+        for (viewer in listOf(member, owner)) {
+            assertEquals(SourcesView.Private, PersonSources.view(hidden, viewer, Loadable.Ready(emptyList()), Loadable.Ready(hiddenGraph), Loadable.Ready(listOf(registry)), citations))
+            assertTrue(PersonSources.citedFacts(hidden, emptyList(), hiddenGraph, viewer).isEmpty(), "nothing to request")
+        }
+        // Sent in full (the owner, or a member whose grant covers him), his citations show.
+        for (viewer in listOf(member, owner)) {
+            val shown = PersonSources.view(javier, viewer, Loadable.Ready(emptyList()), Loadable.Ready(graph), Loadable.Ready(listOf(registry)), citations)
+            assertEquals(listOf("c1"), (shown as SourcesView.Listed).entries.map { it.citationId })
+        }
     }
 
     @Test
     fun memberSeesADeceasedPersonsCitationsButNotThoseOfAUnionWithAHiddenPartner() {
-        // As the server sends it to a non-owner: Javier is a placeholder (FT-066).
-        val redacted = graph.copy(people = listOf(antonio, carmen, person("javier", "Private", living = true)))
+        // As the server sends it to a member without a grant covering him: a placeholder (FT-066, FT-013).
+        val redacted = graph.copy(people = listOf(antonio, carmen, placeholder("javier")))
         val citations = allLoaded(
             mapOf(
                 target(CitationKind.UNION, "u1") to ready(cite("c-u1", CitationKind.UNION, "u1")),

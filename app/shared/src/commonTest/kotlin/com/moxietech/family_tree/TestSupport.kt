@@ -132,6 +132,9 @@ fun person(id: String, given: String = id, living: Boolean = false, paternal: St
     version = 0,
 )
 
+/** A hidden living person exactly as the server sends one (FT-066 placeholder, FT-013 `redacted`). */
+fun placeholder(id: String) = person(id, given = "Private", living = true).copy(redacted = true)
+
 fun union(id: String, partner1: String, partner2: String?, vararg children: String, type: String = "MARRIED") = UnionDto(
     id = id,
     treeId = TREE_ID,

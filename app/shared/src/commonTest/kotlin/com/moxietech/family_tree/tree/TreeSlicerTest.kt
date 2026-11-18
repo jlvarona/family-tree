@@ -3,6 +3,7 @@ package com.moxietech.family_tree.tree
 import com.moxietech.family_tree.api.GedcomDateDto
 import com.moxietech.family_tree.graph
 import com.moxietech.family_tree.person
+import com.moxietech.family_tree.placeholder
 import com.moxietech.family_tree.union
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -48,7 +49,7 @@ class TreeSlicerTest {
     @Test
     fun slicingKeepsTheServersRedactedUnionAsIs() {
         val redacted = family.copy(
-            people = family.people.map { if (it.id == "kid") person("kid", given = "Private", living = true) else it },
+            people = family.people.map { if (it.id == "kid") placeholder("kid") else it },
             unions = family.unions.map { if (it.id == "u4") it.copy(startDate = null, endDate = null) else it },
         )
         val dated = redacted.copy(
@@ -81,7 +82,7 @@ class TreeSlicerTest {
         val redacted = graph(
             listOf("me", "hidden"),
             union("u", "me", "hidden", type = "DIVORCED"),
-        ).let { g -> g.copy(people = g.people.map { if (it.id == "hidden") person("hidden", "Private", living = true) else it }) }
+        ).let { g -> g.copy(people = g.people.map { if (it.id == "hidden") placeholder("hidden") else it }) }
 
         assertEquals(listOf(PartnerLink("hidden", "DIVORCED")), familyOf(redacted, "me").partners)
     }

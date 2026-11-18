@@ -6,8 +6,8 @@ import com.moxietech.family_tree.domain.Person
 import com.moxietech.family_tree.domain.PersonId
 import com.moxietech.family_tree.domain.Sex
 import com.moxietech.family_tree.domain.TreeId
-import com.moxietech.family_tree.server.config.AppDatabase
 import com.moxietech.family_tree.server.db.PersonTable
+import com.moxietech.family_tree.server.permissions.withJdbc
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
@@ -205,12 +205,15 @@ object PersonRepository {
         params = listOf(personId, personId, treeId, treeId, treeId),
     )
 
-    private fun rawQuery(sql: String, params: List<Uuid>): List<Person> {
-        AppDatabase.dataSource.connection.use { connection ->
-            connection.prepareStatement(sql).use { statement ->
-                params.forEachIndexed { index, value -> statement.setObject(index + 1, value.toJavaUuid()) }
-                statement.executeQuery().use { rs -> return rs.toPersonList() }
-            }
+    /**
+     * Runs on the current Exposed transaction's connection (FT-013), so a traversal inside
+     * a reader's REPEATABLE READ snapshot sees the same people, unions and grants as the
+     * rest of that read. Outside a transaction it opens its own, as before.
+     */
+    private fun rawQuery(sql: String, params: List<Uuid>): List<Person> = withJdbc { connection ->
+        connection.prepareStatement(sql).use { statement ->
+            params.forEachIndexed { index, value -> statement.setObject(index + 1, value.toJavaUuid()) }
+            statement.executeQuery().use { rs -> rs.toPersonList() }
         }
     }
 
