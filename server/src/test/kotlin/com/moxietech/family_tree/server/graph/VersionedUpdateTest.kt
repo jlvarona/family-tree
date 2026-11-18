@@ -703,9 +703,9 @@ class VersionedUpdateTest {
     // --- Authorization ------------------------------------------------------------------
 
     @Test
-    fun `a non-owner gets 403 for every update before the path ID or body is checked, and nothing changes`() = api {
+    fun `a member without an editing grant gets 403 for every update before the path ID or body is checked, and nothing changes`() = api {
         val f = family()
-        val ownerOnly = "Only the tree owner can make changes to tree ${f.tree}"
+        val noEditAccess = "Your access to tree ${f.tree} doesn't allow changes"
         val notMember = "Not a member of tree ${f.tree}"
         val before = fingerprint(f.tree)
         for (u in updates(f)) {
@@ -716,7 +716,7 @@ class VersionedUpdateTest {
                 Triple(u.path, "{}", "missing version"),
                 Triple(malformedPath, u.body(u.version), "malformed path ID"),
             )) {
-                assertError(client.put(path, Actor.RELATIVE, body), HttpStatusCode.Forbidden, ownerOnly, "relative ${u.name} $label")
+                assertError(client.put(path, Actor.RELATIVE, body), HttpStatusCode.Forbidden, noEditAccess, "relative ${u.name} $label")
             }
             assertError(client.put(u.path, Actor.INVITEE, "{ not json"), HttpStatusCode.Forbidden, notMember, "invitee ${u.name}")
             assertError(client.put(u.path, Actor.OTHER_OWNER, u.body(u.version)), HttpStatusCode.Forbidden, notMember, "other owner ${u.name}")

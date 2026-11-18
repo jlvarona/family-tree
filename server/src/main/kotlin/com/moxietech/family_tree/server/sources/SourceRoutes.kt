@@ -6,7 +6,7 @@ import com.moxietech.family_tree.domain.SourceId
 import com.moxietech.family_tree.server.config.OIDC_AUTH_NAME
 import com.moxietech.family_tree.server.graph.requirePathParam
 import com.moxietech.family_tree.server.graph.requireTreeId
-import com.moxietech.family_tree.server.graph.requireTreeWriter
+import com.moxietech.family_tree.server.graph.requireTreeWideWriter
 import com.moxietech.family_tree.server.graph.versionParam
 import com.moxietech.family_tree.server.identity.currentAccount
 import io.ktor.http.HttpStatusCode
@@ -27,7 +27,7 @@ fun Route.sourceRoutes() {
             post {
                 val account = call.currentAccount()
                 val treeId = call.requireTreeId()
-                requireTreeWriter(treeId, account.id)
+                requireTreeWideWriter(treeId, account.id)
                 val request = call.receive<CreateSourceRequest>()
                 call.respond(HttpStatusCode.Created, SourceService.createSource(treeId, account.id, request))
             }
@@ -39,7 +39,7 @@ fun Route.sourceRoutes() {
             put("/{sourceId}") {
                 val account = call.currentAccount()
                 val treeId = call.requireTreeId()
-                requireTreeWriter(treeId, account.id)
+                requireTreeWideWriter(treeId, account.id)
                 val sourceId = SourceId(call.requirePathParam("sourceId"))
                 val request = call.receive<UpdateSourceRequest>()
                 call.respond(SourceService.updateSource(treeId, sourceId, account.id, request))
@@ -47,7 +47,7 @@ fun Route.sourceRoutes() {
             delete("/{sourceId}") {
                 val account = call.currentAccount()
                 val treeId = call.requireTreeId()
-                requireTreeWriter(treeId, account.id)
+                requireTreeWideWriter(treeId, account.id)
                 val sourceId = SourceId(call.requirePathParam("sourceId"))
                 SourceService.deleteSource(treeId, sourceId, account.id, call.versionParam())
                 call.respond(HttpStatusCode.NoContent)

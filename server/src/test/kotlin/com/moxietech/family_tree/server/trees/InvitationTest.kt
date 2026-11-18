@@ -334,7 +334,7 @@ class InvitationTest {
     }
 
     @Test
-    fun `only the active owner may invite, list, revoke, see members or link`() = runBlocking {
+    fun `members without a whole-tree role may not invite, list, revoke, see members or link`() = runBlocking {
         val f = newFamily()
         val member = actor("member").also { f.addMember(it) }
         val invitee = actor("invited").also { f.addMember(it, MembershipStatus.INVITED) }

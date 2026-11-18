@@ -1,5 +1,6 @@
 package com.moxietech.family_tree.server.permissions
 
+import com.moxietech.family_tree.domain.Grant
 import com.moxietech.family_tree.domain.GrantId
 import com.moxietech.family_tree.server.config.DatabaseDispatcher
 import com.moxietech.family_tree.server.errors.NotFoundException
@@ -12,9 +13,11 @@ import kotlin.uuid.Uuid
 
 /**
  * FT-010: the resolved person sets of grants. It performs no caller authorization
- * itself, and nothing in Phase 1 enforces grants yet; FT-012 / FT-013 call it.
+ * itself; FT-012 writes call [scopesForWriter] through [WriteAccess], and FT-013 reads
+ * will call the snapshot entry points.
  *
- * Two entry points, kept apart on purpose:
+ * Three entry points, kept apart on purpose (the third, [scopesForWriter], is described
+ * on the function):
  *
  * - **Snapshot reads** ([scopesInSnapshot], [scopeInSnapshot]) run inside the caller's
  *   transaction and never write or lock. Call them in the read-only `REPEATABLE READ`
@@ -60,6 +63,32 @@ object GrantScopeService {
         checkSnapshotIsolation()
         val grant = GrantRepository.findById(treeId, grantId) ?: throw NotFoundException("No grant with id $grantId")
         return GrantScopeRepository.cached(treeId, grantId) ?: GrantScopeRepository.resolve(treeId, grant)
+    }
+
+    /**
+     * FT-012, the writer entry point: the people each of [grants] (all in [treeId])
+     * covers, for a write authorizing itself in its own transaction ([WriteAccess]).
+     * Requires a READ COMMITTED transaction that holds [GraphWriteLock] exclusive for
+     * [treeId] (both checked) and the grants locked: then no graph writer, merge or grant
+     * change of the tree can commit until this transaction does, and each statement sees
+     * everything committed before the lock was granted, so the result stays the current
+     * scope up to the write's commit, including after the write's own graph change. Uses
+     * a current cache like the snapshot reads, otherwise resolves; never writes the cache.
+     */
+    fun scopesForWriter(treeId: Uuid, grants: List<Grant>): Map<GrantId, Set<Uuid>> {
+        checkWriterLocks(treeId)
+        return grants.associate { grant ->
+            require(grant.treeId.value == treeId.toString()) { "Grant ${grant.id.value} is not in tree $treeId" }
+            grant.id to (GrantScopeRepository.cached(treeId, Uuid.parse(grant.id.value)) ?: GrantScopeRepository.resolve(treeId, grant))
+        }
+    }
+
+    internal fun checkWriterLocks(treeId: Uuid) {
+        val isolation = TransactionManager.currentOrNull()?.transactionIsolation
+        check(isolation == Connection.TRANSACTION_READ_COMMITTED) {
+            "Writer scopes must be read in the write's READ COMMITTED transaction"
+        }
+        check(GraphWriteLock.isHeldExclusive(treeId)) { "Writer scopes need GraphWriteLock exclusive for tree $treeId" }
     }
 
     /** Brings the cached scope of [grantId] up to date and returns it; 404 when the grant isn't in [treeId]. */

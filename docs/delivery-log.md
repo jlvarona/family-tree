@@ -9,6 +9,82 @@ up to date in place, not logged chronologically.
 
 ---
 
+## 2026-11-18 — FT-012 grant-based authorization
+
+Every person, union, child-link, event and citation write is now authorized from the
+caller's grants, home branch and trusted same-tree data, inside the write's own
+transaction. Whole-tree admins also manage invitations and grants. No schema change.
+Invitations (and now grant routes) stay off for users (`INVITATIONS_ENABLED`), and with
+them off only the owner is a member in practice, so behaviour for real users is
+unchanged. Decisions table: "Grant roles (FT-012)" (with the user's 2026-11-18 decision:
+a linked member needs an explicit CONTRIBUTOR or higher grant to edit their home branch;
+no grant or VIEWER only is read-only) and "Grant-based authorization (FT-012)"; open
+follow-ups under the concept doc's "Still open".
+
+- **Shared rules in `:core`.** `GrantRules` (ADMIN counts only on `WHOLE_TREE`; a
+  stored limited ADMIN carries nothing; new ones are a `400` from `GrantService` and
+  invitation creation), `EditAuthority` (per-person `LIVE` / `OUTSIDE_BRANCH` / `NONE`:
+  owner and whole-tree admin everyone; BRANCH_OWNER its branch; CONTRIBUTOR its branch's
+  people without an account; home branch and own unattached people once the member
+  holds an editing grant; VIEWER nothing; highest role wins; relationships need one live
+  end; `gainedBy` for reach added by a graph change) and `TreePermissions`
+  (`canEditSomewhere`, `canWriteTreeWide`; `canWrite` is the owner's).
+- **Gates.** Routes and services run `getTreeForEditor` (edits), `getTreeForTreeWideWriter`
+  (places, sources, media uploads: owner or whole-tree admin), `getTreeForManager`
+  (invitations, grants, the member list: owner or whole-tree admin) or `getTreeForWriter`
+  (merges, member linking: owner) before the body is decoded, so a viewer or a member
+  without grants still gets `403` for malformed JSON.
+- **In-transaction decision** (`permissions/WriteAccess`, READ COMMITTED, checked). A
+  non-owner takes `GraphWriteLock` exclusive first, then reads their membership and
+  grants with the same statements that lock them `FOR SHARE` (review fix: a second read
+  could see a grant committed while the lock waited and decide on it unlocked), then the
+  authority is computed with the new writer entry points
+  `GrantScopeService.scopesForWriter` and `HomeBranchService.homeBranchForWriter` (which
+  check the isolation and that the exclusive lock is held, via `pg_locks`). No graph
+  writer, merge, member link, redemption or grant create/update/delete can commit in
+  between. The owner keeps the shared or no graph lock each write took before and reads
+  (doesn't lock) their own membership, which avoids a lock cycle with merges. The
+  snapshot entry points are unchanged for FT-013.
+- **Per write.** The stored record and any replacement are resolved in the URL's tree
+  first (`404`), then: person update, delete and photo need the person; unions need a
+  live partner before and after; child links a live partner or child; events their
+  person or a union partner, before and after a move; citations a person the target is
+  about. Graph writes recompute the authority after the change and refuse any gained
+  reach (attaching an existing person to one's branch, swapping in an outside partner).
+  An event hidden from the caller is the missing-event `404`. Attaching an image (photo
+  or citation scan) needs the owner or a whole-tree admin, because unattached images are
+  owner-only; removing a photo needs only the person. When the path names the record
+  (person, union, child-link and event updates and deletes, photos), the branch decision
+  comes before the body's values, the media ID and `?version=` are validated, so a caller
+  outside the branch gets the `403`, never a `400` about their input.
+- **Access management.** A whole-tree admin creates, lists and revokes invitations and
+  lists, creates, changes and removes grants (`GrantRoutes`: `GET/POST …/grants`,
+  `PUT/DELETE …/grants/{id}?version=N`, installed only with the invitation gate), and
+  lists members. Member linking and merges stay owner-only; branch owners manage
+  nothing yet. `WriteAccess.beginManagement` decides inside the write; an admin takes
+  `GraphWriteLock` exclusive first, which serializes admins' management writes (two
+  admins changing each other's grants can't deadlock) and waits for redemptions. A
+  redemption now honours an invitation only while its creator is still the active owner
+  or an active whole-tree admin (`inviterCanManage`, an admin's membership and grants
+  locked); a demoted admin's pending invitations are the generic `404` until the role is
+  restored. Verified-email claims are unchanged.
+- **Responses.** Person update and photo, and every union and child-link write response,
+  go through `ViewerPolicy`; until FT-013 a contributor editing a living relative gets
+  the placeholder back. Person create, event and citation responses carry only the
+  caller's values and are unchanged.
+- **Not in scope.** No proposals (FT-014): out-of-branch changes are `403` with nothing
+  written. No read changes (FT-013). No branch-owner delegation of grants or
+  invitations, no identity or invitation-verification change, no client change.
+
+**Verification.** Passed 95 core JVM tests, 209 PostgreSQL-backed server tests,
+and 166 shared JVM tests. The opt-in Keycloak test was skipped. Authorization
+tests cover the linked no-grant and viewer cases, locked and revoked grants,
+cross-admin updates, tenant isolation, and rollback when a graph edit would
+expand the caller's authority. Separate browser sign-in against disposable
+Keycloak and PostgreSQL verified grant CRUD and invitation management for a
+whole-tree admin, and no write or audit entry for a linked member without a grant.
+
+---
 ## 2026-11-17 — FT-011 invitations and account-to-person linking
 
 Invitations, redemption, member-to-person linking and derived home branches on the
@@ -1878,7 +1954,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 
 ### Status board
 
-**Done (32)** · **In progress (0)** · **To do (23)** · **Blocked (0)**
+**Done (33)** · **In progress (0)** · **To do (22)** · **Blocked (0)**
 
 | Order | ID | Story | Epic | Priority | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -1914,7 +1990,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 | — | FT-064 | Make compose host ports configurable | E7 | P2 | Done |
 | — | FT-010 | `Grant` + `GrantScope` tables, branch resolution | E2 | P1 | Done |
 | — | FT-011 | Invitations + account-to-person linking | E2 | P1 | Done |
-| 7 | FT-012 | Grant-based authorization | E2 | P1 | To do |
+| — | FT-012 | Grant-based authorization | E2 | P1 | Done |
 | 8 | FT-013 | Grant-based living-person redaction | E2 | P1 | To do |
 | 9 | FT-014 | `ChangeProposal` workflow | E2 | P1 | To do |
 | 10 | FT-015 | Maternal/paternal "side" views | E2 | P1 | To do |
@@ -2106,9 +2182,16 @@ desktop/shared build repair.
   behind the default-off `INVITATIONS_ENABLED` (2026-11-17 entry), with email-addressed
   invitations claimable only by the matching verified email. Owners use the API to
   create invitations.
-- **FT-012 Real grant-based authorization.** `To do · P1 · #7` — replaces today's
+- **FT-012 Real grant-based authorization.** `Done · P1` — replaces today's
   Phase 1 owner-only write policy from FT-068 with resolution against `GrantScope`.
   Keep the active membership requirement and pair grant checks with FT-014.
+
+  The 2026-11-18 entry describes writes authorized in their own transaction from
+  grants, the home branch and trusted same-tree data (a linked member needs an explicit
+  CONTRIBUTOR or higher grant); owner/admin policy for places, sources and media
+  uploads; whole-tree admins manage invitations and grants behind the invitation gate;
+  merges and member linking stay owner-only; out-of-branch writes are refused with
+  nothing written until FT-014.
 - **FT-013 Grant-based living-person redaction.** `To do · P1 · #8` — extend the
   response policy from FT-066 to allow visibility when a grant covers the person.
 - **FT-014 `ChangeProposal` workflow.** `To do · P1 · #9` — out-of-branch edits become
@@ -2662,7 +2745,10 @@ grants it proposes.
 `tree_grant` because `GRANT` is an SQL keyword.
 - `(tree_id, account_id) → membership` makes it same-tree by construction. The
   membership can have any status.
-- `role` is `ADMIN`/`BRANCH_OWNER`/`CONTRIBUTOR`/`VIEWER` (names only until FT-012).
+- `role` is `ADMIN`/`BRANCH_OWNER`/`CONTRIBUTOR`/`VIEWER`; what each allows is
+  FT-012's (`:core` `EditAuthority`). The schema still accepts ADMIN on any branch;
+  `GrantService` and invitations refuse new ones that aren't `WHOLE_TREE`, and a stored
+  one carries no authority.
   `direction` is `ANCESTORS`/`DESCENDANTS`/`SIDE`/`WHOLE_TREE` (`SIDE` since V8).
 - `depth` is null (unlimited) or positive. It caps the generations of an ancestor or
   descendant branch, only the ascent of a side, and is ignored for a whole tree.
@@ -2694,12 +2780,14 @@ migration if that changes.
 ### Deliberate omissions (for now)
 
 - **No row-level security yet.** `TreeService.getTreeForReader` requires an active
-  membership in the requested tree, and `TreeService.getTreeForWriter` also requires
-  the caller to be the tree owner (FT-068). Repositories filter every lookup by
+  membership in the requested tree; writes are authorized from grants inside their
+  transaction (FT-012, `WriteAccess`), and owner-only operations still go through
+  `TreeService.getTreeForWriter` (FT-068). Repositories filter every lookup by
   `tree_id`, and V2's same-tree foreign keys enforce referential isolation in the
   database (FT-065). FT-017 tracks RLS as a later defense-in-depth measure.
 - **No `change_proposal` table yet.** It comes with FT-014. Grants and their resolved
-  scopes exist since V7 (FT-010) and invitations since V9 (FT-011, off by default), but
-  grants and home branches aren't enforced until FT-012 and FT-013.
+  scopes exist since V7 (FT-010) and invitations since V9 (FT-011, off by default).
+  Grants and home branches decide writes since FT-012; read redaction follows in FT-013.
+  FT-012 needed no migration.
 - **No `media_tag` table yet.** FT-008 covers profile photos and citation scans; the
   per-person gallery and tagging several people in one photo (`MediaTag`) come later.

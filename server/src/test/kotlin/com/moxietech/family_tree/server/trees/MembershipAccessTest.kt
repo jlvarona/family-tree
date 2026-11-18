@@ -189,11 +189,11 @@ class MembershipAccessTest {
     }
 
     @Test
-    fun `an active non-owner gets 403 for every mutation and nothing is written`() = runBlocking {
+    fun `an active member without an editing grant gets 403 for every mutation and nothing is written`() = runBlocking {
         val before = rowCounts()
         for ((name, call) in writes(relative.id)) {
             val error = assertFailsWith<ForbiddenException>(name) { call() }
-            assertEquals("Only the tree owner can make changes to tree ${tree.id.value}", error.message, name)
+            assertEquals(TreeService.noEditAccessMessage(tree.id.value), error.message, name)
         }
         assertEquals(before, rowCounts())
     }
@@ -227,7 +227,7 @@ class MembershipAccessTest {
      * (FT-072) repeats this through the production verifier.
      */
     @Test
-    fun `over HTTP a non-owner gets 403 before the body is decoded`() = testApplication {
+    fun `over HTTP a member without an editing grant gets 403 before the body is decoded`() = testApplication {
         application {
             install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
             install(StatusPages) { configureErrorMapping() }

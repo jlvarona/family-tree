@@ -30,6 +30,14 @@ object GrantRepository {
             .firstOrNull()?.toGrant()
     }
 
+    /** FT-012: every grant of [treeId], oldest first. */
+    fun listByTree(treeId: Uuid): List<Grant> = transaction {
+        TreeGrantTable.selectAll()
+            .where { TreeGrantTable.treeId eq treeId }
+            .orderBy(TreeGrantTable.createdAt to SortOrder.ASC, TreeGrantTable.id to SortOrder.ASC)
+            .map { it.toGrant() }
+    }
+
     /** Every grant [accountId] holds in [treeId], oldest first. */
     fun listForAccount(treeId: Uuid, accountId: Uuid): List<Grant> = transaction {
         TreeGrantTable.selectAll()

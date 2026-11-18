@@ -20,6 +20,7 @@ import com.moxietech.family_tree.server.graph.TreeScopedLookups
 import com.moxietech.family_tree.server.graph.ViewerPolicy
 import com.moxietech.family_tree.server.media.MediaAttachments
 import com.moxietech.family_tree.server.media.mediaInUse
+import com.moxietech.family_tree.server.permissions.WriteAccess
 import com.moxietech.family_tree.server.trees.TreeService
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
@@ -33,7 +34,8 @@ const val CITATION_CONFIDENCE_MESSAGE = "Citation confidence must be 0, 1, 2 or 
 /**
  * FT-002 citation routes. A citation ties one person, event or union to a source.
  *
- * Writes are owner-only (FT-068) and run in one READ COMMITTED transaction that
+ * Writes are authorized per target since FT-012 ([createCitation]) and run in one
+ * READ COMMITTED transaction that
  * follows the FT-001 lock contract: the source and the target are each locked
  * `FOR KEY SHARE`, filtered by ID and `tree_id`, before the insert, and the audit
  * entry is written in the same transaction. A row that is missing, in another
@@ -51,8 +53,16 @@ const val CITATION_CONFIDENCE_MESSAGE = "Citation confidence must be 0, 1, 2 or 
  */
 object CitationService {
 
+    /**
+     * FT-012: the caller needs live access to a person the target is about (the person,
+     * a partner of the union, the event's person or a partner of its union), decided in
+     * this transaction after the target is locked; an event the caller can't see is the
+     * missing-event 404. Sources are tree-wide and may be cited by anyone who can write
+     * the citation. Attaching a scan needs the owner or a whole-tree admin, checked
+     * before the media is touched (an unattached image is the owner's only).
+     */
     suspend fun createCitation(treeId: TreeId, callerAccountId: AccountId, request: CreateCitationRequest): CitationDto {
-        val tree = TreeService.getTreeForWriter(treeId, callerAccountId)
+        val tree = TreeService.getTreeForEditor(treeId, callerAccountId)
         val treeUuid = Uuid.parse(tree.id.value)
         val sourceUuid = parseUuidField("sourceId", request.sourceId)
         val kind = CitationTargetKind.parse(request.targetType)
@@ -68,11 +78,19 @@ object CitationService {
             // Once the source lock is held, a source delete waits for this transaction,
             // so the insert's own foreign-key check on the source can't fail.
             transaction(transactionIsolation = Connection.TRANSACTION_READ_COMMITTED) {
+                // FT-012 first: the owner takes no graph lock here, as before; anyone else
+                // takes it exclusive, so the target's people and branches stay as decided.
+                val scope = WriteAccess.begin(treeUuid, callerAccountId, ownerTakesSharedLock = false)
                 if (!CitationRepository.lockSource(treeUuid, sourceUuid)) {
                     throw NotFoundException("No source with id $sourceUuid")
                 }
                 if (!CitationRepository.lockTarget(treeUuid, target)) throw target.kind.notFound(target.id)
+                scope.requireFact(
+                    subjectsOf(treeUuid, target),
+                    missing = if (target.kind == CitationTargetKind.EVENT) ({ target.kind.notFound(target.id) }) else null,
+                )
                 if (mediaUuid != null) {
+                    scope.requireTreeWide()
                     MediaAttachments.lockForAttaching(treeUuid, mediaUuid, MediaPurpose.CITATION_SCAN)
                     if (CitationRepository.findByMedia(treeUuid, mediaUuid) != null) throw mediaInUse(mediaUuid)
                 }

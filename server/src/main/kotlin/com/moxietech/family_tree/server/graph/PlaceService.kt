@@ -15,7 +15,9 @@ import com.moxietech.family_tree.server.errors.parseVersionParam
 import com.moxietech.family_tree.server.errors.referenced
 import com.moxietech.family_tree.server.errors.requireValid
 import com.moxietech.family_tree.server.errors.staleVersion
+import com.moxietech.family_tree.server.permissions.WriteAccess
 import com.moxietech.family_tree.server.trees.TreeService
+import java.sql.Connection
 import com.moxietech.family_tree.validation.Validation
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
@@ -25,14 +27,16 @@ import kotlin.uuid.Uuid
 object PlaceService {
 
     suspend fun createPlace(treeId: TreeId, callerAccountId: AccountId, request: CreatePlaceRequest): PlaceDto {
-        TreeService.getTreeForWriter(treeId, callerAccountId)
+        TreeService.getTreeForTreeWideWriter(treeId, callerAccountId)
         Validation.validateNotBlank("Place name", request.name).requireValid()
         return withContext(DatabaseDispatcher) {
             // One transaction for the place and its audit entry: a failed audit
             // insert rolls back the place (FT-069). The repository's own
             // transaction { } joins this one rather than committing separately.
-            transaction {
+            transaction(transactionIsolation = Connection.TRANSACTION_READ_COMMITTED) {
                 val treeUuid = Uuid.parse(treeId.value)
+                // FT-012: places are shared by the whole tree; the owner or a whole-tree admin.
+                WriteAccess.beginTreeWide(treeUuid, callerAccountId)
                 val place = PlaceRepository.insert(
                     treeId = treeUuid,
                     name = request.name,
@@ -56,7 +60,7 @@ object PlaceService {
     }
 
     /**
-     * FT-001: replaces a place's fields, owner only, with the same validation as
+     * FT-001: replaces a place's fields, owner or whole-tree admin (FT-012), with the same validation as
      * [createPlace]. The place is resolved inside [treeId]; a version that is no
      * longer the stored one is a 409 that changes neither the place nor the
      * audit log. Events that point at the place show the new values.
@@ -67,12 +71,13 @@ object PlaceService {
         callerAccountId: AccountId,
         request: UpdatePlaceRequest,
     ): PlaceDto {
-        TreeService.getTreeForWriter(treeId, callerAccountId)
+        TreeService.getTreeForTreeWideWriter(treeId, callerAccountId)
         val placeUuid = parseUuidField("placeId", placeId.value)
         Validation.validateNotBlank("Place name", request.name).requireValid()
         return withContext(DatabaseDispatcher) {
-            transaction {
+            transaction(transactionIsolation = Connection.TRANSACTION_READ_COMMITTED) {
                 val treeUuid = Uuid.parse(treeId.value)
+                WriteAccess.beginTreeWide(treeUuid, callerAccountId)
                 val before = TreeScopedLookups.requirePlace(treeUuid, placeUuid)
                 if (before.version != request.version) throw staleVersion("Place", before.id.value)
                 val after = PlaceRepository.update(
@@ -99,13 +104,14 @@ object PlaceService {
         }
     }
 
-    /** FT-001: deletes a place no event uses, owner only, at the current [version] (see [RecordDeletion]). */
+    /** FT-001: deletes a place no event uses, owner or whole-tree admin (FT-012), at the current [version] (see [RecordDeletion]). */
     suspend fun deletePlace(treeId: TreeId, placeId: PlaceId, callerAccountId: AccountId, version: List<String>?) {
-        TreeService.getTreeForWriter(treeId, callerAccountId)
+        TreeService.getTreeForTreeWideWriter(treeId, callerAccountId)
         val placeUuid = parseUuidField("placeId", placeId.value)
         val expected = parseVersionParam(version)
         val treeUuid = Uuid.parse(treeId.value)
         RecordDeletion.guarded("Place", placeUuid.toString(), RecordDeletion.PLACE_FOREIGN_KEYS) {
+            WriteAccess.beginTreeWide(treeUuid, callerAccountId)
             val before = TreeScopedLookups.requirePlace(treeUuid, placeUuid)
             if (before.version != expected) throw staleVersion("Place", before.id.value)
             if (RecordDeletion.placeIsReferenced(treeUuid, placeUuid)) throw referenced("Place", before.id.value)

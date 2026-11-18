@@ -23,7 +23,7 @@ fun Route.placeRoutes() {
             post {
                 val account = call.currentAccount()
                 val treeId = call.requireTreeId()
-                requireTreeWriter(treeId, account.id)
+                requireTreeWideWriter(treeId, account.id)
                 val request = call.receive<CreatePlaceRequest>()
                 call.respond(HttpStatusCode.Created, PlaceService.createPlace(treeId, account.id, request))
             }
@@ -35,7 +35,7 @@ fun Route.placeRoutes() {
             put("/{placeId}") {
                 val account = call.currentAccount()
                 val treeId = call.requireTreeId()
-                requireTreeWriter(treeId, account.id)
+                requireTreeWideWriter(treeId, account.id)
                 val placeId = PlaceId(call.requirePathParam("placeId"))
                 val request = call.receive<UpdatePlaceRequest>()
                 call.respond(PlaceService.updatePlace(treeId, placeId, account.id, request))
@@ -43,7 +43,7 @@ fun Route.placeRoutes() {
             delete("/{placeId}") {
                 val account = call.currentAccount()
                 val treeId = call.requireTreeId()
-                requireTreeWriter(treeId, account.id)
+                requireTreeWideWriter(treeId, account.id)
                 val placeId = PlaceId(call.requirePathParam("placeId"))
                 PlaceService.deletePlace(treeId, placeId, account.id, call.versionParam())
                 call.respond(HttpStatusCode.NoContent)

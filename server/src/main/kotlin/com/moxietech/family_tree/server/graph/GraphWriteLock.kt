@@ -37,6 +37,14 @@ import kotlin.uuid.Uuid
  *   union delete and child-link update and delete, which add no references. Shared
  *   holders still don't block each other.
  *
+ * FT-012: every person, union, child-link, event and citation write by a member other
+ * than the tree owner takes it **exclusive** first (`WriteAccess.begin`), then decides
+ * what the caller may change from the branches in the same transaction. Every writer
+ * that can change a branch, an account link or a grant definition holds it shared (or
+ * exclusive), so none of them commits between that decision and the write's commit.
+ * The owner keeps the shared (or no) lock each write took before, since the owner's
+ * authority doesn't depend on branches.
+ *
  * The key is derived from the tree ID; two trees sharing a key only serialize more.
  */
 internal object GraphWriteLock {
@@ -45,11 +53,35 @@ internal object GraphWriteLock {
 
     fun exclusive(treeId: Uuid) = acquire(treeId, "pg_advisory_xact_lock")
 
+    /**
+     * FT-012: whether the current transaction holds the exclusive lock for [treeId]
+     * (`pg_locks` shows a bigint advisory key as its high half in `classid`, its low half
+     * in `objid`, and `objsubid` 1). Used to check a precondition, never to decide access.
+     */
+    fun isHeldExclusive(treeId: Uuid): Boolean {
+        val key = key(treeId)
+        val high = key ushr 32
+        val low = key and 0xFFFFFFFFL
+        return transaction {
+            exec(
+                """
+                select exists (
+                    select 1 from pg_locks
+                    where locktype = 'advisory' and pid = pg_backend_pid() and mode = 'ExclusiveLock' and granted
+                      and objsubid = 1 and classid::bigint = $high and objid::bigint = $low
+                )
+                """.trimIndent(),
+            ) { rs -> rs.next() && rs.getBoolean(1) } ?: false
+        }
+    }
+
     private fun acquire(treeId: Uuid, function: String) {
         // The key is a Long computed here, never caller text, so it is inlined safely.
-        val key = treeId.toLongs { mostSignificant, leastSignificant -> mostSignificant xor leastSignificant }
+        val key = key(treeId)
         transaction {
             exec("select $function($key)") { rs -> rs.next() }
         }
     }
+
+    private fun key(treeId: Uuid): Long = treeId.toLongs { mostSignificant, leastSignificant -> mostSignificant xor leastSignificant }
 }

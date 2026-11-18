@@ -24,13 +24,15 @@ import com.moxietech.family_tree.server.trees.TreeService
 import com.moxietech.family_tree.validation.Validation
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
+import com.moxietech.family_tree.server.permissions.WriteAccess
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
+import java.sql.Connection
 import kotlin.uuid.Uuid
 
 object SourceService {
 
     suspend fun createSource(treeId: TreeId, callerAccountId: AccountId, request: CreateSourceRequest): SourceDto {
-        TreeService.getTreeForWriter(treeId, callerAccountId)
+        TreeService.getTreeForTreeWideWriter(treeId, callerAccountId)
         Validation.validateNotBlank("Source title", request.title).requireValid()
         val type = runCatching { SourceType.valueOf(request.type) }.getOrElse {
             throw ValidationException(listOf("Unknown source type '${request.type}'"))
@@ -38,7 +40,9 @@ object SourceService {
         val date = request.date?.let { GedcomDateParser.parse(it) }
 
         return withContext(DatabaseDispatcher) {
-            transaction {
+            transaction(transactionIsolation = Connection.TRANSACTION_READ_COMMITTED) {
+                // FT-012: a source is tree-wide; the owner or a whole-tree admin, under locks.
+                WriteAccess.beginTreeWide(Uuid.parse(treeId.value), callerAccountId)
                 val source = SourceRepository.insert(
                     treeId = Uuid.parse(treeId.value),
                     title = request.title,
@@ -65,7 +69,7 @@ object SourceService {
     }
 
     /**
-     * FT-001: replaces a source's fields, owner only, with the same validation
+     * FT-001: replaces a source's fields, owner or whole-tree admin (FT-012), with the same validation
      * as [createSource]. The source is resolved inside [treeId] (another tree's
      * ID is the same 404 as a missing one); a version that is no longer the
      * stored one is a 409 that changes neither the source nor the audit log.
@@ -76,7 +80,7 @@ object SourceService {
         callerAccountId: AccountId,
         request: UpdateSourceRequest,
     ): SourceDto {
-        TreeService.getTreeForWriter(treeId, callerAccountId)
+        TreeService.getTreeForTreeWideWriter(treeId, callerAccountId)
         val sourceUuid = parseUuidField("sourceId", sourceId.value)
         Validation.validateNotBlank("Source title", request.title).requireValid()
         val type = runCatching { SourceType.valueOf(request.type) }.getOrElse {
@@ -85,8 +89,9 @@ object SourceService {
         val date = request.date?.let { GedcomDateParser.parse(it) }
 
         return withContext(DatabaseDispatcher) {
-            transaction {
+            transaction(transactionIsolation = Connection.TRANSACTION_READ_COMMITTED) {
                 val treeUuid = Uuid.parse(treeId.value)
+                WriteAccess.beginTreeWide(treeUuid, callerAccountId)
                 val before = SourceRepository.findById(treeUuid, sourceUuid)
                     ?: throw NotFoundException("No source with id $sourceUuid")
                 if (before.version != request.version) throw staleVersion("Source", before.id.value)
@@ -117,13 +122,14 @@ object SourceService {
         }
     }
 
-    /** FT-001: deletes a source no citation uses, owner only, at the current [version] (see `RecordDeletion`). */
+    /** FT-001: deletes a source no citation uses, owner or whole-tree admin (FT-012), at the current [version] (see `RecordDeletion`). */
     suspend fun deleteSource(treeId: TreeId, sourceId: SourceId, callerAccountId: AccountId, version: List<String>?) {
-        TreeService.getTreeForWriter(treeId, callerAccountId)
+        TreeService.getTreeForTreeWideWriter(treeId, callerAccountId)
         val sourceUuid = parseUuidField("sourceId", sourceId.value)
         val expected = parseVersionParam(version)
         val treeUuid = Uuid.parse(treeId.value)
         RecordDeletion.guarded("Source", sourceUuid.toString(), RecordDeletion.SOURCE_FOREIGN_KEYS) {
+            WriteAccess.beginTreeWide(treeUuid, callerAccountId)
             val before = SourceRepository.findById(treeUuid, sourceUuid)
                 ?: throw NotFoundException("No source with id $sourceUuid")
             if (before.version != expected) throw staleVersion("Source", before.id.value)
