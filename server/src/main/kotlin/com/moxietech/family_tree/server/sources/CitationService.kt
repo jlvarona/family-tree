@@ -20,6 +20,7 @@ import com.moxietech.family_tree.server.graph.TreeScopedLookups
 import com.moxietech.family_tree.server.graph.ViewerPolicy
 import com.moxietech.family_tree.server.media.MediaAttachments
 import com.moxietech.family_tree.server.media.mediaInUse
+import com.moxietech.family_tree.server.permissions.ReadAccess
 import com.moxietech.family_tree.server.permissions.WriteAccess
 import com.moxietech.family_tree.server.trees.TreeService
 import kotlinx.coroutines.withContext
@@ -135,21 +136,16 @@ object CitationService {
         kind: CitationTargetKind,
         rawTargetId: String,
         callerAccountId: AccountId,
-    ): List<CitationDto> {
-        val tree = TreeService.getTreeForReader(treeId, callerAccountId)
+    ): List<CitationDto> = ReadAccess.read(treeId, callerAccountId) { tree, policy ->
+        // FT-013: the membership check and the caller's grant scopes share the snapshot.
         val treeUuid = Uuid.parse(tree.id.value)
         val target = CitationTargetRef(kind, parseUuidField(kind.pathField, rawTargetId))
-        val policy = ViewerPolicy(tree, callerAccountId)
-        return withContext(DatabaseDispatcher) {
-            transaction(transactionIsolation = Connection.TRANSACTION_REPEATABLE_READ, readOnly = true) {
-                val subjects = subjectsOf(treeUuid, target)
-                if (target.kind == CitationTargetKind.EVENT && !policy.canSeeAll(subjects)) {
-                    throw target.kind.notFound(target.id)
-                }
-                policy.citationsOn(subjects) {
-                    CitationRepository.listByTarget(treeUuid, target).map { it.toDto() }
-                }
-            }
+        val subjects = subjectsOf(treeUuid, target)
+        if (target.kind == CitationTargetKind.EVENT && !policy.canSeeAll(subjects)) {
+            throw target.kind.notFound(target.id)
+        }
+        policy.citationsOn(subjects) {
+            CitationRepository.listByTarget(treeUuid, target).map { it.toDto() }
         }
     }
 

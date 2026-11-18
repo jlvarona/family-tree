@@ -21,6 +21,7 @@ import com.moxietech.family_tree.server.errors.parseUuidField
 import com.moxietech.family_tree.server.media.MediaAttachments
 import com.moxietech.family_tree.server.media.mediaInUse
 import com.moxietech.family_tree.server.permissions.GraphGeneration
+import com.moxietech.family_tree.server.permissions.ReadAccess
 import com.moxietech.family_tree.server.permissions.WriteAccess
 import com.moxietech.family_tree.server.errors.parseVersionParam
 import com.moxietech.family_tree.server.errors.referenced
@@ -59,7 +60,8 @@ object PersonService {
                 // rebuild while the person is added (FT-010).
                 val scope = WriteAccess.begin(Uuid.parse(treeId.value), callerAccountId, ownerTakesSharedLock = true)
                 val existing = PersonRepository.listByTree(Uuid.parse(treeId.value))
-                val duplicates = ViewerPolicy(scope.tree, callerAccountId).duplicateCandidates(
+                // FT-013: scored only against the people this caller may see.
+                val duplicates = scope.viewer().duplicateCandidates(
                     givenNames = request.givenNames,
                     surnamePaternal = request.surnamePaternal,
                     surnameMaternal = request.surnameMaternal,
@@ -124,6 +126,9 @@ object PersonService {
                 val sex = runCatching { Sex.valueOf(request.sex) }.getOrElse {
                     throw ValidationException(listOf("Unknown sex '${request.sex}'"))
                 }
+                // FT-013: a writer who can't see this living person can't mark them deceased,
+                // which would open their earlier photo, events and citations to every member.
+                scope.requireNotRevealedByDeath(before, request.isLiving)
                 if (before.version != request.version) throw staleVersion("Person", before.id.value)
                 val after = PersonRepository.update(
                     treeId = treeUuid,
@@ -146,7 +151,7 @@ object PersonService {
                     beforeJson = AuditJson.encodeToString(before.toDto()),
                     afterJson = AuditJson.encodeToString(dto),
                 )
-                ViewerPolicy(scope.tree, callerAccountId).project(after)
+                scope.viewer().project(after)
             }
         }
     }
@@ -212,7 +217,7 @@ object PersonService {
                         beforeJson = AuditJson.encodeToString(before.toDto()),
                         afterJson = AuditJson.encodeToString(dto),
                     )
-                    ViewerPolicy(scope.tree, callerAccountId).project(after)
+                    scope.viewer().project(after)
                 }
             }
         } catch (e: SQLException) {
@@ -261,40 +266,36 @@ object PersonService {
         }
     }
 
-    suspend fun listPeople(treeId: TreeId, callerAccountId: AccountId): List<PersonDto> {
-        val tree = TreeService.getTreeForReader(treeId, callerAccountId)
-        return withContext(DatabaseDispatcher) {
-            PersonRepository.listByTree(Uuid.parse(treeId.value)).map(ViewerPolicy(tree, callerAccountId)::project)
+    /**
+     * FT-013: every person of the tree through [ViewerPolicy]. The membership check, the
+     * caller's grant scopes and the people come from one read-only snapshot ([ReadAccess]),
+     * as do the other person reads below.
+     */
+    suspend fun listPeople(treeId: TreeId, callerAccountId: AccountId): List<PersonDto> =
+        ReadAccess.read(treeId, callerAccountId) { tree, policy ->
+            PersonRepository.listByTree(Uuid.parse(tree.id.value)).map(policy::project)
         }
-    }
 
-    suspend fun getPerson(treeId: TreeId, personId: PersonId, callerAccountId: AccountId): PersonDto {
-        val tree = TreeService.getTreeForReader(treeId, callerAccountId)
-        val person = withContext(DatabaseDispatcher) {
-            TreeScopedLookups.requirePerson(Uuid.parse(treeId.value), parseUuidField("personId", personId.value))
+    suspend fun getPerson(treeId: TreeId, personId: PersonId, callerAccountId: AccountId): PersonDto =
+        ReadAccess.read(treeId, callerAccountId) { tree, policy ->
+            policy.project(TreeScopedLookups.requirePerson(Uuid.parse(tree.id.value), parseUuidField("personId", personId.value)))
         }
-        return ViewerPolicy(tree, callerAccountId).project(person)
-    }
 
     /** 404 when the anchor isn't in [treeId], rather than an empty list that hides the mistake. */
-    suspend fun ancestorsOf(treeId: TreeId, personId: PersonId, callerAccountId: AccountId): List<PersonDto> {
-        val tree = TreeService.getTreeForReader(treeId, callerAccountId)
-        val treeUuid = Uuid.parse(treeId.value)
-        val personUuid = parseUuidField("personId", personId.value)
-        return withContext(DatabaseDispatcher) {
+    suspend fun ancestorsOf(treeId: TreeId, personId: PersonId, callerAccountId: AccountId): List<PersonDto> =
+        ReadAccess.read(treeId, callerAccountId) { tree, policy ->
+            val treeUuid = Uuid.parse(tree.id.value)
+            val personUuid = parseUuidField("personId", personId.value)
             TreeScopedLookups.requirePerson(treeUuid, personUuid)
-            PersonRepository.ancestorsOf(personUuid, treeUuid)
-        }.map(ViewerPolicy(tree, callerAccountId)::project)
-    }
+            PersonRepository.ancestorsOf(personUuid, treeUuid).map(policy::project)
+        }
 
     /** 404 when the anchor isn't in [treeId], rather than an empty list that hides the mistake. */
-    suspend fun descendantsOf(treeId: TreeId, personId: PersonId, callerAccountId: AccountId): List<PersonDto> {
-        val tree = TreeService.getTreeForReader(treeId, callerAccountId)
-        val treeUuid = Uuid.parse(treeId.value)
-        val personUuid = parseUuidField("personId", personId.value)
-        return withContext(DatabaseDispatcher) {
+    suspend fun descendantsOf(treeId: TreeId, personId: PersonId, callerAccountId: AccountId): List<PersonDto> =
+        ReadAccess.read(treeId, callerAccountId) { tree, policy ->
+            val treeUuid = Uuid.parse(tree.id.value)
+            val personUuid = parseUuidField("personId", personId.value)
             TreeScopedLookups.requirePerson(treeUuid, personUuid)
-            PersonRepository.descendantsOf(personUuid, treeUuid)
-        }.map(ViewerPolicy(tree, callerAccountId)::project)
-    }
+            PersonRepository.descendantsOf(personUuid, treeUuid).map(policy::project)
+        }
 }

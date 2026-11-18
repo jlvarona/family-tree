@@ -2,6 +2,9 @@ package com.moxietech.family_tree.server.permissions
 
 import com.moxietech.family_tree.domain.Grant
 import com.moxietech.family_tree.domain.GrantId
+import com.moxietech.family_tree.domain.PersonId
+import com.moxietech.family_tree.permissions.EditAuthority
+import com.moxietech.family_tree.permissions.GrantRules
 import com.moxietech.family_tree.server.config.DatabaseDispatcher
 import com.moxietech.family_tree.server.errors.NotFoundException
 import com.moxietech.family_tree.server.graph.GraphWriteLock
@@ -14,7 +17,7 @@ import kotlin.uuid.Uuid
 /**
  * FT-010: the resolved person sets of grants. It performs no caller authorization
  * itself; FT-012 writes call [scopesForWriter] through [WriteAccess], and FT-013 reads
- * will call the snapshot entry points.
+ * call [scopedGrantsInSnapshot] through [ReadAccess].
  *
  * Three entry points, kept apart on purpose (the third, [scopesForWriter], is described
  * on the function):
@@ -53,6 +56,23 @@ object GrantScopeService {
         return GrantRepository.listForAccount(treeId, accountId).associate { grant ->
             grant.id to (GrantScopeRepository.cached(treeId, Uuid.parse(grant.id.value)) ?: GrantScopeRepository.resolve(treeId, grant))
         }
+    }
+
+    /**
+     * FT-013: every grant [accountId] holds in [treeId] with its stored role and branch and
+     * the people it covers, from the caller's current snapshot (the read-only REPEATABLE
+     * READ transaction that also reads the data being projected). A grant without an
+     * effective role ([GrantRules.effectiveRole]: a stored ADMIN on a limited branch)
+     * carries nothing, so its scope isn't resolved and it isn't returned.
+     */
+    fun scopedGrantsInSnapshot(treeId: Uuid, accountId: Uuid): List<EditAuthority.ScopedGrant> {
+        checkSnapshotIsolation()
+        return GrantRepository.listForAccount(treeId, accountId)
+            .filter { GrantRules.effectiveRole(it.role, it.branch) != null }
+            .map { grant ->
+                val scope = GrantScopeRepository.cached(treeId, Uuid.parse(grant.id.value)) ?: GrantScopeRepository.resolve(treeId, grant)
+                EditAuthority.ScopedGrant(grant.role, grant.branch, scope.mapTo(mutableSetOf()) { PersonId(it.toString()) })
+            }
     }
 
     /**

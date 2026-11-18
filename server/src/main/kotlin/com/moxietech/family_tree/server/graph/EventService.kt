@@ -22,6 +22,7 @@ import com.moxietech.family_tree.server.errors.parseUuidField
 import com.moxietech.family_tree.server.errors.parseVersionParam
 import com.moxietech.family_tree.server.errors.referenced
 import com.moxietech.family_tree.server.errors.staleVersion
+import com.moxietech.family_tree.server.permissions.ReadAccess
 import com.moxietech.family_tree.server.permissions.WriteAccess
 import com.moxietech.family_tree.server.permissions.WriteScope
 import com.moxietech.family_tree.server.trees.TreeService
@@ -128,7 +129,14 @@ object EventService {
                 val placeUuid = parseOptionalUuidField("placeId", request.placeId)
                 personUuid?.let { TreeScopedLookups.requirePerson(treeUuid, it) }
                 unionUuid?.let { TreeScopedLookups.requireUnion(treeUuid, it) }
-                scope.requireFact(subjectsOf(treeUuid, personUuid, unionUuid))
+                val replacementSubjects = subjectsOf(treeUuid, personUuid, unionUuid)
+                scope.requireFact(replacementSubjects)
+                // FT-013: the event keeps its ID and citations; moving it off a hidden person
+                // would let those be read through its new subject.
+                scope.requireNoHiddenSubjectRemoved(
+                    storedSubjectsOf(treeUuid, before),
+                    replacementSubjects.map { Uuid.parse(it.id.value) },
+                )
                 // An unchanged place reuses the one read for "before", so a concurrent place
                 // edit can't show up in this event's audit entry as if the event changed it.
                 val place = when {
@@ -208,30 +216,32 @@ object EventService {
 
     /** FT-012: live access to a stored event's subject; an event hidden from the caller is the missing-event 404. */
     private fun requireStoredEvent(scope: WriteScope, treeUuid: Uuid, event: Event) {
-        val subjects = subjectsOf(
-            treeUuid,
-            event.personId?.let { Uuid.parse(it.value) },
-            event.unionId?.let { Uuid.parse(it.value) },
-        )
-        scope.requireFact(subjects) { NotFoundException("No event with id ${event.id.value}") }
+        scope.requireFact(storedSubjectsOf(treeUuid, event)) { NotFoundException("No event with id ${event.id.value}") }
     }
 
-    suspend fun listEventsForPerson(treeId: TreeId, personId: PersonId, callerAccountId: AccountId): List<EventDto> {
-        val tree = TreeService.getTreeForReader(treeId, callerAccountId)
-        return withContext(DatabaseDispatcher) {
-            transaction {
-                val treeUuid = Uuid.parse(treeId.value)
-                val personUuid = parseUuidField("personId", personId.value)
-                val person = TreeScopedLookups.requirePerson(treeUuid, personUuid)
-                // A hidden living person still resolves (their placeholder is visible), but
-                // none of their events are returned: no dates, places or notes (FT-066).
-                ViewerPolicy(tree, callerAccountId).eventsOf(person) {
-                    EventRepository.listByPerson(treeUuid, personUuid).map { event ->
-                        val place = event.placeId?.let { PlaceRepository.findById(treeUuid, Uuid.parse(it.value)) }
-                        event.toDto(place)
-                    }
+    private fun storedSubjectsOf(treeUuid: Uuid, event: Event): List<Person> = subjectsOf(
+        treeUuid,
+        event.personId?.let { Uuid.parse(it.value) },
+        event.unionId?.let { Uuid.parse(it.value) },
+    )
+
+    /**
+     * A person's own events. FT-013: the membership check, the caller's grant scopes, the
+     * person and the events come from one read-only snapshot ([ReadAccess]); the events
+     * of a hidden person aren't read at all.
+     */
+    suspend fun listEventsForPerson(treeId: TreeId, personId: PersonId, callerAccountId: AccountId): List<EventDto> =
+        ReadAccess.read(treeId, callerAccountId) { tree, policy ->
+            val treeUuid = Uuid.parse(tree.id.value)
+            val personUuid = parseUuidField("personId", personId.value)
+            val person = TreeScopedLookups.requirePerson(treeUuid, personUuid)
+            // A hidden living person still resolves (their placeholder is visible), but
+            // none of their events are returned: no dates, places or notes (FT-066).
+            policy.eventsOf(person) {
+                EventRepository.listByPerson(treeUuid, personUuid).map { event ->
+                    val place = event.placeId?.let { PlaceRepository.findById(treeUuid, Uuid.parse(it.value)) }
+                    event.toDto(place)
                 }
             }
         }
-    }
 }

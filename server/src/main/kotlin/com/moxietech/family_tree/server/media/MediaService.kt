@@ -19,6 +19,7 @@ import com.moxietech.family_tree.server.errors.ValidationException
 import com.moxietech.family_tree.server.errors.parseUuidField
 import com.moxietech.family_tree.server.graph.PersonRepository
 import com.moxietech.family_tree.server.graph.ViewerPolicy
+import com.moxietech.family_tree.server.permissions.ReadAccess
 import com.moxietech.family_tree.server.permissions.WriteAccess
 import com.moxietech.family_tree.server.sources.CitationRepository
 import com.moxietech.family_tree.server.sources.CitationService
@@ -198,18 +199,17 @@ class MediaService(
     }
 
     suspend fun download(treeId: TreeId, rawMediaId: String, callerAccountId: AccountId): MediaDownloadDto {
-        val tree = TreeService.getTreeForReader(treeId, callerAccountId)
-        val treeUuid = Uuid.parse(tree.id.value)
-        val mediaId = parseUuidField("mediaId", rawMediaId)
-        val policy = ViewerPolicy(tree, callerAccountId)
-        val media = withContext(DatabaseDispatcher) {
-            transaction(transactionIsolation = Connection.TRANSACTION_REPEATABLE_READ, readOnly = true) {
-                val media = MediaRepository.find(treeUuid, mediaId)?.takeIf { it.status == MediaStatus.READY }
-                    ?: throw mediaNotFound(mediaId)
-                if (!policy.canSeeMedia(attachmentOf(treeUuid, media))) throw mediaNotFound(mediaId)
-                media
-            }
+        // FT-013: the membership check, the caller's grant scopes and what the image is
+        // attached to are read in one snapshot; the URL is presigned after it.
+        val media = ReadAccess.read(treeId, callerAccountId) { tree, policy ->
+            val treeUuid = Uuid.parse(tree.id.value)
+            val mediaId = parseUuidField("mediaId", rawMediaId)
+            val media = MediaRepository.find(treeUuid, mediaId)?.takeIf { it.status == MediaStatus.READY }
+                ?: throw mediaNotFound(mediaId)
+            if (!policy.canSeeMedia(attachmentOf(treeUuid, media))) throw mediaNotFound(mediaId)
+            media
         }
+        val mediaId = media.id
         val key = media.storageKey ?: error("READY media $mediaId has no storage key")
         val presigned = store.presignDownload(key, media.format.contentType, settings.downloadUrlTtl)
         return MediaDownloadDto(media.id.toString(), presigned.url, media.format.contentType, presigned.expiresAt.toString())

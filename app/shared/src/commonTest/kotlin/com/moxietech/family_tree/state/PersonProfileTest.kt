@@ -8,6 +8,7 @@ import com.moxietech.family_tree.api.TreeGraphDto
 import com.moxietech.family_tree.api.UnionChildDto
 import com.moxietech.family_tree.event
 import com.moxietech.family_tree.person
+import com.moxietech.family_tree.placeholder
 import com.moxietech.family_tree.union
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -24,8 +25,8 @@ class PersonProfileTest {
         .copy(surnameMaternal = "Vidal", bio = "Worked in the workshop.\r\n\r\n\r\nLoved the sea.")
     private val carmen = person("carmen", "Carmen", living = true, paternal = "Díaz")
 
-    /** As the server sends a living person to a non-owner: a placeholder (FT-066). */
-    private val carmenRedacted = person("carmen", "Private", living = true)
+    /** As the server sends a living person no grant of the caller covers: a placeholder (FT-066, FT-013). */
+    private val carmenRedacted = placeholder("carmen")
 
     @Test
     fun ownerSeesTheFormattedNameNamePartsAndCleanBio() {
@@ -41,8 +42,8 @@ class PersonProfileTest {
 
     @Test
     fun hiddenLivingPersonShowsOnlyThePlaceholderEvenIfDetailsArrive() {
-        // A response that wrongly carried details must still not be presented.
-        val leaked = carmen.copy(bio = "secret story")
+        // A placeholder that wrongly carried details must still not be presented.
+        val leaked = carmen.copy(bio = "secret story", redacted = true)
 
         val header = PersonProfile.header(leaked, member)
 
@@ -56,6 +57,31 @@ class PersonProfileTest {
     fun memberSeesDeceasedPeopleInFull() {
         assertEquals("Antonio Romero Vidal", PersonProfile.header(antonio, member).name)
         assertEquals(PersonStatus.LIVING, PersonProfile.header(carmen, owner).status)
+    }
+
+    @Test
+    fun theServersProjectionDecidesNotTreeOwnershipOrTheName() {
+        // FT-013: a living person a member's grant covers arrives in full and is shown in full.
+        val header = PersonProfile.header(carmen, member)
+        assertEquals("Carmen Díaz", header.name)
+        assertEquals(PersonStatus.LIVING, header.status)
+        // A placeholder stays one, even for the owner.
+        assertEquals(PersonStatus.PRIVATE, PersonProfile.header(carmenRedacted, owner).status)
+        assertNull(owner.displayName(carmenRedacted))
+        // Someone really named "Private" isn't mistaken for a placeholder.
+        val named = person("p", "Private", living = true)
+        assertEquals("Private", member.displayName(named))
+        assertEquals(PersonStatus.LIVING, PersonProfile.header(named, member).status)
+    }
+
+    @Test
+    fun unionDatesShowWhenBothPartnersArriveInFull() {
+        val graph = TreeGraphDto(
+            TREE_ID,
+            listOf(antonio, carmen),
+            listOf(union("u1", "antonio", "carmen").copy(startDate = GedcomDateDto("1955", null, null))),
+        )
+        assertEquals("1955", PersonProfile.family(graph, antonio, member).partners.single().unionStart)
     }
 
     @Test

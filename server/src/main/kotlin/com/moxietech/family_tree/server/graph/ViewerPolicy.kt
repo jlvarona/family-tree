@@ -5,11 +5,9 @@ import com.moxietech.family_tree.api.DuplicateCandidateDto
 import com.moxietech.family_tree.api.EventDto
 import com.moxietech.family_tree.api.PersonDto
 import com.moxietech.family_tree.api.UnionDto
-import com.moxietech.family_tree.domain.AccountId
 import com.moxietech.family_tree.domain.Person
 import com.moxietech.family_tree.domain.PersonId
 import com.moxietech.family_tree.domain.Sex
-import com.moxietech.family_tree.domain.Tree
 import com.moxietech.family_tree.domain.Union
 import com.moxietech.family_tree.domain.UnionChild
 import com.moxietech.family_tree.format.DuplicatePersonScorer
@@ -17,16 +15,19 @@ import com.moxietech.family_tree.permissions.PersonVisibility
 import com.moxietech.family_tree.server.media.MediaAttachment
 
 /**
- * The one place responses are shaped for living-person privacy (FT-066).
- * Every graph read builds one of these from the tree and the caller, and
- * projects people, unions, events and duplicate candidates through it, so
- * routes can't drift apart. Who is hidden comes from [PersonVisibility] in
- * `:core`; FT-013 widens that rule with grants without changing callers.
+ * The one place responses are shaped for living-person privacy (FT-066, FT-013).
+ * Every graph read builds one of these for the caller in one tree, and projects
+ * people, unions, events and duplicate candidates through it, so routes can't drift
+ * apart. Who is hidden comes from `:core` [PersonVisibility]: since FT-013 the owner,
+ * deceased people, and living people one of the caller's effective grants covers are
+ * visible. Build it with `ReadAccess` (reads: the grant scopes of the same snapshot)
+ * or `WriteScope.viewer` (writes: the scopes under the write's locks), never from the
+ * tree alone.
  *
  * What a hidden (living, not visible to this caller) person looks like:
  * - Person: a placeholder that keeps the ID, tree, `isLiving` and version so
- *   the tree still renders, with name "Private", sex `UNKNOWN`, and no
- *   surnames, bio or profile media.
+ *   the tree still renders, with name "Private", sex `UNKNOWN`, no surnames, bio or
+ *   profile media, and `redacted = true`, which clients render as their localized label.
  * - Their events are omitted entirely (no dates, places or notes).
  * - A union with a hidden partner keeps its partner and child links and its
  *   type, but its start and end dates are removed.
@@ -36,9 +37,9 @@ import com.moxietech.family_tree.server.media.MediaAttachment
  *   (FT-002, [citationsOn]); an event of either reads as missing on the
  *   citation route, as it is omitted everywhere else.
  */
-class ViewerPolicy(private val tree: Tree, private val callerAccountId: AccountId) {
+class ViewerPolicy(private val visibility: PersonVisibility) {
 
-    fun canSee(person: Person): Boolean = PersonVisibility.canSeeDetails(tree, callerAccountId, person)
+    fun canSee(person: Person): Boolean = visibility.canSeeDetails(person)
 
     fun project(person: Person): PersonDto = if (canSee(person)) person.toDto() else person.toDto().redacted()
 
@@ -77,13 +78,12 @@ class ViewerPolicy(private val tree: Tree, private val callerAccountId: AccountI
      * to. A profile photo follows its person ([project] already drops the photo ID of a
      * hidden person); a citation scan follows the citation ([citationsOn]: every person
      * the fact is about must be visible). An unattached image (not used yet, or replaced)
-     * is the tree owner's only. The owner sees everyone in Phase 1, so every image of
-     * the tree. FT-013 widens [canSee] with grants without changing this.
+     * is the tree owner's only, whatever grants the caller holds (FT-013).
      */
     fun canSeeMedia(attachment: MediaAttachment): Boolean = when (attachment) {
         is MediaAttachment.ProfilePhotoOf -> canSee(attachment.person)
         is MediaAttachment.ScanOf -> canSeeAll(attachment.subjects)
-        MediaAttachment.Unattached -> tree.ownerAccountId == callerAccountId
+        MediaAttachment.Unattached -> visibility.isOwner
     }
 
     /**
@@ -120,10 +120,12 @@ internal fun PersonDto.redacted() = copy(
     sex = Sex.UNKNOWN.name,
     profileMediaId = null,
     bio = null,
+    redacted = true,
 )
 
 /**
- * Wire value only: clients detect a placeholder by this name together with
- * `isLiving` and show their own localized label (FT-005).
+ * Wire value kept for older clients, which detected a placeholder by this name
+ * together with `isLiving`. Current clients use `PersonDto.redacted` (FT-013) and
+ * show their own localized label.
  */
 internal const val PRIVATE_NAME = "Private"

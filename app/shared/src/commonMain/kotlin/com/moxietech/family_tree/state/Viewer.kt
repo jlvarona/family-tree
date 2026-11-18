@@ -13,17 +13,17 @@ import com.moxietech.family_tree.domain.Sex
 import com.moxietech.family_tree.domain.Tree
 import com.moxietech.family_tree.domain.TreeId
 import com.moxietech.family_tree.format.PersonNameFormatter
-import com.moxietech.family_tree.permissions.PersonVisibility
 import com.moxietech.family_tree.permissions.TreePermissions
 
 /**
- * The signed-in account looking at one tree, applying the same `:core` rules
- * the server enforces, for display only:
+ * The signed-in account looking at one tree, for display only:
  * - [canWrite] decides whether create controls are shown (`TreePermissions`).
  * - [canSeeDetails] decides whether a person shows as the localized private
- *   placeholder (`PersonVisibility`). The server has already redacted that
- *   person; this only stops the UI from presenting the placeholder's
- *   `"Private"` text as if it were a name.
+ *   placeholder. Since FT-013 it renders the server's projection
+ *   (`PersonDto.redacted`) and never recomputes privacy: who is visible depends
+ *   on the caller's resolved grant scopes, which only the server knows, and
+ *   guessing from the `"Private"` wire name or from tree ownership would either
+ *   show a placeholder as a name or hide a person a grant reveals.
  */
 class Viewer(tree: TreeDto, account: AccountDto) {
 
@@ -41,7 +41,7 @@ class Viewer(tree: TreeDto, account: AccountDto) {
         Membership(this.tree.id, me, personId = null, status = MembershipStatus.ACTIVE),
     )
 
-    fun canSeeDetails(person: PersonDto): Boolean = PersonVisibility.canSeeDetails(tree, me, person.toDomain())
+    fun canSeeDetails(person: PersonDto): Boolean = !person.redacted
 
     /** The formatted name, or null when the UI should show the private placeholder. */
     fun displayName(person: PersonDto): String? = if (canSeeDetails(person)) fullName(person) else null

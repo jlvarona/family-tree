@@ -28,6 +28,7 @@ import com.moxietech.family_tree.server.errors.referenced
 import com.moxietech.family_tree.server.errors.requireValid
 import com.moxietech.family_tree.server.errors.staleVersion
 import com.moxietech.family_tree.server.permissions.GraphGeneration
+import com.moxietech.family_tree.server.permissions.ReadAccess
 import com.moxietech.family_tree.server.permissions.WriteAccess
 import com.moxietech.family_tree.server.permissions.WriteScope
 import com.moxietech.family_tree.server.trees.TreeService
@@ -208,6 +209,12 @@ object UnionService {
                 TreeScopedLookups.requirePerson(treeUuid, partner1Uuid)
                 partner2Uuid?.let { TreeScopedLookups.requirePerson(treeUuid, it) }
                 scope.requireRelationship(listOfNotNull(partner1Uuid, partner2Uuid))
+                // FT-013: the union keeps its ID, events, citations and scans; taking a hidden
+                // partner out of it would let them be read through the remaining partners.
+                scope.requireNoHiddenSubjectRemoved(
+                    before.partnerUuids().map { TreeScopedLookups.requirePerson(treeUuid, it) },
+                    listOfNotNull(partner1Uuid, partner2Uuid),
+                )
                 if (before.version != request.version) throw staleVersion("Union", before.id.value)
                 val after = UnionRepository.update(
                     treeId = treeUuid,
@@ -386,21 +393,19 @@ object UnionService {
         }
     }
 
-    suspend fun listUnions(treeId: TreeId, callerAccountId: AccountId): List<UnionDto> {
-        val tree = TreeService.getTreeForReader(treeId, callerAccountId)
-        val policy = ViewerPolicy(tree, callerAccountId)
-        return withContext(DatabaseDispatcher) {
-            // One snapshot for people and unions, so a living partner committed between
-            // the two queries can't be missing from the hidden set (FT-004 review).
-            transaction(transactionIsolation = Connection.TRANSACTION_REPEATABLE_READ, readOnly = true) {
-                val treeUuid = Uuid.parse(treeId.value)
-                val hidden = policy.hiddenIds(PersonRepository.listByTree(treeUuid))
-                UnionRepository.listByTree(treeUuid).map { union ->
-                    policy.project(union, UnionRepository.childrenOf(treeUuid, Uuid.parse(union.id.value)), hidden)
-                }
+    /**
+     * One snapshot for the membership check, the caller's grant scopes (FT-013), people
+     * and unions, so a living partner committed between the queries can't be missing
+     * from the hidden set (FT-004 review).
+     */
+    suspend fun listUnions(treeId: TreeId, callerAccountId: AccountId): List<UnionDto> =
+        ReadAccess.read(treeId, callerAccountId) { tree, policy ->
+            val treeUuid = Uuid.parse(tree.id.value)
+            val hidden = policy.hiddenIds(PersonRepository.listByTree(treeUuid))
+            UnionRepository.listByTree(treeUuid).map { union ->
+                policy.project(union, UnionRepository.childrenOf(treeUuid, Uuid.parse(union.id.value)), hidden)
             }
         }
-    }
 }
 
 /** The union's partners as UUIDs (one or two). */
@@ -410,11 +415,12 @@ internal fun Union.partnerUuids(): List<Uuid> = listOfNotNull(partner1Id, partne
  * FT-012: a union write's response, shaped by [ViewerPolicy] like a read now that
  * members other than the owner write: a union with a partner hidden from the caller
  * keeps its type and links but not its dates (FT-066). The owner's response is the
- * union as stored. Call inside the write's transaction.
+ * union as stored. Call inside the write's transaction, after the change: since FT-013
+ * the caller's grant scopes are read as the graph now is ([WriteScope.viewer]).
  */
 private fun projectForCaller(scope: WriteScope, treeUuid: Uuid, union: Union, children: List<UnionChild>): UnionDto {
     if (scope.isOwner) return union.toDto(children)
-    val policy = ViewerPolicy(scope.tree, scope.caller)
+    val policy = scope.viewer()
     val partners = union.partnerUuids().mapNotNull { PersonRepository.findById(treeUuid, it) }
     return policy.project(union, children, policy.hiddenIds(partners))
 }

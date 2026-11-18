@@ -61,6 +61,7 @@ import kotlin.test.assertTrue
 import com.moxietech.family_tree.event as eventOf
 import com.moxietech.family_tree.graph as graphOf
 import com.moxietech.family_tree.person as personOf
+import com.moxietech.family_tree.placeholder
 import com.moxietech.family_tree.union as unionOf
 
 class FamilyTreeControllerTest {
@@ -1315,12 +1316,14 @@ class FamilyTreeControllerTest {
     /** Eighteen events on kid's timeline, as in the reviewed browser run. */
     private fun eighteenEvents() = (1..18).map { eventOf("e$it", "kid", "RESIDENCE", "${1910 + it}", "${1910 + it}-01-01") }
 
+    /** The page's viewer, as the page builds it. */
+    private fun FamilyTreeController.viewer(): Viewer =
+        Viewer(state.value.personScreen!!.tree.valueOrNull!!, state.value.account.valueOrNull!!)
+
     /** The Sources section as the page renders it. */
     private fun FamilyTreeController.sources(): SourcesView {
-        val state = state.value
-        val page = state.personScreen!!
-        val viewer = Viewer(page.tree.valueOrNull!!, state.account.valueOrNull!!)
-        return PersonSources.view(page.person.valueOrNull!!, viewer, page.events, page.graph, page.sources, page.citations)
+        val page = state.value.personScreen!!
+        return PersonSources.view(page.person.valueOrNull!!, viewer(), page.events, page.graph, page.sources, page.citations)
     }
 
     @Test
@@ -1434,8 +1437,8 @@ class FamilyTreeControllerTest {
     @Test
     fun aMemberRequestsNoCitationsForAHiddenPersonOrAUnionWithAHiddenPartner() = runTest {
         api.tree = api.tree.copy(ownerAccountId = "someone-else")
-        api.replacePerson(personOf("kid", living = true))
-        api.replacePerson(personOf("dad", living = true))
+        api.replacePerson(placeholder("kid"))
+        api.replacePerson(placeholder("dad"))
         val controller = openPersonPage()
 
         assertEquals(SourcesView.Private, controller.sources())
@@ -1445,6 +1448,70 @@ class FamilyTreeControllerTest {
         runCurrent()
         assertTrue("citations:PERSON:mum" in api.calls)
         assertTrue("citations:UNION:u1" !in api.calls, "mum's union with a hidden partner isn't requested")
+    }
+
+    @Test
+    fun aMembersGrantRevealedLivingRelativeIsShownAndCitedLikeAnyoneVisible() = runTest {
+        // FT-013: the server sends a living person in full to a member whose grant covers
+        // them; the page renders that projection, whoever owns the tree.
+        api.tree = api.tree.copy(ownerAccountId = "someone-else")
+        api.replacePerson(personOf("kid", "Javier", living = true))
+        api.replacePerson(personOf("dad", "Luis", living = true))
+        api.citationsByTarget[kidTarget] = listOf(citation("c-kid", kidTarget))
+        val controller = openPersonPage()
+
+        assertEquals("Javier", controller.page.person.valueOrNull?.let(PersonProfile::displayName))
+        assertEquals(PersonStatus.LIVING, PersonProfile.header(controller.page.person.valueOrNull!!, controller.viewer()).status)
+        assertTrue("citations:PERSON:kid" in api.calls)
+        assertEquals(listOf("c-kid"), (controller.sources() as SourcesView.Listed).entries.map { it.citationId })
+
+        controller.openPerson("mum")
+        runCurrent()
+        assertTrue("citations:UNION:u1" in api.calls, "both partners are visible, so the union's citations are requested")
+    }
+
+    @Test
+    fun aRelativeRevealedByANewGrantRendersAndIsCitedOnTheNextVisit() = runTest {
+        // Before the grant: the server's placeholder, nothing requested about him.
+        api.tree = api.tree.copy(ownerAccountId = "someone-else")
+        api.replacePerson(placeholder("kid"))
+        api.citationsByTarget[kidTarget] = listOf(citation("c-kid", kidTarget))
+        val controller = openPersonPage()
+        assertEquals(PersonStatus.PRIVATE, PersonProfile.header(controller.page.person.valueOrNull!!, controller.viewer()).status)
+        assertTrue("citations:PERSON:kid" !in api.calls)
+
+        // The owner grants access; the server now sends him in full.
+        api.replacePerson(personOf("kid", "Javier", living = true))
+        controller.openPerson("mum")
+        runCurrent()
+        controller.openPerson("kid")
+        runCurrent()
+
+        val header = PersonProfile.header(controller.page.person.valueOrNull!!, controller.viewer())
+        assertEquals(PersonStatus.LIVING, header.status)
+        assertEquals("Javier", header.name)
+        assertEquals(listOf("c-kid"), (controller.sources() as SourcesView.Listed).entries.map { it.citationId })
+
+        // Revoked again: back to the placeholder, and his citations aren't requested or shown.
+        api.replacePerson(placeholder("kid"))
+        controller.openPerson("mum")
+        runCurrent()
+        val requestedBefore = api.calls.count { it == "citations:PERSON:kid" }
+        controller.openPerson("kid")
+        runCurrent()
+        assertEquals(SourcesView.Private, controller.sources())
+        assertEquals(requestedBefore, api.calls.count { it == "citations:PERSON:kid" })
+    }
+
+    @Test
+    fun theOwnerStillSeesAPlaceholderTheServerSent() = runTest {
+        // Ownership never overrides the server's projection on the client.
+        api.replacePerson(placeholder("kid"))
+        val controller = openPersonPage()
+
+        assertEquals(PersonStatus.PRIVATE, PersonProfile.header(controller.page.person.valueOrNull!!, controller.viewer()).status)
+        assertEquals(SourcesView.Private, controller.sources())
+        assertTrue(api.calls.none { it.startsWith("citations:") })
     }
 
     @Test
@@ -1569,7 +1636,7 @@ class FamilyTreeControllerTest {
     @Test
     fun aHiddenProfileLoadedBeforeTheAccountNeverRequestsCitations() = runTest {
         api.tree = api.tree.copy(ownerAccountId = "someone-else")
-        api.replacePerson(personOf("kid", living = true))
+        api.replacePerson(placeholder("kid"))
         val gate = CompletableDeferred<Unit>()
         api.meGate = gate
         val controller = openPersonPage()

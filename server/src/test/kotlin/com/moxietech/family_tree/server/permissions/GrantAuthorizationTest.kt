@@ -414,9 +414,13 @@ class GrantAuthorizationTest {
     @Test
     fun `a write response follows living-person privacy for the writer`() = api {
         val f = newFamily()
-        // dad is living, in the contributor's home branch but hidden to them until FT-013.
+        // dad is living and in the contributor's home branch, but no grant of theirs covers
+        // him: the home branch decides writes only, so he stays hidden to them (FT-013).
         val response = client.renamePerson(f, f.id("dad"), Actor.CONTRIBUTOR, "Papá").decoded<PersonDto>()
         assertEquals("Private", response.fullName)
+        assertEquals(true, response.redacted)
+        // The VIEWER's whole-tree grant covers him, so their own reads show the change.
+        assertEquals("Papá", client.send(HttpMethod.Get, "${f.path}/people/${f.id("dad")}", Actor.VIEWER).decoded<PersonDto>().givenNames)
         assertEquals("Papá", client.person(f, "dad").givenNames)
     }
 
@@ -534,8 +538,14 @@ class GrantAuthorizationTest {
         val p = unionsBefore.single { it.id == f.union("P") }
         client.send(
             HttpMethod.Put, "${f.path}/unions/${p.id}", Actor.CONTRIBUTOR,
+            encode(UpdateUnionRequest(f.id("out1"), f.id("dad"), "MARRIED", startDate = "1975", version = p.version)),
+        ).expectError(HttpStatusCode.Forbidden, widens(f), "swap mum for out1")
+        // Swapping out dad, living and hidden from the contributor, would let the union's
+        // facts about him be read through the others (FT-013), whoever replaces him.
+        client.send(
+            HttpMethod.Put, "${f.path}/unions/${p.id}", Actor.CONTRIBUTOR,
             encode(UpdateUnionRequest(f.id("mum"), f.id("out1"), "MARRIED", startDate = "1975", version = p.version)),
-        ).expectError(HttpStatusCode.Forbidden, widens(f), "swap dad for out1")
+        ).expectError(HttpStatusCode.Forbidden, WriteAccess.revealsPrivateMessage(f.tree), "swap dad for out1")
         // Moving a union entirely outside: the replacement has no end the caller may edit.
         val a = unionsBefore.single { it.id == f.union("A") }
         client.send(
