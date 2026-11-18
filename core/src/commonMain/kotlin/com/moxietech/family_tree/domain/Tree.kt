@@ -23,13 +23,16 @@ enum class Locale {
 
 /**
  * Links an [Account] to a [Tree] and, once linked, to that person's own
- * [Person] record — the link the home branch is derived from.
+ * [Person] record — the link the home branch is derived from
+ * ([com.moxietech.family_tree.permissions.HomeBranch], FT-011). A person is linked to
+ * at most one membership of its tree (V9). [version] advances on every change (V9).
  */
 data class Membership(
     val treeId: TreeId,
     val accountId: AccountId,
     val personId: PersonId?,
     val status: MembershipStatus,
+    val version: Long = 1,
 )
 
 enum class MembershipStatus {

@@ -53,7 +53,7 @@ class GrantsMigrationTest {
                         "values (gen_random_uuid(), '$tree', '$relative', 'VIEWER', '$mum', 'SIDE', false, '$owner')",
                 )
             }
-            migrate(db)
+            migrate(db, target = "8")
 
             assertEquals("8", c.string("select max(version) from flyway_schema_history where success"))
             assertEquals("Carmen|1", c.string("select given_names || '|' || version from person where id = '$mum'"))

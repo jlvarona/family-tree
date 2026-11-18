@@ -28,6 +28,9 @@ import com.moxietech.family_tree.api.DuplicateCandidateDto
 import com.moxietech.family_tree.api.EventDto
 import com.moxietech.family_tree.api.MergePeopleRequest
 import com.moxietech.family_tree.api.MergePeopleResponse
+import com.moxietech.family_tree.api.MemberDto
+import com.moxietech.family_tree.api.RedeemInvitationResponse
+import com.moxietech.family_tree.navigation.InvitationLink
 import com.moxietech.family_tree.api.PersonDto
 import com.moxietech.family_tree.api.TreeDto
 import com.moxietech.family_tree.api.TreeGraphDto
@@ -284,6 +287,20 @@ class FamilyTreeControllerTest {
             } finally {
                 activeCitations--
             }
+        }
+
+        // --- FT-011 -----------------------------------------------------------------------
+        /** Every redemption as (tree, token); [calls] records only the tree. */
+        val redemptions = mutableListOf<Pair<String, String>>()
+        val redeemFailures = ArrayDeque<ApiFailure>()
+        var redeemGate: CompletableDeferred<Unit>? = null
+
+        override suspend fun redeemInvitation(treeId: String, token: String): RedeemInvitationResponse {
+            calls += "redeem:$treeId"
+            redemptions += treeId to token
+            redeemGate?.await()
+            redeemFailures.removeFirstOrNull()?.let { throw ApiException(it) }
+            return RedeemInvitationResponse(MemberDto(treeId, "owner", "Owner", null, "ACTIVE", 1), emptyList())
         }
     }
 
@@ -1576,6 +1593,139 @@ class FamilyTreeControllerTest {
         runCurrent()
 
         assertTrue(api.calls.none { it.startsWith("citations:") || it == "sources" })
+    }
+
+    // --- FT-011: invitation links -------------------------------------------------------
+
+    private val invitationToken = "A".repeat(42) + "b"
+    private val joinLink = "http://localhost:3000/#/trees/$TREE_ID/join?token=$invitationToken"
+
+    @Test
+    fun anInvitationLinkLeavesTheAddressBarBeforeTheSessionStartsAndSurvivesSignIn() = runTest {
+        bridge.url = joinLink
+        val controller = controller()
+
+        // Replaced at once: the token is in no URL, route or sign-in return route.
+        assertEquals("http://localhost:3000/#/trees/$TREE_ID/join", bridge.url)
+        assertTrue(bridge.replacedUrls.none { invitationToken in it })
+        assertEquals(Route.JoinTree(TREE_ID), controller.state.value.route)
+        controller.signIn()
+        runCurrent()
+        assertEquals(listOf("/trees/$TREE_ID/join"), session.signInRoutes)
+        assertTrue(bridge.storage.getValue(FamilyTreeController.INVITATION_KEY).contains(invitationToken), "kept for this tab across the redirect")
+
+        // Back from sign-in (a fresh page): the page offers to accept; nothing is sent until asked.
+        val returned = FamilyTreeController(session, api, bridge, backgroundScope, transfer)
+        returned.start()
+        runCurrent()
+        signIn()
+        assertEquals(JoinScreen(TREE_ID, returned.state.value.joinScreen!!.instance, hasInvitation = true), returned.state.value.joinScreen)
+        assertTrue(api.redemptions.isEmpty())
+
+        returned.acceptInvitation()
+        runCurrent()
+        assertEquals(listOf(TREE_ID to invitationToken), api.redemptions)
+        assertEquals(Route.Tree(TREE_ID), returned.state.value.route)
+        assertTrue(FamilyTreeController.INVITATION_KEY !in bridge.storage, "dropped once accepted")
+        assertTrue("trees" in api.calls)
+        assertTrue(api.calls.none { invitationToken in it })
+        assertTrue(invitationToken !in returned.state.value.toString())
+    }
+
+    @Test
+    fun aRefusedInvitationIsDroppedAndAnUnreachableServerKeepsItForARetry() = runTest {
+        bridge.url = joinLink
+        val controller = controller().also { signIn() }
+
+        api.redeemFailures += ApiFailure.UNAVAILABLE
+        controller.acceptInvitation()
+        runCurrent()
+        assertEquals(JoinError.UNAVAILABLE, controller.state.value.joinScreen?.error)
+        assertEquals(true, controller.state.value.joinScreen?.hasInvitation)
+        assertTrue(FamilyTreeController.INVITATION_KEY in bridge.storage)
+
+        api.redeemFailures += ApiFailure.NOT_FOUND
+        controller.acceptInvitation()
+        runCurrent()
+        val screen = controller.state.value.joinScreen!!
+        assertEquals(JoinError.NOT_VALID to false, screen.error to screen.hasInvitation)
+        assertTrue(FamilyTreeController.INVITATION_KEY !in bridge.storage)
+        assertEquals(Route.JoinTree(TREE_ID), controller.state.value.route)
+
+        // Nothing left to send.
+        controller.acceptInvitation()
+        runCurrent()
+        assertEquals(2, api.redemptions.size)
+    }
+
+    @Test
+    fun aConflictSaysThisAccountCantAcceptIt() = runTest {
+        bridge.url = joinLink
+        val controller = controller().also { signIn() }
+        api.redeemFailures += ApiFailure.CONFLICT
+        controller.acceptInvitation()
+        runCurrent()
+        assertEquals(JoinError.CANNOT_ACCEPT, controller.state.value.joinScreen?.error)
+        assertTrue(FamilyTreeController.INVITATION_KEY !in bridge.storage)
+    }
+
+    @Test
+    fun leavingTheJoinPageOrSigningOutDropsTheInvitation() = runTest {
+        bridge.url = joinLink
+        val controller = controller().also { signIn() }
+        controller.navigate(Route.Trees)
+        runCurrent()
+        assertTrue(FamilyTreeController.INVITATION_KEY !in bridge.storage)
+        bridge.changeHash("/trees/$TREE_ID/join")
+        runCurrent()
+        assertEquals(false, controller.state.value.joinScreen?.hasInvitation)
+
+        // A link pasted into the running tab is taken the same way, then sign-out drops it.
+        bridge.changeHash("/trees/$TREE_ID/join?token=$invitationToken")
+        runCurrent()
+        assertEquals("http://localhost:3000/#/trees/$TREE_ID/join", bridge.url)
+        assertEquals(true, controller.state.value.joinScreen?.hasInvitation)
+        controller.signOut()
+        assertTrue(FamilyTreeController.INVITATION_KEY !in bridge.storage)
+    }
+
+    @Test
+    fun malformedOrOtherTreeLinksAreClearedAndNeverSent() = runTest {
+        bridge.url = "http://localhost:3000/#/trees/$TREE_ID/join?token=short"
+        val controller = controller().also { signIn() }
+        assertEquals("http://localhost:3000/#/trees/$TREE_ID/join", bridge.url)
+        assertEquals(false, controller.state.value.joinScreen?.hasInvitation)
+
+        // A held invitation for one tree is not offered on another tree's join page.
+        bridge.storage[FamilyTreeController.INVITATION_KEY] = InvitationLink("other-tree", invitationToken).encode()
+        controller.navigate(Route.JoinTree(TREE_ID))
+        runCurrent()
+        assertEquals(false, controller.state.value.joinScreen?.hasInvitation)
+        assertTrue(FamilyTreeController.INVITATION_KEY !in bridge.storage)
+        controller.acceptInvitation()
+        runCurrent()
+        assertTrue(api.redemptions.isEmpty())
+    }
+
+    @Test
+    fun aReplacementLinkOnTheSameJoinPageDiscardsThePreviousToken() = runTest {
+        bridge.url = joinLink
+        val controller = controller().also { signIn() }
+        bridge.changeHash("/trees/$TREE_ID/join?token=invalid")
+        runCurrent()
+        assertEquals(false, controller.state.value.joinScreen?.hasInvitation)
+        assertTrue(FamilyTreeController.INVITATION_KEY !in bridge.storage)
+        controller.acceptInvitation()
+        runCurrent()
+        assertTrue(api.redemptions.isEmpty())
+
+        val replacement = "C".repeat(43)
+        bridge.changeHash("/trees/$TREE_ID/join?token=$replacement")
+        runCurrent()
+        assertEquals(true, controller.state.value.joinScreen?.hasInvitation)
+        controller.acceptInvitation()
+        runCurrent()
+        assertEquals(listOf(TREE_ID to replacement), api.redemptions)
     }
 }
 

@@ -9,6 +9,106 @@ up to date in place, not logged chronologically.
 
 ---
 
+## 2026-11-17 — FT-011 invitations and account-to-person linking
+
+Invitations, redemption, member-to-person linking and derived home branches on the
+server, and a web join page for link invitations, all behind `INVITATIONS_ENABLED`
+(default `false`). The backlog keeps invitations off for users until FT-012 to FT-014
+cover shared-tree authorization, redaction and proposals. The email-claim rule is now
+decided and implemented (below). Owners create invitations through the API. The
+schema is under "Database design" (V9).
+
+- **Gate.** While off, the invitation and member routes aren't installed: every caller,
+  anonymous or signed in, gets the plain `404` of an unknown route, and the services
+  refuse too. Phase 1 authorization (FT-068) is unchanged on or off: an active member
+  reads, only the active owner writes.
+- **Owner policy.** Create, list and revoke run `TreeService.getTreeForWriter`. A
+  redemption is void (`404`) unless the invitation's creator is still the tree's active
+  owner, so an invitation never grants more than the owner could directly.
+- **Secrets.** 256-bit `SecureRandom` tokens (base64url, 43 characters), returned once;
+  only the SHA-256 digest is stored. Links are `{INVITATION_ACCEPT_URL}#/trees/{treeId}/join?token=…`
+  (returned as `link` on create and mailed). Tree and token travel in the fragment and
+  the token in request bodies, never in server paths. Request logs and audit entries
+  carry no token, digest or email address (tested over HTTP with a log capture).
+- **Redemption** (`POST /api/v1/trees/{treeId}/invitations/redeem`, one READ COMMITTED
+  transaction): `GraphWriteLock` shared for the URL's tree, then the invitation found
+  and locked `FOR UPDATE` by tree and digest in one statement. A token presented for
+  another tree, an unknown or malformed tree ID, and expired, revoked, used, malformed
+  and unknown tokens are the same `404`, write nothing and leave a real invitation
+  usable in its own tree. Expiry is checked with the time read after the row lock, so
+  one that expires while queued is refused. The caller's account comes from the
+  token's issuer and subject (FT-003), never from email. An active member gets a `409`,
+  and so does a person already linked to another member. The membership is created or
+  an `INVITED` one activated, the proposed grants become `tree_grant` rows through
+  `GrantRepository` (created by the inviter), and the invitation row is deleted, so the
+  token works once. Membership, grants and the invitation are audited in the same
+  transaction.
+- **Person reservation.** Invitation create, redemption and owner linking take the
+  linked person's row `FOR NO KEY UPDATE` before checking for an existing member or
+  pending invitation. The two promises live in different tables (`invitation`,
+  `membership`) with no unique index across both, so this lock serializes them per
+  person; the loser re-checks after the winner's commit and gets a `409` with nothing
+  written. It doesn't block `FOR KEY SHARE` writers and is always taken after
+  `GraphWriteLock` and any invitation or membership row lock.
+- **Expiry and revocation.** Expired invitations stay listed with `expired: true` and
+  keep their person and anchors (blocking a new invitation for that person, a delete or
+  a merge) until the owner revokes them at their version; revoking frees the person for
+  a replacement.
+- **Email.** Invitations with an email are created and handed to `InvitationMailer` on
+  `Dispatchers.IO` after the commit: `none` (default; email invitations are a `400`) or
+  `capture` (one `.eml` per invitation in a local directory, Spanish or English from
+  `i18n/InvitationMail*.properties`). No SMTP, SES or other external mail. A delivery
+  failure keeps the invitation, answers `delivery: FAILED` and logs only the invitation
+  ID and the failure type.
+- **Email claims** (decisions table, "Invitation email claims"). An email-addressed
+  invitation is claimed only when the redeemer's access token, the same validated token
+  that names the account, carries the invited address in `email` with `email_verified`
+  as the JSON boolean `true` (`JWTPrincipal.verifiedEmail`). Comparison is trimmed and
+  with ASCII case folded and no aliases (`InvitationEmails`). A wrong address, or a false,
+  missing or string claim, gets one generic `409` with nothing written, and the
+  invitation stays for the right account. Email never finds or links an account. Link
+  invitations need only a signed-in account. The web copy for a refusal now mentions
+  signing in with the invited, verified address (ES/EN).
+- **Linking.** `PUT …/members/{accountId}/person` (owner) links or unlinks at the
+  membership's `version`; a person linked elsewhere or promised to a pending invitation
+  is a `409`. `GET …/members` lists members (display name, person, status, version; no
+  email).
+- **Web join page.** `#/trees/{treeId}/join?token=…` is taken out of the address bar
+  before the session starts (replaced by `#/trees/{treeId}/join`, malformed links
+  included), and kept in memory and in sessionStorage for this tab so it survives the
+  sign-in redirect. The token is never in a route, a sign-in return route or the state.
+  Signed out, the page asks the user to sign in; signed in, it offers "Accept
+  invitation" (ES/EN copy). Accepting posts the tree in the path and the token in the
+  body, then reloads the trees and opens the tree. The token is dropped after a
+  definitive answer (`404`/`400`: not valid; `409`/`403`: can't accept with this
+  account), on sign-out and on leaving the page. An unreachable server or server error
+  keeps it for a retry.
+- **Home branch.** `:core` `HomeBranch` = `Branch(person, SIDE, depth 1, partners)`: the
+  parents, every descendant of them and of the person, and those people's partners. A
+  person with no recorded parents gets themselves, their descendants and partners, never
+  the whole tree. `HomeBranchService.homeBranchInSnapshot` resolves it at read time
+  through the FT-010 CTE (no cache, so relinks and graph changes need no invalidation);
+  unlinked or non-active members have none. Not enforced before FT-012.
+- **References.** A pending invitation's person and proposed anchors are real same-tree
+  references: deleting such a person is a `409`, and a merge retiring them is a `409`
+  (`MERGE_RETIRED_INVITATION_MESSAGE`) until the owner revokes the invitation. Merges
+  now advance the moved membership's version.
+
+**Verification.** Passed 79 core JVM tests, 187 server tests and 166 shared client
+tests on each of JVM and Wasm. The opt-in Keycloak test was skipped. The V8-to-V9
+upgrade, owner checks, and invitation races ran on PostgreSQL. Separate browser
+checks with disposable Keycloak and PostgreSQL opened share links in English JS
+and Spanish Wasm, signed in, accepted once and rejected replay. The token was removed
+from the URL and cleared after acceptance. The checks also exercised wrong-tree
+redemption, inactive routes and local Spanish `.eml` capture.
+
+The verified-email HTTP test rejects a wrong address, an alias, a Unicode case
+lookalike, and a matching address with a missing, false or string verification claim.
+A live Keycloak test rejected a different verified email, then accepted the invited
+account once and rejected replay of the same token.
+
+---
+
 ## 2026-11-16 — FT-010 grants, grant scopes and branch resolution
 
 Grants are stored and resolved for all four branch directions but not enforced yet.
@@ -1778,7 +1878,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 
 ### Status board
 
-**Done (31)** · **In progress (0)** · **To do (24)** · **Blocked (0)**
+**Done (32)** · **In progress (0)** · **To do (23)** · **Blocked (0)**
 
 | Order | ID | Story | Epic | Priority | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -1813,7 +1913,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 | — | FT-008 | Photo upload (S3 presigned URLs) | E1 | P1 | Done |
 | — | FT-064 | Make compose host ports configurable | E7 | P2 | Done |
 | — | FT-010 | `Grant` + `GrantScope` tables, branch resolution | E2 | P1 | Done |
-| 6 | FT-011 | Invitations + account-to-person linking | E2 | P1 | To do |
+| — | FT-011 | Invitations + account-to-person linking | E2 | P1 | Done |
 | 7 | FT-012 | Grant-based authorization | E2 | P1 | To do |
 | 8 | FT-013 | Grant-based living-person redaction | E2 | P1 | To do |
 | 9 | FT-014 | `ChangeProposal` workflow | E2 | P1 | To do |
@@ -2000,9 +2100,12 @@ desktop/shared build repair.
   consistent with committed changes, and a read-only snapshot API serves FT-012/FT-013.
   Grant writes are owner-only and audited. See the FT-010 entry.
 - **FT-011 Invitations** (email or link) **and account-to-person linking.**
-  `To do · P1 · #6` — derives each member's home branch automatically once linked.
+  `Done · P1` — derives each member's home branch automatically once linked.
   Enable invitations for users after FT-072 passes and FT-012 through FT-014 cover
-  shared-tree authorization and proposals.
+  shared-tree authorization and proposals. Server side and the web join page built
+  behind the default-off `INVITATIONS_ENABLED` (2026-11-17 entry), with email-addressed
+  invitations claimable only by the matching verified email. Owners use the API to
+  create invitations.
 - **FT-012 Real grant-based authorization.** `To do · P1 · #7` — replaces today's
   Phase 1 owner-only write policy from FT-068 with resolution against `GrantScope`.
   Keep the active membership requirement and pair grant checks with FT-014.
@@ -2205,7 +2308,8 @@ columns on `person` (`AGENTS.md`: *"Union model"*). Source of truth, in order:
 [`V5__union_child_version_sequence.sql`](../server/src/main/resources/db/migration/V5__union_child_version_sequence.sql),
 [`V6__media.sql`](../server/src/main/resources/db/migration/V6__media.sql),
 [`V7__grants.sql`](../server/src/main/resources/db/migration/V7__grants.sql),
-[`V8__grant_side_direction.sql`](../server/src/main/resources/db/migration/V8__grant_side_direction.sql).
+[`V8__grant_side_direction.sql`](../server/src/main/resources/db/migration/V8__grant_side_direction.sql),
+[`V9__invitations.sql`](../server/src/main/resources/db/migration/V9__invitations.sql).
 
 ### Entity-relationship diagram
 
@@ -2232,6 +2336,7 @@ erDiagram
         uuid account_id PK
         uuid person_id FK
         text status
+        bigint version
     }
     PERSON {
         uuid id PK
@@ -2369,6 +2474,28 @@ erDiagram
         bigint graph_generation
         timestamptz built_at
     }
+    INVITATION {
+        uuid id PK
+        uuid tree_id FK
+        bytea token_digest UK
+        text email
+        uuid person_id FK
+        timestamptz expires_at
+        uuid created_by_account_id FK
+        timestamptz created_at
+        bigint version
+    }
+    INVITATION_GRANT {
+        uuid id PK
+        uuid invitation_id FK
+        uuid tree_id FK
+        int ordinal
+        text role
+        uuid anchor_person_id FK
+        text direction
+        int depth
+        boolean include_partners
+    }
 
     ACCOUNT ||--o{ ACCOUNT_IDENTITY_RESOLUTION : resolved_by
     ACCOUNT ||--o{ TREE : owns
@@ -2402,6 +2529,11 @@ erDiagram
     TREE_GRANT ||--o{ GRANT_SCOPE : resolves_to
     TREE_GRANT ||--o| GRANT_SCOPE_STATE : stamped_by
     PERSON ||--o{ GRANT_SCOPE : covered_by
+    TREE ||--o{ INVITATION : invites_to
+    ACCOUNT ||--o{ INVITATION : created_by
+    PERSON |o--o| INVITATION : links
+    INVITATION ||--o{ INVITATION_GRANT : proposes
+    PERSON ||--o{ INVITATION_GRANT : anchors
 ```
 
 ### Table reference
@@ -2502,10 +2634,29 @@ or unused image stays stored, readable by the owner only. V6's preflight stops i
 either column already had a value (none could, since no route set them).
 
 **`membership`** — links an `account` to a `tree` and, once set, to that member's own
-`person` (drives the Phase 2 home-branch calculation). Composite PK
-`(tree_id, account_id)`. Not yet written to by any invite flow — Phase 1 only ever
-inserts the owner's row, at tree-creation time. A linked `person_id` must be in the same
-tree (V2).
+`person` (drives the home branch, `:core` `HomeBranch`). Composite PK
+`(tree_id, account_id)`. A linked `person_id` must be in the same tree (V2), and since
+V9 (FT-011) a person is linked to at most one membership of its tree
+(`membership_tree_person_key`, partial unique index; V9's preflight stops on existing
+duplicates) and `version` advances on every change (existing rows start at 1). Written
+at tree creation (the owner), by invitation redemption and owner linking (FT-011, both
+behind `INVITATIONS_ENABLED`), and by merges (FT-007).
+
+**`invitation`** / **`invitation_grant`** (V9, FT-011) — a pending invitation and the
+grants it proposes.
+- `token_digest` is the SHA-256 (32 bytes, unique) of the 256-bit token; the token
+  itself is never stored. `email` is a delivery address (3–254 characters), never an
+  identity. `expires_at > created_at`.
+- `(person_id, tree_id) → person` and `invitation_grant (anchor_person_id, tree_id) →
+  person` are real same-tree references: they block a person delete (`409`) and a merge
+  retiring that person (`409`). At most one pending invitation per person
+  (`invitation_tree_person_key`).
+- `invitation_grant` has the `tree_grant` role, direction and depth checks and an
+  `ordinal`; `(invitation_id, tree_id) → invitation` cascades.
+- A row exists only while pending: redemption copies the grants to `tree_grant`,
+  links the membership and deletes it; revocation deletes it. History is in
+  `audit_log` (entity `Invitation`, `DELETE` with `after` = `{outcome: ACCEPTED|REVOKED}`),
+  which never holds the token, its digest or the email address.
 
 **`tree_grant`** (V7, V8; FT-010) is a branch grant held by one membership. Named
 `tree_grant` because `GRANT` is an SQL keyword.
@@ -2547,8 +2698,8 @@ migration if that changes.
   the caller to be the tree owner (FT-068). Repositories filter every lookup by
   `tree_id`, and V2's same-tree foreign keys enforce referential isolation in the
   database (FT-065). FT-017 tracks RLS as a later defense-in-depth measure.
-- **No `change_proposal` or `invitation` table yet.** They come with FT-014 and
-  FT-011. Grants and their resolved scopes exist since V7 (FT-010) but aren't
-  enforced until FT-012 and FT-013.
+- **No `change_proposal` table yet.** It comes with FT-014. Grants and their resolved
+  scopes exist since V7 (FT-010) and invitations since V9 (FT-011, off by default), but
+  grants and home branches aren't enforced until FT-012 and FT-013.
 - **No `media_tag` table yet.** FT-008 covers profile photos and citation scans; the
   per-person gallery and tagging several people in one photo (`MediaTag`) come later.

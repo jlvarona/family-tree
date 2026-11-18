@@ -33,8 +33,9 @@ import kotlin.uuid.Uuid
 /**
  * FT-010: creates, replaces and removes grants. Phase 1 policy stays in force
  * (FT-068): only the tree's active owner may write, through
- * [TreeService.getTreeForWriter]. There are no HTTP routes yet; invitations (FT-011)
- * and grant-based authorization (FT-012) add them. Every write is audited as
+ * [TreeService.getTreeForWriter]. There are no HTTP routes yet; grant-based
+ * authorization (FT-012) adds them. FT-011 invitation redemption creates proposed
+ * grants through [GrantRepository] directly, under the same locks. Every write is audited as
  * entity `Grant` in its own transaction.
  *
  * - The member is resolved in the tree (any membership status); another tree's

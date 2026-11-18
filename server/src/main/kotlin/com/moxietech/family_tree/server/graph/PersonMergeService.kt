@@ -29,8 +29,10 @@ import com.moxietech.family_tree.server.sources.CitationRepository
 import com.moxietech.family_tree.server.sources.CitationTargetKind
 import com.moxietech.family_tree.server.sources.CitationTargetRef
 import com.moxietech.family_tree.server.sources.toDto
+import com.moxietech.family_tree.server.trees.InvitationRepository
 import com.moxietech.family_tree.server.trees.MembershipRepository
 import com.moxietech.family_tree.server.trees.TreeService
+import com.moxietech.family_tree.server.trees.auditSnapshot
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -44,6 +46,8 @@ const val MERGE_UNKNOWN_FIELD_MESSAGE = "choices names an unknown field"
 const val MERGE_UNKNOWN_SIDE_MESSAGE = "Each choice must be SURVIVOR or RETIRED"
 const val MERGE_RETIRED_GRANT_ANCHOR_MESSAGE =
     "The person to retire is the anchor of a member's grant; re-anchor or remove that grant first"
+const val MERGE_RETIRED_INVITATION_MESSAGE =
+    "The person to retire is named by a pending invitation; revoke that invitation first"
 
 /**
  * FT-007: merges two records of one person in a tree (owner only,
@@ -62,11 +66,13 @@ const val MERGE_RETIRED_GRANT_ANCHOR_MESSAGE =
  *    [RecordDeletion]) is locked in a fixed order: unions by partner (by ID), child
  *    links (by union, child), the retired person's events (by ID), memberships (by
  *    account), the retired person's citations (by ID), grants anchored at the retired
- *    person (by ID, `FOR SHARE`, FT-010).
+ *    person (by ID, `FOR SHARE`, FT-010), pending invitations naming the retired person
+ *    (by ID, `FOR SHARE`, FT-011).
  * 4. The merged graph must stay valid ([PersonMerge.relationshipConflicts] on every
  *    union of the tree, read under the exclusive lock) and every link must keep one
  *    unambiguous value; otherwise a 409 that writes nothing. The retired person must
- *    not anchor a grant (409, FT-010): a merge never re-anchors a grant implicitly.
+ *    not anchor a grant (409, FT-010): a merge never re-anchors a grant implicitly. Nor
+ *    may a pending invitation name it (409, FT-011).
  *    Then the tree's graph generation advances (FT-010), so cached grant scopes are
  *    rebuilt from the merged graph.
  * 5. References move to the survivor keeping their IDs, each with its version
@@ -165,6 +171,8 @@ object PersonMergeService {
             val citations = CitationRepository.lockOnPerson(treeId, retiredId)
             // FT-010: grant writers take GraphWriteLock shared, so this list can't grow now.
             val anchoredGrants = GrantRepository.lockAnchoredAt(treeId, retiredId)
+            // FT-011: invitation writers take GraphWriteLock shared too.
+            val namingInvitations = InvitationRepository.lockNaming(treeId, retiredId)
 
             // 4. The result must be a valid graph with unambiguous links.
             val conflicts = PersonMerge.relationshipConflicts(survivorKey.value, retiredKey.value, treeUnions())
@@ -178,6 +186,11 @@ object PersonMergeService {
             // scope follows the merged relationships like any other relationship change.
             if (anchoredGrants.isNotEmpty()) {
                 throw ConflictException(MERGE_RETIRED_GRANT_ANCHOR_MESSAGE)
+            }
+            // FT-011: likewise a pending invitation that links the retired person or proposes
+            // a grant anchored at them; the owner revokes it (and invites again) first.
+            if (namingInvitations.isNotEmpty()) {
+                throw ConflictException(MERGE_RETIRED_INVITATION_MESSAGE)
             }
             GraphGeneration.advance(treeId)
 
@@ -300,15 +313,15 @@ object PersonMergeService {
 
         private fun moveMembership(membership: Membership) {
             val accountId = Uuid.parse(membership.accountId.value)
-            if (MembershipRepository.retargetPerson(treeId, accountId, retiredId, survivorId) != 1) {
+            if (MembershipRepository.retargetPerson(treeId, accountId, retiredId, survivorId, membership.version) != 1) {
                 error("Membership of $accountId was locked but no longer names $retiredId")
             }
             audit(
                 "Membership",
                 "$treeId:$accountId",
                 AuditAction.UPDATE,
-                AuditJson.encodeToString(membership.snapshot()),
-                AuditJson.encodeToString(membership.copy(personId = survivorKey).snapshot()),
+                AuditJson.encodeToString(membership.auditSnapshot()),
+                AuditJson.encodeToString(membership.copy(personId = survivorKey, version = membership.version + 1).auditSnapshot()),
             )
         }
 
@@ -347,14 +360,3 @@ internal data class PersonMergeAudit(
     val choices: Map<String, String>,
     val survivorVersionAfter: Long,
 )
-
-/** Audit shape of a membership row (FT-007): it has no API DTO or version. */
-@Serializable
-internal data class MembershipAuditSnapshot(
-    val treeId: String,
-    val accountId: String,
-    val personId: String?,
-    val status: String,
-)
-
-private fun Membership.snapshot() = MembershipAuditSnapshot(treeId.value, accountId.value, personId?.value, status.name)

@@ -15,6 +15,7 @@ class RouteTest {
             Route.Tree("t1", TreeViewKind.FULL, "p1"),
             Route.Person("t1", "p1"),
             Route.Person("t 1", "p/1"),
+            Route.JoinTree("t1"),
         )
         for (route in routes) assertEquals(route, Route.parse(route.toFragment()), route.toFragment())
     }
@@ -45,12 +46,37 @@ class RouteTest {
 
     @Test
     fun unknownOrIncompleteFragmentsOpenTheTreeList() {
-        listOf("", "#", "#/", "/nope", "/trees", "/trees/", "/trees/t1/people", "/trees/t1/people/p1/extra")
+        listOf("", "#", "#/", "/nope", "/trees", "/trees/", "/trees/t1/people", "/trees/t1/people/p1/extra", "/trees/t1/join/x")
             .forEach { assertEquals(Route.Trees, Route.parse(it), it) }
     }
 
     @Test
     fun unknownViewFallsBackToTheFullTree() {
         assertEquals(Route.Tree("t1", TreeViewKind.FULL, null), Route.parse("/trees/t1?view=sideways&root="))
+    }
+
+    @Test
+    fun theJoinRouteNeverCarriesTheToken() {
+        val tree = "0f8fad5b-d9cb-469f-a165-70867728950e"
+        val token = "abcDEF0123456789_-abcDEF0123456789_-abcDEF0"
+        assertEquals(43, token.length)
+        assertEquals(Route.JoinTree(tree), Route.parse("/trees/$tree/join?token=$token"))
+        assertEquals("/trees/$tree/join", Route.JoinTree(tree).toFragment())
+        assertEquals(Route.JoinTree(tree), Route.parse(Route.JoinTree(tree).toFragment()))
+
+        val link = InvitationLink.parse("#/trees/${tree.replace("-", "")}/join?token=$token")!!
+        assertEquals(tree to token, link.treeId to link.token)
+        assertEquals(false, token in link.toString())
+        assertEquals(link.token, InvitationLink.decode(link.encode())?.token)
+        assertEquals(true, InvitationLink.isLink("/trees/$tree/join?token=x"))
+        assertEquals(false, InvitationLink.isLink("/trees/$tree/join"))
+
+        // Not links, or malformed tokens.
+        for (fragment in listOf(
+            "/trees/$tree/join", "/trees/$tree/join?token=short", "/trees/$tree/join?token=$token&token=$token",
+            "/trees/$tree/join?token=${token.dropLast(1)}!", "/trees/$tree?token=$token", "/trees/$tree/people/p1?token=$token",
+        )) {
+            assertEquals(null, InvitationLink.parse(fragment), fragment)
+        }
     }
 }

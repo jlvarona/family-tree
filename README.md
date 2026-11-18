@@ -351,6 +351,62 @@ finalized or whose cleanup failed). The task role needs `s3:PutObject`,
 `s3:GetObject` and `s3:DeleteObject` on the bucket's objects. Set `MEDIA_S3_ENDPOINT`
 empty, `MEDIA_S3_BUCKET` and `MEDIA_S3_REGION`; never set `MEDIA_S3_CREATE_BUCKET`.
 
+## Invitations
+
+FT-011 invitations and account-to-person linking are **off by default** and must stay
+off for real users until FT-012 to FT-014 (grant-based authorization, redaction and
+change proposals) are done. While off, the invitation and member routes aren't
+installed: every caller, signed in or not, gets the plain `404` of an unknown route, and
+nothing is read or written. Turn them on only on a local stack with disposable accounts
+and data:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `INVITATIONS_ENABLED` | `false` | `true` turns the routes on (the server logs a warning). Anything but `true`/`false` stops the server. |
+| `INVITATION_DEFAULT_TTL_HOURS` | `168` | Lifetime when a request names none. |
+| `INVITATION_MAX_TTL_HOURS` | `720` | Longest lifetime a request may ask for. |
+| `INVITATION_MAIL_TRANSPORT` | `none` | `none`: email invitations are refused (`400`); share the link. `capture`: each email is written as `{invitationId}.eml` to `INVITATION_MAIL_CAPTURE_DIR`. There is no SMTP or SES transport; nothing leaves the machine. |
+| `INVITATION_MAIL_CAPTURE_DIR` | — | Required with `capture`. The files hold live tokens: keep the directory private and outside the repo. |
+| `INVITATION_ACCEPT_URL` | — | The web client's address, e.g. `http://localhost:3000/`; required with a transport. Links are `{url}#/trees/{treeId}/join?token=…` (tree and token in the fragment, which browsers don't send to servers), returned as `link` on create and mailed. Without it, share the tree ID and token yourself. |
+| `INVITATION_MAIL_FROM` | `invitations@family-tree.invalid` | `From:` of captured mail. |
+
+```powershell
+$env:INVITATIONS_ENABLED = "true"
+$env:INVITATION_MAIL_TRANSPORT = "capture"
+$env:INVITATION_MAIL_CAPTURE_DIR = "$env:TEMP\family-tree-mail"
+$env:INVITATION_ACCEPT_URL = "http://localhost:3000/"
+.\gradlew.bat :server:run
+```
+
+Routes (owner = the tree's active owner, the Phase 1 write rule):
+
+- `POST /api/v1/trees/{treeId}/invitations` (owner) with `{personId?, email?, grants: [{role, anchorPersonId, direction, depth?, includePartners}], expiresInHours?, locale?}` →
+  `201 {invitation, token, delivery, link}`. The token is shown once; only its SHA-256 digest is stored.
+  A person already linked to a member or promised to another pending invitation (expired
+  ones included) is a `409`.
+- `GET /api/v1/trees/{treeId}/invitations` (owner) — pending invitations (`expired: true`
+  once past their time), never tokens.
+- `DELETE /api/v1/trees/{treeId}/invitations/{id}?version=N` (owner) — revoke, expired
+  ones included; this releases the person and anchors it holds, so the owner can replace it.
+- `POST /api/v1/trees/{treeId}/invitations/redeem` with `{"token": "…"}` (any signed-in
+  account) — accept a link invitation: the caller's account (by token issuer and subject,
+  never by email) becomes an active member linked to the invitation's person, with the
+  proposed grants. The token works once and only in its own tree; anything else is the
+  same `404`. An email-addressed invitation also needs the caller's access token to carry
+  that address as `email` with `email_verified: true` (compared trimmed and
+  with ASCII case folded); otherwise a generic `409`, and the invitation stays open for the
+  right account.
+- `GET /api/v1/trees/{treeId}/members` and `PUT /api/v1/trees/{treeId}/members/{accountId}/person`
+  with `{personId|null, version}` (owner) — list members and link or unlink their person.
+
+**Accepting in the browser.** Open the link (from the create response's `link` or the
+captured `.eml`) in the web client with a second, disposable Keycloak user. For an
+email invitation, give that user the invited address and tick "Email verified" in
+Keycloak; Keycloak's default `email` scope puts `email_verified` in access tokens. The page
+signs in if needed, then shows "Accept invitation"; accepting opens the tree. The owner
+has no web UI for creating invitations yet: create them with `curl` and the owner's
+access token as in "Running a local copy end to end".
+
 ## Running a local copy end to end
 
 ```bash
@@ -515,7 +571,18 @@ and scope constraints, anchors versus cache rows, FT-010) and `GrantScopeTest`
 (FT-010: branch resolution against the `:core` rules for every direction, side
 branches, cycles including `Int.MAX_VALUE` depth under a local statement timeout,
 tenant isolation, snapshot reads, cache invalidation after graph changes and merges,
-grant writes and races between rebuilds, graph writers, deletes and merges).
+grant writes and races between rebuilds, graph writers, deletes and merges),
+`InvitationsMigrationTest` (V8 data through V9: membership versions, one member per
+person, invitation and proposed-grant constraints and its preflight, FT-011) and
+`InvitationTest` (FT-011 with disposable accounts: absent routes while off, anonymous
+and signed in; the owner policy; a link invitation redeemed once over HTTP with no token
+or digest in request logs or audit; another tree's token; expired, revoked and malformed
+tokens; expiry while waiting for the row lock; replacing an expired invitation;
+conflicts; local `.eml` mail capture; email claims over HTTP (wrong, aliased,
+unverified, `false` and string `"true"` refused with no writes, then the verified match
+claims it once); delete and merge blocks; concurrent redemptions,
+redemption against revocation, and invitation create against owner linking for one
+person; person linking and home branches).
 
 `MediaRoutesTest` also starts a disposable `ghcr.io/chrislusf/seaweedfs:4.54`
 (`weed mini`) on a random loopback port with random credentials, so presigned

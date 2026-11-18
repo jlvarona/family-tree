@@ -18,6 +18,10 @@ import com.moxietech.family_tree.server.media.S3ObjectStore
 import com.moxietech.family_tree.server.media.mediaRoutes
 import com.moxietech.family_tree.server.sources.citationRoutes
 import com.moxietech.family_tree.server.sources.sourceRoutes
+import com.moxietech.family_tree.server.trees.InvitationService
+import com.moxietech.family_tree.server.trees.InvitationSettings
+import com.moxietech.family_tree.server.trees.MemberService
+import com.moxietech.family_tree.server.trees.invitationRoutes
 import com.moxietech.family_tree.server.trees.treeRoutes
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
@@ -60,6 +64,9 @@ fun main() {
 fun Application.module(
     oidc: OidcSettings = OidcSettings(),
     media: MediaService = MediaService(lazy { S3ObjectStore(MediaSettings()) }),
+    // FT-011: off unless INVITATIONS_ENABLED=true (README "Invitations").
+    invitationSettings: InvitationSettings = InvitationSettings(),
+    invitations: InvitationService = InvitationService(invitationSettings),
 ) {
     install(ContentNegotiation) {
         json(Json { ignoreUnknownKeys = true })
@@ -83,5 +90,6 @@ fun Application.module(
         citationRoutes()
         graphRoutes()
         mediaRoutes(media)
+        invitationRoutes(invitations, MemberService(invitationSettings))
     }
 }
