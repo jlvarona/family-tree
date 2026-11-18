@@ -744,15 +744,15 @@ class VersionedDeleteTest {
     // --- Authorization and input --------------------------------------------------------
 
     @Test
-    fun `a non-owner gets 403 for every delete before the path ID or version is checked`() = api {
+    fun `a member without an editing grant gets 403 for every delete before the path ID or version is checked`() = api {
         val f = family()
-        val ownerOnly = "Only the tree owner can make changes to tree ${f.tree}"
+        val noEditAccess = "Your access to tree ${f.tree} doesn't allow changes"
         val notMember = "Not a member of tree ${f.tree}"
         val before = fingerprint(f.tree)
         for (t in deletions(f)) {
             val malformedPath = t.path.substringBeforeLast('/') + "/not-a-uuid"
             for ((p, version) in listOf(t.path to "1", t.path to null, t.path to "abc", malformedPath to "0")) {
-                assertError(client.delete(p, Actor.RELATIVE, version), HttpStatusCode.Forbidden, ownerOnly, "relative ${t.name} $p $version")
+                assertError(client.delete(p, Actor.RELATIVE, version), HttpStatusCode.Forbidden, noEditAccess, "relative ${t.name} $p $version")
             }
             assertError(client.delete(t.path, Actor.INVITEE, "1"), HttpStatusCode.Forbidden, notMember, "invitee ${t.name}")
             assertError(client.delete(t.path, Actor.OTHER_OWNER, "1"), HttpStatusCode.Forbidden, notMember, "other owner ${t.name}")

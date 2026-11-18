@@ -493,9 +493,9 @@ class MediaRoutesTest {
     }
 
     @Test
-    fun `only the owner presigns, finalizes and assigns, and every input is checked`() = api {
+    fun `members without an editing grant can't presign, finalize or assign, and every input is checked`() = api {
         val ana = client.person(treeA, "Ana")
-        val ownerOnly = "Only the tree owner can make changes to tree $treeA"
+        val noEditAccess = "Your access to tree $treeA doesn't allow changes"
         val pending = client.presign(treeA, size = 10).decoded<MediaUploadDto>(HttpStatusCode.Created).media.id
         for (actor in listOf(Actor.RELATIVE, Actor.INVITEE, Actor.OTHER_OWNER)) {
             for (body in listOf(encode(CreateMediaUploadRequest("PROFILE_PHOTO", "image/jpeg", 10)), "{not json")) {
@@ -504,7 +504,7 @@ class MediaRoutesTest {
             assertEquals(HttpStatusCode.Forbidden, client.finalize(treeA, pending, actor).status, "$actor finalize")
             assertEquals(HttpStatusCode.Forbidden, client.setPhoto(treeA, ana, pending, actor).status, "$actor assign")
         }
-        assertError(client.finalize(treeA, pending, Actor.RELATIVE), HttpStatusCode.Forbidden, ownerOnly)
+        assertError(client.finalize(treeA, pending, Actor.RELATIVE), HttpStatusCode.Forbidden, noEditAccess)
         assertEquals(HttpStatusCode.Forbidden, client.download(treeA, pending, Actor.INVITEE).status, "an invitee can't read")
 
         val bad = HttpStatusCode.BadRequest

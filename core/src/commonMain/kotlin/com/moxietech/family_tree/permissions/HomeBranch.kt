@@ -23,7 +23,8 @@ import com.moxietech.family_tree.domain.UnionChild
  * further up: grandparents' lines are reachable only through an explicit grant.
  * A member who is not linked to a person has no home branch.
  *
- * Nothing enforces it before FT-012 (Phase 1 owner-only policy, FT-068).
+ * Since FT-012 a member who holds an editing grant edits their home branch live
+ * ([EditAuthority]).
  */
 object HomeBranch {
 

@@ -615,7 +615,7 @@ class GrantScopeTest {
     // --- Grant writes -------------------------------------------------------------------
 
     @Test
-    fun `grant writes are owner only, validated, versioned and audited in their transaction`() = runBlocking {
+    fun `grant writes are refused to members without a whole-tree role, validated, versioned and audited in their transaction`() = runBlocking {
         val f = newFamily("FT-010 writes")
         val grant = f.grant("me", "DESCENDANTS", depth = 2)
         assertEquals(listOf("CREATE"), grantAudits(grant.id))

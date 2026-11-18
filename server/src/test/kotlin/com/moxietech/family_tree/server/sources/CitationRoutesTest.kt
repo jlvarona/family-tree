@@ -513,15 +513,15 @@ class CitationRoutesTest {
     }
 
     @Test
-    fun `only the owner may cite, and every input is validated before anything is written`() = api {
+    fun `a member without an editing grant can't cite, and every input is validated before anything is written`() = api {
         val f = family()
         val url = citations(f.tree)
         val valid = CreateCitationRequest(f.source.id, "PERSON", f.father.id, confidence = 2)
         val before = fingerprint(f.tree)
 
-        val ownerOnly = "Only the tree owner can make changes to tree ${f.tree}"
+        val noEditAccess = "Your access to tree ${f.tree} doesn't allow changes"
         for (body in listOf(encode(valid), "{not json", "{}")) {
-            assertError(client.post(url, Actor.RELATIVE, body), HttpStatusCode.Forbidden, ownerOnly, "relative $body")
+            assertError(client.post(url, Actor.RELATIVE, body), HttpStatusCode.Forbidden, noEditAccess, "relative $body")
         }
 
         data class Case(val name: String, val body: String, val status: HttpStatusCode, val message: String)

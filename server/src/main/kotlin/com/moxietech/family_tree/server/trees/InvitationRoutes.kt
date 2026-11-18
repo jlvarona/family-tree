@@ -7,7 +7,9 @@ import com.moxietech.family_tree.server.config.OIDC_AUTH_NAME
 import com.moxietech.family_tree.server.config.verifiedEmail
 import com.moxietech.family_tree.server.graph.requirePathParam
 import com.moxietech.family_tree.server.graph.requireTreeId
-import com.moxietech.family_tree.server.graph.requireTreeWriter
+import com.moxietech.family_tree.server.graph.requireTreeManager
+import com.moxietech.family_tree.server.graph.requireTreeOwner
+import com.moxietech.family_tree.server.permissions.grantRoutes
 import com.moxietech.family_tree.server.graph.versionParam
 import com.moxietech.family_tree.server.identity.currentAccount
 import io.ktor.http.HttpStatusCode
@@ -27,26 +29,28 @@ import io.ktor.server.routing.route
 /**
  * FT-011 routes, installed only when invitations are enabled
  * ([InvitationSettings.enabled]); while off they don't exist, so every caller, signed in
- * or not, gets the server's plain `404` for an unknown route. Owner routes run the
- * Phase 1 write check before decoding a body (FT-068), as every other tree write does.
+ * or not, gets the server's plain `404` for an unknown route. Management routes check the
+ * caller before decoding a body (FT-068, FT-012), as every other tree write does.
  *
- * - `POST   /api/v1/trees/{treeId}/invitations` (owner) — create; the token is in the response once.
- * - `GET    /api/v1/trees/{treeId}/invitations` (owner) — pending and expired invitations, never tokens.
- * - `DELETE /api/v1/trees/{treeId}/invitations/{invitationId}?version=N` (owner) — revoke.
+ * - `POST   /api/v1/trees/{treeId}/invitations` (owner or whole-tree admin, FT-012) — create; the token is in the response once.
+ * - `GET    /api/v1/trees/{treeId}/invitations` (owner or whole-tree admin) — pending and expired invitations, never tokens.
+ * - `DELETE /api/v1/trees/{treeId}/invitations/{invitationId}?version=N` (owner or whole-tree admin) — revoke.
  * - `POST   /api/v1/trees/{treeId}/invitations/redeem` (any signed-in account) — accept; the
  *   tree is the link's, the token is in the body only. Not a member check: the caller
  *   isn't a member yet. An email-addressed invitation also needs the token's verified email.
- * - `GET    /api/v1/trees/{treeId}/members` (owner) — members and their linked people.
+ * - `GET    /api/v1/trees/{treeId}/members` (owner or whole-tree admin) — members and their linked people.
  * - `PUT    /api/v1/trees/{treeId}/members/{accountId}/person` (owner) — link or unlink a person.
+ * - Grants (FT-012, [grantRoutes]) under the same gate.
  */
 fun Route.invitationRoutes(invitations: InvitationService, members: MemberService) {
     if (!invitations.enabled) return
+    grantRoutes()
     authenticate(OIDC_AUTH_NAME) {
         route("/api/v1/trees/{treeId}/invitations") {
             post {
                 val account = call.currentAccount()
                 val treeId = call.requireTreeId()
-                requireTreeWriter(treeId, account.id)
+                requireTreeManager(treeId, account.id)
                 val request = call.receive<CreateInvitationRequest>()
                 call.respond(HttpStatusCode.Created, invitations.create(treeId, account, request))
             }
@@ -57,7 +61,7 @@ fun Route.invitationRoutes(invitations: InvitationService, members: MemberServic
             delete("/{invitationId}") {
                 val account = call.currentAccount()
                 val treeId = call.requireTreeId()
-                requireTreeWriter(treeId, account.id)
+                requireTreeManager(treeId, account.id)
                 invitations.revoke(treeId, call.requirePathParam("invitationId"), account.id, call.versionParam())
                 call.respond(HttpStatusCode.NoContent)
             }
@@ -78,7 +82,7 @@ fun Route.invitationRoutes(invitations: InvitationService, members: MemberServic
             put("/{accountId}/person") {
                 val account = call.currentAccount()
                 val treeId = call.requireTreeId()
-                requireTreeWriter(treeId, account.id)
+                requireTreeOwner(treeId, account.id)
                 val request = call.receive<LinkMemberPersonRequest>()
                 call.respond(members.linkPerson(treeId, call.requirePathParam("accountId"), account.id, request))
             }

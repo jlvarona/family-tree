@@ -353,9 +353,9 @@ empty, `MEDIA_S3_BUCKET` and `MEDIA_S3_REGION`; never set `MEDIA_S3_CREATE_BUCKE
 
 ## Invitations
 
-FT-011 invitations and account-to-person linking are **off by default** and must stay
-off for real users until FT-012 to FT-014 (grant-based authorization, redaction and
-change proposals) are done. While off, the invitation and member routes aren't
+Invitations, member linking, and grant management are **off by default**. Keep them
+off for real users until FT-013 living-person redaction and FT-014 change proposals
+are done. While off, the invitation, member, and grant routes aren't
 installed: every caller, signed in or not, gets the plain `404` of an unknown route, and
 nothing is read or written. Turn them on only on a local stack with disposable accounts
 and data:
@@ -378,15 +378,16 @@ $env:INVITATION_ACCEPT_URL = "http://localhost:3000/"
 .\gradlew.bat :server:run
 ```
 
-Routes (owner = the tree's active owner, the Phase 1 write rule):
+Managing access requires the tree's active owner or a whole-tree admin. Member
+linking requires the active owner.
 
-- `POST /api/v1/trees/{treeId}/invitations` (owner) with `{personId?, email?, grants: [{role, anchorPersonId, direction, depth?, includePartners}], expiresInHours?, locale?}` →
+- `POST /api/v1/trees/{treeId}/invitations` with `{personId?, email?, grants: [{role, anchorPersonId, direction, depth?, includePartners}], expiresInHours?, locale?}` →
   `201 {invitation, token, delivery, link}`. The token is shown once; only its SHA-256 digest is stored.
   A person already linked to a member or promised to another pending invitation (expired
   ones included) is a `409`.
-- `GET /api/v1/trees/{treeId}/invitations` (owner) — pending invitations (`expired: true`
+- `GET /api/v1/trees/{treeId}/invitations` — pending invitations (`expired: true`
   once past their time), never tokens.
-- `DELETE /api/v1/trees/{treeId}/invitations/{id}?version=N` (owner) — revoke, expired
+- `DELETE /api/v1/trees/{treeId}/invitations/{id}?version=N` — revoke, expired
   ones included; this releases the person and anchors it holds, so the owner can replace it.
 - `POST /api/v1/trees/{treeId}/invitations/redeem` with `{"token": "…"}` (any signed-in
   account) — accept a link invitation: the caller's account (by token issuer and subject,
@@ -397,7 +398,11 @@ Routes (owner = the tree's active owner, the Phase 1 write rule):
   with ASCII case folded); otherwise a generic `409`, and the invitation stays open for the
   right account.
 - `GET /api/v1/trees/{treeId}/members` and `PUT /api/v1/trees/{treeId}/members/{accountId}/person`
-  with `{personId|null, version}` (owner) — list members and link or unlink their person.
+  with `{personId|null, version}` — list members and link or unlink their person.
+- `GET` and `POST /api/v1/trees/{treeId}/grants` list and create grants. Create takes
+  `{accountId, role, anchorPersonId, direction, depth?, includePartners}`. Use `PUT`
+  on `{grantId}` with the replacement definition and current `version`, or `DELETE`
+  on `{grantId}?version=N`. An `ADMIN` grant requires `WHOLE_TREE`.
 
 **Accepting in the browser.** Open the link (from the create response's `link` or the
 captured `.eml`) in the web client with a second, disposable Keycloak user. For an

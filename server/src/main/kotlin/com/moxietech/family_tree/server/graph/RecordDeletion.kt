@@ -19,6 +19,7 @@ import org.jetbrains.exposed.v1.core.or
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import org.postgresql.util.PSQLException
+import java.sql.Connection
 import java.sql.SQLException
 import kotlin.uuid.Uuid
 
@@ -79,13 +80,14 @@ internal object RecordDeletion {
     const val EVENT = "EVENT"
 
     /**
-     * Runs [block] in its own transaction. A foreign-key violation on one of
-     * [foreignKeys] (the constraints that reference the deleted table), seen
+     * Runs [block] in its own READ COMMITTED transaction (the database default, stated
+     * since FT-012's in-transaction authorization requires it). A foreign-key violation
+     * on one of [foreignKeys] (the constraints that reference the deleted table), seen
      * after the transaction rolled back, becomes [referenced]; every other
      * database error propagates unchanged.
      */
     suspend fun <T> guarded(entity: String, id: String, foreignKeys: Set<String>, block: () -> T): T = try {
-        withContext(DatabaseDispatcher) { transaction { block() } }
+        withContext(DatabaseDispatcher) { transaction(transactionIsolation = Connection.TRANSACTION_READ_COMMITTED) { block() } }
     } catch (e: SQLException) {
         if (e.isForeignKeyViolation(foreignKeys)) throw referenced(entity, id)
         throw e

@@ -495,9 +495,9 @@ class AuthenticatedAccessTest {
         val a = path(treeA.id)
         val request = encode(CreatePersonRequest("Carmen", "Lopez", sex = "FEMALE", isLiving = true))
         val before = rowCounts()
-        // Phase 1: a member can't create people, so the duplicate check never runs for them (FT-068).
+        // A member without an editing grant can't create people, so the duplicate check never runs for them (FT-068, FT-012).
         val asRelative = client.write("$a/people", Actor.RELATIVE, request)
-        assertError(asRelative, HttpStatusCode.Forbidden, "Only the tree owner can make changes to tree ${treeA.id}", "relative create")
+        assertError(asRelative, HttpStatusCode.Forbidden, "Your access to tree ${treeA.id} doesn't allow changes", "relative create")
         assertAbsent(asRelative.bodyAsText(), listOf("Carmen", "López"), "relative create")
         assertEquals(before, rowCounts())
 
@@ -534,12 +534,13 @@ class AuthenticatedAccessTest {
     }
 
     @Test
-    fun `an active non-owner gets 403 for every write, valid or malformed, and nothing changes`() = api {
-        val ownerOnly = "Only the tree owner can make changes to tree ${treeA.id}"
+    fun `an active member without an editing grant gets 403 for every write, valid or malformed, and nothing changes`() = api {
+        // The relative holds no grant (FT-012): no write is open to them.
+        val noEditAccess = "Your access to tree ${treeA.id} doesn't allow changes"
         val before = rowCounts()
         for ((path, body) in writesToTreeA()) {
-            assertError(client.write(path, Actor.RELATIVE, body), HttpStatusCode.Forbidden, ownerOnly, "valid $path")
-            assertError(client.write(path, Actor.RELATIVE, "{ not json"), HttpStatusCode.Forbidden, ownerOnly, "malformed $path")
+            assertError(client.write(path, Actor.RELATIVE, body), HttpStatusCode.Forbidden, noEditAccess, "valid $path")
+            assertError(client.write(path, Actor.RELATIVE, "{ not json"), HttpStatusCode.Forbidden, noEditAccess, "malformed $path")
         }
         assertEquals(before, rowCounts())
     }
@@ -886,17 +887,17 @@ class AuthenticatedAccessTest {
     }
 
     @Test
-    fun `a non-owner gets 403 before any ID or body validation`() = api {
+    fun `a member without an editing grant gets 403 before any ID or body validation`() = api {
         val a = path(treeA.id)
-        val ownerOnly = "Only the tree owner can make changes to tree ${treeA.id}"
+        val noEditAccess = "Your access to tree ${treeA.id} doesn't allow changes"
         val before = rowCounts()
         assertError(
             client.write("$a/unions/not-a-uuid/children", Actor.RELATIVE, encode(AddUnionChildRequest(antonio, "BIRTH"))),
-            HttpStatusCode.Forbidden, ownerOnly, "malformed union",
+            HttpStatusCode.Forbidden, noEditAccess, "malformed union",
         )
         assertError(
             client.write("$a/unions", Actor.RELATIVE, encode(CreateUnionRequest("not-a-uuid", type = "ROBOT"))),
-            HttpStatusCode.Forbidden, ownerOnly, "malformed partner and type",
+            HttpStatusCode.Forbidden, noEditAccess, "malformed partner and type",
         )
         assertEquals(before, rowCounts())
     }

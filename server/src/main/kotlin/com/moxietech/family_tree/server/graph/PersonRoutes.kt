@@ -40,12 +40,12 @@ fun Route.personRoutes() {
                 val treeId = call.requireTreeId()
                 call.respond(PersonService.listPeople(treeId, account.id))
             }
-            // FT-007: merge two records of one person. Owner check before the body is
-            // decoded, like every write (FT-068).
+            // FT-007: merge two records of one person. Owner-only (FT-012 keeps it so);
+            // checked before the body is decoded, like every write (FT-068).
             post("/merge") {
                 val account = call.currentAccount()
                 val treeId = call.requireTreeId()
-                requireTreeWriter(treeId, account.id)
+                requireTreeOwner(treeId, account.id)
                 val request = call.receive<MergePeopleRequest>()
                 call.respond(PersonMergeService.merge(treeId, account.id, request))
             }
@@ -65,7 +65,7 @@ fun Route.personRoutes() {
                 val request = call.receive<UpdatePersonRequest>()
                 call.respond(PersonService.updatePerson(treeId, personId, account.id, request))
             }
-            // FT-008: set or remove the profile photo. Owner check before the path ID or
+            // FT-008: set or remove the profile photo. Write gate before the path ID or
             // body is looked at, like every write (FT-068).
             put("/{personId}/profile-photo") {
                 val account = call.currentAccount()
@@ -111,10 +111,26 @@ internal fun io.ktor.server.application.ApplicationCall.requirePathParam(name: S
     parameters[name] ?: throw NotFoundException("Missing path parameter '$name'")
 
 /**
- * Write check for a POST or PUT under a tree, run before the body is decoded so a
- * caller who may not write gets 403 even for malformed JSON (FT-068). The
- * service repeats the check, which keeps direct service callers covered.
+ * First write gate for a person, relationship, event or citation write under a tree,
+ * run before the body is decoded so a caller who can't change anything gets 403 even
+ * for malformed JSON (FT-068, FT-012 [TreeService.getTreeForEditor]). The service
+ * repeats it, and decides the exact records inside its transaction (`WriteAccess`).
  */
 internal suspend fun requireTreeWriter(treeId: TreeId, accountId: AccountId) {
+    TreeService.getTreeForEditor(treeId, accountId)
+}
+
+/** FT-012: the same gate for tree-wide records (places, sources, media uploads): owner or whole-tree admin. */
+internal suspend fun requireTreeWideWriter(treeId: TreeId, accountId: AccountId) {
+    TreeService.getTreeForTreeWideWriter(treeId, accountId)
+}
+
+/** FT-012: the same gate for access management (invitations, grants): owner or whole-tree admin. */
+internal suspend fun requireTreeManager(treeId: TreeId, accountId: AccountId) {
+    TreeService.getTreeForManager(treeId, accountId)
+}
+
+/** The same gate for owner-only operations (merges, member linking). */
+internal suspend fun requireTreeOwner(treeId: TreeId, accountId: AccountId) {
     TreeService.getTreeForWriter(treeId, accountId)
 }

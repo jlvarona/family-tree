@@ -19,6 +19,7 @@ import com.moxietech.family_tree.server.errors.ValidationException
 import com.moxietech.family_tree.server.errors.parseUuidField
 import com.moxietech.family_tree.server.graph.PersonRepository
 import com.moxietech.family_tree.server.graph.ViewerPolicy
+import com.moxietech.family_tree.server.permissions.WriteAccess
 import com.moxietech.family_tree.server.sources.CitationRepository
 import com.moxietech.family_tree.server.sources.CitationService
 import com.moxietech.family_tree.server.trees.TreeService
@@ -47,10 +48,12 @@ const val MEDIA_TOO_LARGE_IMAGE_MESSAGE = "The image has too many pixels"
  * FT-008 photo uploads: presign, finalize and read. The API never carries image
  * bytes: clients `PUT` to a presigned URL and browsers `GET` from one.
  *
- * - **Presign** (owner only): validates purpose, declared type and size, generates
+ * - **Presign** (owner or whole-tree admin since FT-012, re-checked in the insert's
+ *   transaction): validates purpose, declared type and size, generates
  *   the media ID and both keys server-side, signs a `PUT` for the `uploads/` key,
  *   then inserts the `PENDING` row and its `CREATE` audit in one transaction.
- * - **Finalize** (owner only), safe to retry at any point:
+ * - **Finalize** (owner or whole-tree admin, re-checked in the transaction that changes
+ *   the status), safe to retry at any point:
  *   1. read the row in the URL's tree (404); `READY` returns it unchanged (idempotent),
  *      `REJECTED` is a 409;
  *   2. read the upload with a cap; if it's missing, re-read the row: `READY` (an
@@ -80,7 +83,7 @@ class MediaService(
     private val log = LoggerFactory.getLogger(MediaService::class.java)
 
     suspend fun createUpload(treeId: TreeId, callerAccountId: AccountId, request: CreateMediaUploadRequest): MediaUploadDto {
-        val tree = TreeService.getTreeForWriter(treeId, callerAccountId)
+        val tree = TreeService.getTreeForTreeWideWriter(treeId, callerAccountId)
         val purpose = MediaRules.purposeOf(request.purpose) ?: throw ValidationException(listOf(MEDIA_PURPOSE_UNKNOWN_MESSAGE))
         val format = MediaRules.formatOf(request.contentType) ?: throw ValidationException(listOf(MEDIA_CONTENT_TYPE_MESSAGE))
         if (!MediaRules.isSizeAllowed(request.byteSize)) throw ValidationException(listOf(MEDIA_BYTE_SIZE_MESSAGE))
@@ -92,7 +95,9 @@ class MediaService(
         // can only put an unreadable object under uploads/, which nothing finalizes.
         val presigned = store.presignUpload(uploadKey, format.contentType, request.byteSize, settings.uploadUrlTtl)
         val media = withContext(DatabaseDispatcher) {
-            transaction {
+            transaction(transactionIsolation = Connection.TRANSACTION_READ_COMMITTED) {
+                // FT-012: uploads are tree-wide records; owner or whole-tree admin, under locks.
+                WriteAccess.beginTreeWide(treeUuid, callerAccountId)
                 val created = MediaRepository.insert(
                     id = mediaId,
                     treeId = treeUuid,
@@ -113,7 +118,7 @@ class MediaService(
     }
 
     suspend fun finalize(treeId: TreeId, rawMediaId: String, callerAccountId: AccountId): MediaDto {
-        val tree = TreeService.getTreeForWriter(treeId, callerAccountId)
+        val tree = TreeService.getTreeForTreeWideWriter(treeId, callerAccountId)
         val treeUuid = Uuid.parse(tree.id.value)
         val mediaId = parseUuidField("mediaId", rawMediaId)
         val media = withContext(DatabaseDispatcher) { MediaRepository.find(treeUuid, mediaId) } ?: throw mediaNotFound(mediaId)
@@ -162,6 +167,9 @@ class MediaService(
 
         val ready = withContext(DatabaseDispatcher) {
             transaction(transactionIsolation = Connection.TRANSACTION_READ_COMMITTED) {
+                // FT-012: re-checked where the status changes (a role revoked meanwhile is a
+                // 403 that leaves the row PENDING, like any failure after step 4).
+                WriteAccess.beginTreeWide(treeUuid, callerAccountId)
                 val locked = MediaRepository.lockForUpdate(treeUuid, mediaId) ?: throw mediaNotFound(mediaId)
                 when (locked.status) {
                     // An overlapping finalization committed first; its own stored object wins.
@@ -225,6 +233,7 @@ class MediaService(
     private suspend fun reject(treeId: Uuid, caller: AccountId, media: MediaRecord, message: String): MediaDto {
         val current = withContext(DatabaseDispatcher) {
             transaction(transactionIsolation = Connection.TRANSACTION_READ_COMMITTED) {
+                WriteAccess.beginTreeWide(treeId, caller)
                 val locked = MediaRepository.lockForUpdate(treeId, media.id) ?: throw mediaNotFound(media.id)
                 if (locked.status != MediaStatus.PENDING) return@transaction locked
                 val rejected = MediaRepository.markRejected(treeId, media.id, locked.version)

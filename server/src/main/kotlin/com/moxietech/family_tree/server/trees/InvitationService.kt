@@ -15,6 +15,7 @@ import com.moxietech.family_tree.domain.AuditAction
 import com.moxietech.family_tree.domain.Branch
 import com.moxietech.family_tree.domain.BranchDirection
 import com.moxietech.family_tree.domain.GrantRole
+import com.moxietech.family_tree.permissions.GrantRules
 import com.moxietech.family_tree.domain.Locale
 import com.moxietech.family_tree.domain.MembershipStatus
 import com.moxietech.family_tree.domain.PersonId
@@ -34,6 +35,8 @@ import com.moxietech.family_tree.server.errors.staleVersion
 import com.moxietech.family_tree.server.graph.GraphWriteLock
 import com.moxietech.family_tree.server.graph.isUniqueViolation
 import com.moxietech.family_tree.server.permissions.GrantRepository
+import com.moxietech.family_tree.server.permissions.GrantService
+import com.moxietech.family_tree.server.permissions.WriteAccess
 import com.moxietech.family_tree.server.permissions.toDto
 import com.moxietech.family_tree.validation.Validation
 import kotlinx.coroutines.CancellationException
@@ -73,11 +76,13 @@ private const val INVITATION_PERSON_UNIQUE = "invitation_tree_person_key"
  * not installed at all, and every method here also answers the generic `404` before any
  * read. Phase 1 authorization (FT-068) is unchanged either way.
  *
- * **Owner policy.** Creating, listing and revoking go through
- * [TreeService.getTreeForWriter], so only the tree's active owner can invite, exactly
- * like every other Phase 1 write. A redemption honours an invitation only while its
- * creator still passes that same rule ([TreePermissions.canWrite]); an invitation can
- * never give more than its creator could grant directly through [GrantRepository].
+ * **Management policy (FT-012).** Creating, listing and revoking need the tree's active
+ * owner or an active whole-tree admin ([TreeService.getTreeForManager] before the body,
+ * then [WriteAccess.beginManagement] first in the write's transaction; the role table:
+ * an admin invites). A redemption honours an invitation only while its creator still
+ * passes that rule ([WriteAccess.inviterCanManage], an admin's membership and grants
+ * locked); an invitation never gives more than its creator could grant directly through
+ * [GrantService]. [TreePermissions] holds the shared rules.
  *
  * **Secrets.** The token is 256 random bits, returned once in the create response and,
  * with a mail transport, mailed in a link `{acceptUrl}#/trees/{treeId}/join?token=…`
@@ -99,7 +104,8 @@ private const val INVITATION_PERSON_UNIQUE = "invitation_tree_person_key"
  * 3. with the time read after that lock, reject an expired invitation (`404`, same
  *    message), an email-addressed invitation whose address isn't the caller's verified
  *    email ([InvitationEmails.claims]; one generic `409`, nothing written, the invitation
- *    stays usable), or one whose creator is no longer the active owner (`404`);
+ *    stays usable), or one whose creator is no longer the active owner or an active
+ *    whole-tree admin (`404`);
  * 4. lock the caller's membership; an ACTIVE one is a `409`;
  * 5. reserve the linked person and refuse one already linked to another member (`409`,
  *    also enforced by `membership_tree_person_key`); lock each grant anchor
@@ -125,8 +131,8 @@ class InvitationService(
     init {
         if (settings.enabled) {
             log.warn(
-                "Invitations are enabled (INVITATIONS_ENABLED=true) before FT-012 to FT-014 complete shared-tree " +
-                    "authorization; use disposable test accounts and data only",
+                "Invitations are enabled (INVITATIONS_ENABLED=true) before FT-013 and FT-014 complete shared-tree " +
+                    "redaction and proposals; use disposable test accounts and data only",
             )
         }
     }
@@ -135,7 +141,7 @@ class InvitationService(
 
     suspend fun create(treeId: TreeId, caller: Account, request: CreateInvitationRequest): CreatedInvitationResponse {
         requireEnabled()
-        val tree = TreeService.getTreeForWriter(treeId, caller.id)
+        val tree = TreeService.getTreeForManager(treeId, caller.id)
         val treeUuid = Uuid.parse(tree.id.value)
         val personUuid = parseOptionalUuidField("personId", request.personId)
         val email = request.email?.let(::normalizeEmail)
@@ -147,7 +153,9 @@ class InvitationService(
         val token = InvitationTokens.generate()
         val now = clock()
         val invitation = writeGuarded {
-            GraphWriteLock.shared(treeUuid)
+            // FT-012: owner or whole-tree admin, decided under locks in this transaction (the
+            // owner takes GraphWriteLock shared as before, an admin exclusive).
+            WriteAccess.beginManagement(treeUuid, caller.id, ownerTakesSharedLock = true)
             if (personUuid != null) {
                 reservePerson(treeUuid, personUuid)
                 if (MembershipRepository.findByPerson(treeUuid, personUuid) != null) throw ConflictException(INVITATION_PERSON_LINKED_MESSAGE)
@@ -178,9 +186,8 @@ class InvitationService(
 
     suspend fun list(treeId: TreeId, callerAccountId: AccountId): List<InvitationDto> {
         requireEnabled()
-        val tree = TreeService.getTreeForWriter(treeId, callerAccountId)
         val now = clock()
-        return withContext(DatabaseDispatcher) {
+        return TreeService.readManagedTree(treeId, callerAccountId) { tree ->
             InvitationRepository.listByTree(Uuid.parse(tree.id.value)).map { it.toDto(now) }
         }
     }
@@ -188,11 +195,13 @@ class InvitationService(
     /** Revokes a pending (or expired) invitation at the version last read; its token stops working. */
     suspend fun revoke(treeId: TreeId, invitationId: String, callerAccountId: AccountId, version: List<String>?) {
         requireEnabled()
-        val tree = TreeService.getTreeForWriter(treeId, callerAccountId)
+        val tree = TreeService.getTreeForManager(treeId, callerAccountId)
         val treeUuid = Uuid.parse(tree.id.value)
         val invitationUuid = parseUuidField("invitationId", invitationId)
         val expected = parseVersionParam(version)
         writeGuarded {
+            // FT-012: owner (no graph lock, as before) or whole-tree admin (exclusive).
+            WriteAccess.beginManagement(treeUuid, callerAccountId, ownerTakesSharedLock = false)
             val before = InvitationRepository.lockForUpdate(treeUuid, invitationUuid)
                 ?: throw NotFoundException("No invitation with id $invitationUuid")
             if (before.version != expected) throw staleVersion("Invitation", before.id.toString())
@@ -241,13 +250,13 @@ class InvitationService(
                 throw ConflictException(INVITATION_EMAIL_NOT_CLAIMABLE_MESSAGE)
             }
 
-            // The owner policy at redemption time: the creator must still be the tree's
-            // active owner, or the invitation is void.
+            // The management policy at redemption time (FT-012): the creator must still be
+            // the tree's active owner or an active whole-tree admin, or the invitation is
+            // void. An admin creator's membership and grants are locked while this runs, so a
+            // revocation either committed first (void) or waits for this redemption.
             val tree = TreeRepository.findById(treeUuid) ?: throw NotFoundException(INVITATION_NOT_FOUND_MESSAGE)
             val inviter = AccountId(invitation.createdByAccountId.toString())
-            if (!TreePermissions.canWrite(tree, inviter, MembershipRepository.find(treeUuid, invitation.createdByAccountId))) {
-                throw NotFoundException(INVITATION_NOT_FOUND_MESSAGE)
-            }
+            if (!WriteAccess.inviterCanManage(tree, inviter)) throw NotFoundException(INVITATION_NOT_FOUND_MESSAGE)
 
             val existing = MembershipRepository.lockForUpdate(treeUuid, accountUuid)
             if (existing?.status == MembershipStatus.ACTIVE) throw ConflictException(INVITATION_ALREADY_MEMBER_MESSAGE)
@@ -355,7 +364,10 @@ class InvitationService(
                 ?: throw ValidationException(listOf("Unknown branch direction '${request.direction}'"))
             Validation.validateBranchDepth(request.depth).requireValid()
             val anchor = parseUuidField("anchorPersonId", request.anchorPersonId)
-            ProposedGrant(role, Branch(PersonId(anchor.toString()), direction, request.depth, request.includePartners))
+            val branch = Branch(PersonId(anchor.toString()), direction, request.depth, request.includePartners)
+            // FT-012: a proposed ADMIN grant must cover the whole tree, like a grant write.
+            GrantRules.validate(role, branch).requireValid()
+            ProposedGrant(role, branch)
         }
     }
 

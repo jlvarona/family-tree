@@ -26,7 +26,8 @@ import kotlin.uuid.Uuid
 /**
  * FT-011: the tree owner's view of members and account-to-person linking, behind the
  * same gate as invitations ([InvitationSettings.enabled]; routes not installed and `404`
- * while off) and the Phase 1 owner policy ([TreeService.getTreeForWriter]).
+ * while off). Linking stays owner-only ([TreeService.getTreeForWriter]); since FT-012 the
+ * member list is also open to whole-tree admins ([TreeService.getTreeForManager]).
  *
  * Linking (`PUT …/members/{accountId}/person`) sets or clears the person a membership
  * is linked to, at the membership's version (`409` stale), in one READ COMMITTED
@@ -42,10 +43,10 @@ import kotlin.uuid.Uuid
  */
 class MemberService(private val settings: InvitationSettings = InvitationSettings()) {
 
+    /** FT-012: the owner or a whole-tree admin (who needs member accounts to manage grants); no email. */
     suspend fun list(treeId: TreeId, callerAccountId: AccountId): List<MemberDto> {
         requireEnabled()
-        val tree = TreeService.getTreeForWriter(treeId, callerAccountId)
-        return withContext(DatabaseDispatcher) {
+        return TreeService.readManagedTree(treeId, callerAccountId) { tree ->
             MembershipRepository.listByTree(Uuid.parse(tree.id.value)).map { (membership, name) -> membership.toMemberDto(name) }
         }
     }

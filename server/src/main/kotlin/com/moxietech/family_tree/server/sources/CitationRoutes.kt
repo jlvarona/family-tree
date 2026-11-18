@@ -17,7 +17,7 @@ import io.ktor.server.routing.post
 
 /**
  * FT-002:
- * - `POST /api/v1/trees/{treeId}/citations` (owner only) → 201 [com.moxietech.family_tree.api.CitationDto]
+ * - `POST /api/v1/trees/{treeId}/citations` (live access to a person the target is about, FT-012) → 201 [com.moxietech.family_tree.api.CitationDto]
  * - `GET /api/v1/trees/{treeId}/{people|events|unions}/{id}/citations` (active members)
  *
  * There is no tree-wide citation listing: every read goes through one target and
