@@ -2,6 +2,10 @@ package com.moxietech.family_tree.client
 
 import com.moxietech.family_tree.api.AccountDto
 import com.moxietech.family_tree.api.AddUnionChildRequest
+import com.moxietech.family_tree.api.ApproveProposalRequest
+import com.moxietech.family_tree.api.ChangeProposalDto
+import com.moxietech.family_tree.api.DecideProposalRequest
+import com.moxietech.family_tree.api.TreeCapabilitiesDto
 import com.moxietech.family_tree.api.CitationDto
 import com.moxietech.family_tree.api.CreatePersonRequest
 import com.moxietech.family_tree.api.CreatePersonResponse
@@ -65,6 +69,16 @@ enum class ApiFailure {
 class ApiException(val failure: ApiFailure) : Exception("API call failed: $failure")
 
 /**
+ * FT-014: what a graph write did. Writes outside the caller's branches can be queued as a
+ * change proposal for the tree owner or a branch owner (`202 Accepted`) instead of applied.
+ */
+sealed interface WriteResult<out T> {
+    data class Applied<T>(val value: T) : WriteResult<T>
+
+    data class Queued(val proposal: ChangeProposalDto) : WriteResult<Nothing>
+}
+
+/**
  * The existing `/api/v1` create and read endpoints the web workflow uses, with
  * `:core` DTOs. Failures are thrown as [ApiException].
  */
@@ -94,9 +108,14 @@ interface FamilyTreeApi {
 
     suspend fun createPerson(treeId: String, request: CreatePersonRequest): CreatePersonResponse
 
-    suspend fun createUnion(treeId: String, request: CreateUnionRequest): UnionDto
+    /**
+     * FT-014: [WriteResult.Queued] when the server queued the union as a change proposal for
+     * review (`202`) instead of creating it (a partner outside the caller's branches).
+     */
+    suspend fun createUnion(treeId: String, request: CreateUnionRequest): WriteResult<UnionDto>
 
-    suspend fun addChild(treeId: String, unionId: String, request: AddUnionChildRequest): UnionDto
+    /** FT-014: [WriteResult.Queued] when the link was queued for review (`202`) instead of made. */
+    suspend fun addChild(treeId: String, unionId: String, request: AddUnionChildRequest): WriteResult<UnionDto>
 
     /**
      * Merges two records of one person (FT-007, owner only). A `409` means either
@@ -139,6 +158,19 @@ interface FamilyTreeApi {
      * address this account hasn't verified).
      */
     suspend fun redeemInvitation(treeId: String, token: String): RedeemInvitationResponse
+
+    /** FT-014: what the caller may do in [treeId] (`GET …/capabilities`), for showing controls. */
+    suspend fun capabilities(treeId: String): TreeCapabilitiesDto
+
+    /** FT-014: the proposals the caller made or may review, already shaped by the server (`404` while sharing is off). */
+    suspend fun proposals(treeId: String): List<ChangeProposalDto>
+
+    /** FT-014: approves [request]'s fields at the proposal's version; `409` when it or its record changed. */
+    suspend fun approveProposal(treeId: String, proposalId: String, request: ApproveProposalRequest): ChangeProposalDto
+
+    suspend fun rejectProposal(treeId: String, proposalId: String, version: Long): ChangeProposalDto
+
+    suspend fun withdrawProposal(treeId: String, proposalId: String, version: Long): ChangeProposalDto
 }
 
 /** The API's `targetType` for a `:core` citation target (FT-002). */
@@ -203,15 +235,27 @@ class HttpFamilyTreeApi(
     override suspend fun createPerson(treeId: String, request: CreatePersonRequest): CreatePersonResponse =
         post("/trees/${seg(treeId)}/people", CreatePersonRequest.serializer(), request, CreatePersonResponse.serializer())
 
-    override suspend fun createUnion(treeId: String, request: CreateUnionRequest): UnionDto =
-        post("/trees/${seg(treeId)}/unions", CreateUnionRequest.serializer(), request, UnionDto.serializer())
-
-    override suspend fun addChild(treeId: String, unionId: String, request: AddUnionChildRequest): UnionDto = post(
-        "/trees/${seg(treeId)}/unions/${seg(unionId)}/children",
-        AddUnionChildRequest.serializer(),
-        request,
+    override suspend fun createUnion(treeId: String, request: CreateUnionRequest): WriteResult<UnionDto> = decodeWrite(
+        send(HttpMethod.Post, "/trees/${seg(treeId)}/unions", json.encodeToString(CreateUnionRequest.serializer(), request)),
         UnionDto.serializer(),
     )
+
+    override suspend fun addChild(treeId: String, unionId: String, request: AddUnionChildRequest): WriteResult<UnionDto> = decodeWrite(
+        send(
+            HttpMethod.Post,
+            "/trees/${seg(treeId)}/unions/${seg(unionId)}/children",
+            json.encodeToString(AddUnionChildRequest.serializer(), request),
+        ),
+        UnionDto.serializer(),
+    )
+
+    /** FT-014: `202 Accepted` carries the queued proposal; any other success the applied record. */
+    private suspend fun <T> decodeWrite(response: HttpResponse, result: DeserializationStrategy<T>): WriteResult<T> =
+        if (response.status == HttpStatusCode.Accepted) {
+            WriteResult.Queued(decode(response, ChangeProposalDto.serializer()))
+        } else {
+            WriteResult.Applied(decode(response, result))
+        }
 
     override suspend fun mergePeople(treeId: String, request: MergePeopleRequest): MergePeopleResponse = post(
         "/trees/${seg(treeId)}/people/merge",
@@ -251,6 +295,33 @@ class HttpFamilyTreeApi(
         RedeemInvitationRequest.serializer(),
         RedeemInvitationRequest(token),
         RedeemInvitationResponse.serializer(),
+    )
+
+    override suspend fun capabilities(treeId: String): TreeCapabilitiesDto =
+        get("/trees/${seg(treeId)}/capabilities", TreeCapabilitiesDto.serializer())
+
+    override suspend fun proposals(treeId: String): List<ChangeProposalDto> =
+        get("/trees/${seg(treeId)}/proposals", ListSerializer(ChangeProposalDto.serializer()))
+
+    override suspend fun approveProposal(treeId: String, proposalId: String, request: ApproveProposalRequest): ChangeProposalDto = post(
+        "/trees/${seg(treeId)}/proposals/${seg(proposalId)}/approve",
+        ApproveProposalRequest.serializer(),
+        request,
+        ChangeProposalDto.serializer(),
+    )
+
+    override suspend fun rejectProposal(treeId: String, proposalId: String, version: Long): ChangeProposalDto = post(
+        "/trees/${seg(treeId)}/proposals/${seg(proposalId)}/reject",
+        DecideProposalRequest.serializer(),
+        DecideProposalRequest(version),
+        ChangeProposalDto.serializer(),
+    )
+
+    override suspend fun withdrawProposal(treeId: String, proposalId: String, version: Long): ChangeProposalDto = post(
+        "/trees/${seg(treeId)}/proposals/${seg(proposalId)}/withdraw",
+        DecideProposalRequest.serializer(),
+        DecideProposalRequest(version),
+        ChangeProposalDto.serializer(),
     )
 
     private suspend fun <T> get(path: String, result: DeserializationStrategy<T>): T =

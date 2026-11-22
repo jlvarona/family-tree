@@ -84,6 +84,54 @@ class HttpFamilyTreeApiTest {
     }
 
     @Test
+    fun aQueuedUnionOrChildLinkIsAProposalNotARecord() = runTest {
+        val union = """{"id":"u1","treeId":"t1","partner1Id":"a","partner2Id":"b","type":"MARRIED","startDate":null,"endDate":null,"children":[],"version":1}"""
+        val proposal = """{"id":"p1","treeId":"t1","operation":"ADD_CHILD","targetId":"u1","status":"PENDING","reason":"WIDENS_REACH",""" +
+            """"proposerAccountId":"me","createdAt":"2026-11-18T00:00:00Z","fields":[{"field":"RECORD","proposed":{"childId":"c","relation":"BIRTH"}}],""" +
+            """"canWithdraw":true,"version":1,"futureField":true}"""
+        val api = api(Tokens(), HttpStatusCode.Created to union, HttpStatusCode.Accepted to proposal)
+
+        val created = api.createUnion("t1", com.moxietech.family_tree.api.CreateUnionRequest("a", "b", "MARRIED"))
+        assertEquals("u1", (created as WriteResult.Applied).value.id)
+        val queued = api.addChild("t1", "u1", com.moxietech.family_tree.api.AddUnionChildRequest("c", "BIRTH"))
+        assertEquals("p1", (queued as WriteResult.Queued).proposal.id)
+        assertEquals("http://localhost:3000/api/v1/trees/t1/unions/u1/children", seen.last().first)
+    }
+
+    @Test
+    fun capabilitiesAndProposalDecisionsUseTheTreeScopedRoutes() = runTest {
+        val proposal = """{"id":"p1","treeId":"t1","operation":"UPDATE_PERSON","status":"APPLIED","reason":"OUTSIDE_BRANCH",""" +
+            """"proposerAccountId":"me","createdAt":"2026-11-22T00:00:00Z","fields":[],"version":2}"""
+        val api = api(
+            Tokens(),
+            HttpStatusCode.OK to """{"treeId":"t1","isOwner":false,"canEdit":true,"canWriteTreeWide":false,"canReview":true,"proposals":true}""",
+            HttpStatusCode.OK to "[$proposal]",
+            HttpStatusCode.OK to proposal,
+            HttpStatusCode.OK to proposal,
+            HttpStatusCode.OK to proposal,
+        )
+
+        assertTrue(api.capabilities("t1").canReview)
+        assertEquals("p1", api.proposals("t1").single().id)
+        api.approveProposal("t1", "p1", com.moxietech.family_tree.api.ApproveProposalRequest(1, listOf("GIVEN_NAMES")))
+        api.rejectProposal("t1", "p1", 1)
+        api.withdrawProposal("t1", "p1", 1)
+
+        assertEquals(
+            listOf(
+                "http://localhost:3000/api/v1/trees/t1/capabilities",
+                "http://localhost:3000/api/v1/trees/t1/proposals",
+                "http://localhost:3000/api/v1/trees/t1/proposals/p1/approve",
+                "http://localhost:3000/api/v1/trees/t1/proposals/p1/reject",
+                "http://localhost:3000/api/v1/trees/t1/proposals/p1/withdraw",
+            ),
+            seen.map { it.first },
+        )
+        assertEquals("""{"version":1,"fields":["GIVEN_NAMES"]}""", sent[2].second)
+        assertEquals("""{"version":1}""", sent[3].second)
+    }
+
+    @Test
     fun unauthorizedRetriesOnceWithARefreshedToken() = runTest {
         val tokens = Tokens()
         val api = api(

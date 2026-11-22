@@ -15,7 +15,8 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 
-fun Route.treeRoutes() {
+/** [sharingEnabled]: the sharing gate (`INVITATIONS_ENABLED`), reported in the capability snapshot. */
+fun Route.treeRoutes(sharingEnabled: Boolean = false) {
     authenticate(OIDC_AUTH_NAME) {
         route("/api/v1/trees") {
             post {
@@ -36,6 +37,12 @@ fun Route.treeRoutes() {
                 )
                 val tree = TreeService.getTreeForReader(treeId, account.id)
                 call.respond(tree.toDto())
+            }
+            // FT-014: what the caller may do here, for client controls (active members).
+            get("/{treeId}/capabilities") {
+                val account = call.currentAccount()
+                val treeId = TreeId(call.parameters["treeId"] ?: throw NotFoundException("Missing treeId"))
+                call.respond(TreeService.capabilities(treeId, account.id, sharingEnabled))
             }
         }
     }

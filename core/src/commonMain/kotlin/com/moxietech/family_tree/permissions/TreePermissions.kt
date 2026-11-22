@@ -51,6 +51,15 @@ object TreePermissions {
         canRead(tree, callerAccountId, membership) &&
             (tree.ownerAccountId == callerAccountId || GrantRole.ADMIN in effectiveRoles(tree, callerAccountId, grants))
 
+    /**
+     * FT-014: an active member who reviews some change proposals: the owner, or a holder of
+     * an effective BRANCH_OWNER grant (which proposals exactly is `ReviewAuthority`'s
+     * per-proposal rule). A whole-tree ADMIN doesn't review by that role.
+     */
+    fun canReviewSomewhere(tree: Tree, callerAccountId: AccountId, membership: Membership?, grants: List<Grant>): Boolean =
+        canRead(tree, callerAccountId, membership) &&
+            (tree.ownerAccountId == callerAccountId || GrantRole.BRANCH_OWNER in effectiveRoles(tree, callerAccountId, grants))
+
     private fun effectiveRoles(tree: Tree, callerAccountId: AccountId, grants: List<Grant>): List<GrantRole> =
         grants.filter { it.treeId == tree.id && it.accountId == callerAccountId }
             .mapNotNull { GrantRules.effectiveRole(it.role, it.branch) }

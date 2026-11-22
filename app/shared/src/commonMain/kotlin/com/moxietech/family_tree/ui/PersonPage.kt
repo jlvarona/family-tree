@@ -810,7 +810,7 @@ private fun sourceTypeLabel(type: String): StringResource = when (type) {
     else -> Res.string.source_type_other
 }
 
-private fun eventLabel(type: String): StringResource = when (type) {
+internal fun eventLabel(type: String): StringResource = when (type) {
     EventType.BIRTH.name -> Res.string.event_birth
     EventType.DEATH.name -> Res.string.event_death
     EventType.MARRIAGE.name -> Res.string.event_marriage

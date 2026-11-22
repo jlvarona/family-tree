@@ -353,12 +353,11 @@ empty, `MEDIA_S3_BUCKET` and `MEDIA_S3_REGION`; never set `MEDIA_S3_CREATE_BUCKE
 
 ## Invitations
 
-Invitations, member linking, and grant management are **off by default**. Keep them
-off for real users until FT-014 change proposals are done (FT-013 grant-based
-living-person redaction is). While off, the invitation, member, and grant routes aren't
+Invitations, member linking, grant management, and change proposals are **off by default**.
+Set `INVITATIONS_ENABLED=true` to enable the verified sharing workflow together.
+While off, the invitation, member, and grant routes aren't
 installed: every caller, signed in or not, gets the plain `404` of an unknown route, and
-nothing is read or written. Turn them on only on a local stack with disposable accounts
-and data:
+nothing is read or written. The settings are:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -411,6 +410,33 @@ Keycloak; Keycloak's default `email` scope puts `email_verified` in access token
 signs in if needed, then shows "Accept invitation"; accepting opens the tree. The owner
 has no web UI for creating invitations yet: create them with `curl` and the owner's
 access token as in "Running a local copy end to end".
+
+## Change proposals
+
+Change proposals (FT-014) are the second half of sharing and have no setting of their
+own: `INVITATIONS_ENABLED=true` (above) turns on invitations and proposals together.
+With it off (the default), production keeps FT-012's `403` for edits outside a member's
+branches and the routes below don't exist. With it on, a contributor's person, union,
+child-link, event or citation write outside their live reach is queued (`202 Accepted`
+with the proposal) instead of refused.
+
+- `GET /api/v1/trees/{treeId}/capabilities`: what the caller may do in the tree
+  (`canEdit`, `canWriteTreeWide`, `canReview`, `proposals`), for showing controls.
+- `GET /api/v1/trees/{treeId}/proposals` and `GET …/proposals/{proposalId}`: the
+  proposals the caller made or may review. A reviewer is the tree owner, or a branch
+  owner whose BRANCH_OWNER grants cover every person the change affects. Stored values
+  appear only for people the caller can see.
+- `POST …/proposals/{proposalId}/approve` with `{version, fields?}` (`fields` are
+  `ProposalField` names such as `GIVEN_NAMES` or `UNION_DATES`; omitted means all):
+  applies the approved fields through the same write, as the reviewer. A target changed
+  since the proposal is a `409` and the proposal stays pending. Only the tree owner can
+  approve a change that would let its author edit or see more.
+- `POST …/proposals/{proposalId}/reject` with `{version}` (reviewers) and
+  `POST …/proposals/{proposalId}/withdraw` with `{version}` (the proposer).
+
+In the web client, contributors get Add person and Link child on the tree screen. A
+queued union or child link closes the form with a notice. "Change proposals" in the
+toolbar (or the notice) opens the review panel.
 
 ## Running a local copy end to end
 

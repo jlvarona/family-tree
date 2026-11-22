@@ -8,6 +8,10 @@ import com.moxietech.family_tree.api.UpdatePersonRequest
 import com.moxietech.family_tree.domain.AccountId
 import com.moxietech.family_tree.domain.PersonId
 import com.moxietech.family_tree.domain.TreeId
+import com.moxietech.family_tree.server.collaboration.ChangeProposalSettings
+import com.moxietech.family_tree.server.collaboration.respondDeleteOutcome
+import com.moxietech.family_tree.server.collaboration.respondOutcome
+import com.moxietech.family_tree.server.collaboration.writeMode
 import com.moxietech.family_tree.server.config.OIDC_AUTH_NAME
 import com.moxietech.family_tree.server.errors.NotFoundException
 import com.moxietech.family_tree.server.identity.currentAccount
@@ -24,7 +28,12 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.put
 import io.ktor.server.routing.route
 
-fun Route.personRoutes() {
+/**
+ * FT-014: with [proposals] enabled, a person update or delete the caller can't make live
+ * answers `202` with the queued proposal. Creates, merges and photos never propose.
+ */
+fun Route.personRoutes(proposals: ChangeProposalSettings = ChangeProposalSettings.DISABLED) {
+    val mode = proposals.writeMode
     authenticate(OIDC_AUTH_NAME) {
         route("/api/v1/trees/{treeId}/people") {
             post {
@@ -63,7 +72,7 @@ fun Route.personRoutes() {
                 requireTreeWriter(treeId, account.id)
                 val personId = PersonId(call.requirePathParam("personId"))
                 val request = call.receive<UpdatePersonRequest>()
-                call.respond(PersonService.updatePerson(treeId, personId, account.id, request))
+                call.respondOutcome(PersonService.updatePersonOutcome(treeId, personId, account.id, request, mode))
             }
             // FT-008: set or remove the profile photo. Write gate before the path ID or
             // body is looked at, like every write (FT-068).
@@ -81,8 +90,7 @@ fun Route.personRoutes() {
                 // Write check before the path ID or ?version= is parsed (FT-068, FT-001).
                 requireTreeWriter(treeId, account.id)
                 val personId = PersonId(call.requirePathParam("personId"))
-                PersonService.deletePerson(treeId, personId, account.id, call.versionParam())
-                call.respond(HttpStatusCode.NoContent)
+                call.respondDeleteOutcome(PersonService.deletePersonOutcome(treeId, personId, account.id, call.versionParam(), mode))
             }
             get("/{personId}/ancestors") {
                 val account = call.currentAccount()
