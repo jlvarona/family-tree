@@ -23,6 +23,14 @@ import com.moxietech.family_tree.server.media.mediaInUse
 import com.moxietech.family_tree.server.permissions.GraphGeneration
 import com.moxietech.family_tree.server.permissions.ReadAccess
 import com.moxietech.family_tree.server.permissions.WriteAccess
+import com.moxietech.family_tree.server.permissions.WriteMode
+import com.moxietech.family_tree.server.permissions.WriteOutcome
+import com.moxietech.family_tree.server.permissions.WriteScope
+import com.moxietech.family_tree.server.permissions.ProposalDraft
+import com.moxietech.family_tree.server.permissions.applied
+import com.moxietech.family_tree.server.collaboration.ProposalPayloads
+import com.moxietech.family_tree.proposals.ProposalOperation
+import kotlinx.serialization.json.JsonObject
 import com.moxietech.family_tree.server.errors.parseVersionParam
 import com.moxietech.family_tree.server.errors.referenced
 import com.moxietech.family_tree.server.errors.requireValid
@@ -110,49 +118,70 @@ object PersonService {
         personId: PersonId,
         callerAccountId: AccountId,
         request: UpdatePersonRequest,
-    ): PersonDto {
+    ): PersonDto = updatePersonOutcome(treeId, personId, callerAccountId, request, WriteMode.DIRECT).applied()
+
+    /** [updatePerson], or (FT-014, [WriteMode.PROPOSE]) a proposal when the caller can't make it live. */
+    internal suspend fun updatePersonOutcome(
+        treeId: TreeId,
+        personId: PersonId,
+        callerAccountId: AccountId,
+        request: UpdatePersonRequest,
+        mode: WriteMode,
+    ): WriteOutcome<PersonDto> {
         TreeService.getTreeForEditor(treeId, callerAccountId)
         val personUuid = parseUuidField("personId", personId.value)
 
         return withContext(DatabaseDispatcher) {
             transaction(transactionIsolation = Connection.TRANSACTION_READ_COMMITTED) {
                 val treeUuid = Uuid.parse(treeId.value)
-                val scope = WriteAccess.begin(treeUuid, callerAccountId, ownerTakesSharedLock = false)
-                val before = TreeScopedLookups.requirePerson(treeUuid, personUuid)
-                scope.requirePerson(personUuid)
-                // FT-012: the path establishes the target, so the branch decision comes
-                // before the body's values: a caller outside the branch learns nothing about them.
-                Validation.validatePersonName(request.givenNames).requireValid()
-                val sex = runCatching { Sex.valueOf(request.sex) }.getOrElse {
-                    throw ValidationException(listOf("Unknown sex '${request.sex}'"))
-                }
-                // FT-013: a writer who can't see this living person can't mark them deceased,
-                // which would open their earlier photo, events and citations to every member.
-                scope.requireNotRevealedByDeath(before, request.isLiving)
-                if (before.version != request.version) throw staleVersion("Person", before.id.value)
-                val after = PersonRepository.update(
-                    treeId = treeUuid,
-                    id = personUuid,
-                    expectedVersion = request.version,
-                    givenNames = request.givenNames,
-                    surnamePaternal = request.surnamePaternal,
-                    surnameMaternal = request.surnameMaternal,
-                    sex = sex,
-                    isLiving = request.isLiving,
-                    bio = request.bio,
-                ) ?: throw staleVersion("Person", before.id.value)
-                val dto = after.toDto()
-                AuditLogRepository.append(
-                    treeId = treeUuid,
-                    actorAccountId = Uuid.parse(callerAccountId.value),
-                    entityType = "Person",
-                    entityId = after.id.value,
-                    action = AuditAction.UPDATE,
-                    beforeJson = AuditJson.encodeToString(before.toDto()),
-                    afterJson = AuditJson.encodeToString(dto),
-                )
-                scope.viewer().project(after)
+                val scope = WriteAccess.begin(treeUuid, callerAccountId, ownerTakesSharedLock = false, mode = mode)
+                updatePersonIn(scope, treeUuid, personUuid, request)
             }
+        }
+    }
+
+    /**
+     * The person update inside a write transaction that [scope] began: the live write, the
+     * proposal (FT-014 propose mode) and an approved proposal's replay (review mode) share it.
+     */
+    internal fun updatePersonIn(scope: WriteScope, treeUuid: Uuid, personUuid: Uuid, request: UpdatePersonRequest): WriteOutcome<PersonDto> {
+        val before = TreeScopedLookups.requirePerson(treeUuid, personUuid)
+        scope.requirePerson(personUuid)
+        // FT-012: the path establishes the target, so the branch decision comes
+        // before the body's values: a caller outside the branch learns nothing about them.
+        Validation.validatePersonName(request.givenNames).requireValid()
+        val sex = runCatching { Sex.valueOf(request.sex) }.getOrElse {
+            throw ValidationException(listOf("Unknown sex '${request.sex}'"))
+        }
+        // FT-013: a writer who can't see this living person can't mark them deceased,
+        // which would open their earlier photo, events and citations to every member.
+        scope.requireNotRevealedByDeath(before, request.isLiving)
+        if (before.version != request.version) throw staleVersion("Person", before.id.value)
+        return scope.tentatively({
+            ProposalDraft(ProposalOperation.UPDATE_PERSON, personUuid.toString(), before.version, ProposalPayloads.of(request))
+        }) {
+            val after = PersonRepository.update(
+                treeId = treeUuid,
+                id = personUuid,
+                expectedVersion = request.version,
+                givenNames = request.givenNames,
+                surnamePaternal = request.surnamePaternal,
+                surnameMaternal = request.surnameMaternal,
+                sex = sex,
+                isLiving = request.isLiving,
+                bio = request.bio,
+            ) ?: throw staleVersion("Person", before.id.value)
+            val dto = after.toDto()
+            AuditLogRepository.append(
+                treeId = treeUuid,
+                actorAccountId = Uuid.parse(scope.caller.value),
+                entityType = "Person",
+                entityId = after.id.value,
+                action = AuditAction.UPDATE,
+                beforeJson = AuditJson.encodeToString(before.toDto()),
+                afterJson = AuditJson.encodeToString(dto),
+            )
+            scope.viewer().project(after)
         }
     }
 
@@ -236,19 +265,44 @@ object PersonService {
      * audits before = the person, after = null, in the same transaction.
      */
     suspend fun deletePerson(treeId: TreeId, personId: PersonId, callerAccountId: AccountId, version: List<String>?) {
+        deletePersonOutcome(treeId, personId, callerAccountId, version, WriteMode.DIRECT).applied()
+    }
+
+    /** [deletePerson], or (FT-014) a proposal. */
+    internal suspend fun deletePersonOutcome(
+        treeId: TreeId,
+        personId: PersonId,
+        callerAccountId: AccountId,
+        version: List<String>?,
+        mode: WriteMode,
+    ): WriteOutcome<Unit> {
         TreeService.getTreeForEditor(treeId, callerAccountId)
         val personUuid = parseUuidField("personId", personId.value)
         val treeUuid = Uuid.parse(treeId.value)
-        RecordDeletion.guarded("Person", personUuid.toString(), RecordDeletion.PERSON_FOREIGN_KEYS) {
+        return RecordDeletion.guarded("Person", personUuid.toString(), RecordDeletion.PERSON_FOREIGN_KEYS) {
             // First, before the person's row lock: a grant-scope rebuild (which needs
             // FOR KEY SHARE on the people it stores) never runs while this holds the
             // person FOR UPDATE (FT-010). Shared for the owner, exclusive otherwise.
-            val scope = WriteAccess.begin(treeUuid, callerAccountId, ownerTakesSharedLock = true)
-            val before = TreeScopedLookups.requirePerson(treeUuid, personUuid)
-            scope.requirePerson(personUuid)
-            // FT-012: the version is checked only once the branch allows the delete.
-            val expected = parseVersionParam(version)
-            if (before.version != expected) throw staleVersion("Person", before.id.value)
+            val scope = WriteAccess.begin(treeUuid, callerAccountId, ownerTakesSharedLock = true, mode = mode)
+            deletePersonIn(scope, treeUuid, personUuid, version)
+        }
+    }
+
+    /** The person delete inside a write transaction [scope] began (live, proposal or approved replay). */
+    internal fun deletePersonIn(scope: WriteScope, treeUuid: Uuid, personUuid: Uuid, version: List<String>?): WriteOutcome<Unit> {
+        val before = TreeScopedLookups.requirePerson(treeUuid, personUuid)
+        scope.requirePerson(personUuid)
+        // FT-012: the version is checked only once the branch allows the delete.
+        val expected = parseVersionParam(version)
+        if (before.version != expected) throw staleVersion("Person", before.id.value)
+        return scope.tentatively({
+            ProposalDraft(ProposalOperation.DELETE_PERSON, personUuid.toString(), before.version, JsonObject(emptyMap()))
+        }) {
+            // FT-014 review fix: the reference check runs only on the authorized path (a live
+            // delete or an approved replay). A person's references can be facts hidden from
+            // the caller (a private event, a union with a hidden partner), so answering a
+            // proposer "still referenced" would confirm they exist; a queued delete of a
+            // referenced person is refused when a reviewer approves it.
             if (RecordDeletion.personIsReferenced(treeUuid, personUuid)) throw referenced("Person", before.id.value)
             // The person's cached grant-scope rows are derived and cascade with it (V7).
             if (PersonRepository.delete(treeUuid, personUuid, expected) == 0) throw staleVersion("Person", before.id.value)
@@ -256,7 +310,7 @@ object PersonService {
             GraphGeneration.advance(treeUuid)
             AuditLogRepository.append(
                 treeId = treeUuid,
-                actorAccountId = Uuid.parse(callerAccountId.value),
+                actorAccountId = Uuid.parse(scope.caller.value),
                 entityType = "Person",
                 entityId = before.id.value,
                 action = AuditAction.DELETE,

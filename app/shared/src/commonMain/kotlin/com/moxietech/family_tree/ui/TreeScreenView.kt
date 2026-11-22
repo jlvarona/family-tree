@@ -42,6 +42,7 @@ import com.moxietech.family_tree.state.AppState
 import com.moxietech.family_tree.state.FamilyTreeController
 import com.moxietech.family_tree.state.Loadable
 import com.moxietech.family_tree.state.Notice
+import com.moxietech.family_tree.state.QueuedChange
 import com.moxietech.family_tree.state.TreeScreen
 import com.moxietech.family_tree.state.Viewer
 import com.moxietech.family_tree.tree.GraphSlice
@@ -65,6 +66,9 @@ import family_tree.app.shared.generated.resources.merge_people
 import family_tree.app.shared.generated.resources.merge_review
 import family_tree.app.shared.generated.resources.merge_with
 import family_tree.app.shared.generated.resources.none_recorded
+import family_tree.app.shared.generated.resources.notice_child_link_queued
+import family_tree.app.shared.generated.resources.notice_union_queued
+import family_tree.app.shared.generated.resources.proposals_open
 import family_tree.app.shared.generated.resources.notice_child_linked
 import family_tree.app.shared.generated.resources.notice_duplicates
 import family_tree.app.shared.generated.resources.open_page
@@ -120,6 +124,13 @@ private fun TreeContent(
         MergePeoplePane(merge, graph, label, controller)
         return
     }
+    // FT-014: the change-proposal panel, offered only when the server's snapshot allows it.
+    val proposals = screen.proposals
+    if (proposals != null && FamilyTreeController.canUseProposals(screen)) {
+        ProposalsPane(proposals, graph, label, controller)
+        return
+    }
+    val canEdit = FamilyTreeController.canEditGraph(screen, viewer)
 
     when (dialog) {
         TreeDialog.ADD_PERSON -> AddPersonForm(
@@ -143,11 +154,11 @@ private fun TreeContent(
             onEdit = controller::clearFormError,
         )
         null -> Column(Modifier.fillMaxSize()) {
-            Toolbar(screen, graph, viewer, label, onDialog = { dialog = it }, controller = controller)
-            screen.notice?.let { NoticeBanner(it, viewer, controller) }
+            Toolbar(screen, graph, viewer, canEdit, label, onDialog = { dialog = it }, controller = controller)
+            screen.notice?.let { NoticeBanner(it, screen, viewer, controller) }
             Row(Modifier.fillMaxSize()) {
                 Box(Modifier.weight(1f).fillMaxHeight().padding(start = 24.dp, end = 24.dp, bottom = 24.dp)) {
-                    CanvasArea(screen, graph, peopleById, viewer, controller, onAddPerson = { dialog = TreeDialog.ADD_PERSON })
+                    CanvasArea(screen, graph, peopleById, viewer, canEdit, controller, onAddPerson = { dialog = TreeDialog.ADD_PERSON })
                 }
                 VerticalDivider(color = Palette.border)
                 SelectedPersonPanel(
@@ -172,6 +183,7 @@ private fun Toolbar(
     screen: TreeScreen,
     graph: TreeGraphDto,
     viewer: Viewer,
+    canEdit: Boolean,
     label: (PersonDto) -> String,
     onDialog: (TreeDialog) -> Unit,
     controller: FamilyTreeController,
@@ -198,17 +210,25 @@ private fun Toolbar(
             onSelect = { controller.centerOn(it.id) },
             enabled = graph.people.isNotEmpty(),
         )
-        if (viewer.canWrite) {
+        // FT-014: adding people and linking children follow the server's capability snapshot,
+        // so contributors reach them (out-of-branch links are queued for review); merging
+        // stays with the owner.
+        if (canEdit) {
             Spacer(Modifier.width(12.dp))
             Button(onClick = { onDialog(TreeDialog.ADD_PERSON) }) { Text(stringResource(Res.string.add_person)) }
             OutlinedButton(
                 onClick = { onDialog(TreeDialog.LINK_CHILD) },
                 enabled = graph.people.size >= 2,
             ) { Text(stringResource(Res.string.link_child)) }
+        }
+        if (viewer.canWrite) {
             OutlinedButton(
                 onClick = { controller.startMerge() },
                 enabled = graph.people.size >= 2,
             ) { Text(stringResource(Res.string.merge_people)) }
+        }
+        if (FamilyTreeController.canUseProposals(screen)) {
+            OutlinedButton(onClick = controller::openProposals) { Text(stringResource(Res.string.proposals_open)) }
         }
     }
 }
@@ -219,14 +239,15 @@ private fun CanvasArea(
     graph: TreeGraphDto,
     peopleById: Map<String, PersonDto>,
     viewer: Viewer,
+    canEdit: Boolean,
     controller: FamilyTreeController,
     onAddPerson: () -> Unit,
 ) {
     if (graph.people.isEmpty()) {
         MessagePane(
-            message = if (viewer.canWrite) Res.string.tree_empty_owner else Res.string.tree_empty,
-            actionLabel = if (viewer.canWrite) Res.string.add_person else null,
-            onAction = if (viewer.canWrite) onAddPerson else null,
+            message = if (canEdit) Res.string.tree_empty_owner else Res.string.tree_empty,
+            actionLabel = if (canEdit) Res.string.add_person else null,
+            onAction = if (canEdit) onAddPerson else null,
         )
         return
     }
@@ -290,7 +311,7 @@ private fun CanvasArea(
 }
 
 @Composable
-private fun NoticeBanner(notice: Notice, viewer: Viewer, controller: FamilyTreeController) {
+private fun NoticeBanner(notice: Notice, screen: TreeScreen, viewer: Viewer, controller: FamilyTreeController) {
     val privateLabel = stringResource(Res.string.private_person)
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 12.dp)
@@ -299,6 +320,16 @@ private fun NoticeBanner(notice: Notice, viewer: Viewer, controller: FamilyTreeC
     ) {
         when (notice) {
             Notice.ChildLinked -> Text(stringResource(Res.string.notice_child_linked), color = Palette.accent, modifier = Modifier.weight(1f))
+            is Notice.ChangeQueued -> {
+                Text(
+                    stringResource(if (notice.what == QueuedChange.UNION) Res.string.notice_union_queued else Res.string.notice_child_link_queued),
+                    color = Palette.accent,
+                    modifier = Modifier.weight(1f),
+                )
+                if (FamilyTreeController.canUseProposals(screen)) {
+                    TextButton(onClick = controller::openProposals) { Text(stringResource(Res.string.proposals_open)) }
+                }
+            }
             is Notice.PossibleDuplicates -> Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(stringResource(Res.string.notice_duplicates), color = Palette.accent)
                 notice.candidates.forEach { candidate ->

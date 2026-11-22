@@ -9,10 +9,229 @@ up to date in place, not logged chronologically.
 
 ---
 
+## 2026-11-22 — FT-014 change proposals
+
+Status: implementation and review fixes verified locally. The independent review ran
+109 core JVM tests, 245 server tests (one opt-in Keycloak test skipped), and 185 shared
+JVM tests successfully, and built both browser clients. The complete live
+Keycloak/PostgreSQL API scenario passed, including the formerly leaking hidden-person
+delete. Both live browser workflows passed, English on JS and Spanish on Wasm.
+Each shared browser suite ran all 185 tests successfully. Required PR CI is enforced
+before merging.
+Proposals are on **only with the sharing gate `INVITATIONS_ENABLED=true`** (the first
+draft's separate `CHANGE_PROPOSALS_ENABLED` was removed in review). While off,
+behaviour is exactly FT-013's: every refusal below is the same `403`, and the proposal
+routes are unknown routes (`404`). Decisions table: "Change proposals (FT-014)". Open
+follow-ups are under the concept doc's "Still open".
+
+**Review fixes (2026-11-22).** The preliminary independent verification passed 109 core
+tests, the focused proposal suite and the live partial-approval, race, stale,
+withdrawal, audit and moved-event redaction checks. It confirmed one privacy leak live
+and the workflow findings below:
+- **Hidden dependency on delete.** A contributor's `DELETE` of a person outside their
+  branch answered `409 still referenced` when the only reference was an event hidden from
+  them. `deletePersonIn` and `deleteUnionIn` checked references before queueing. The
+  reference checks (and the event delete's citation check) now run inside `tentatively`'s
+  change, only for a live delete or an approved replay. A queued delete answers `202`
+  like any other, and the reviewer gets the `409`. A live referenced delete is still
+  `409`.
+- **One sharing gate.** `ChangeProposalSettings.forSharing(InvitationSettings)` makes
+  `INVITATIONS_ENABLED` switch invitations and proposals together. `Application.module`
+  lost its `proposals` parameter.
+- **Only the tree owner approves an expansion of the author's access** (user decision,
+  2026-11-22; decisions table). The first draft refused a branch owner's approval only
+  for graph reach. Replays by a branch owner now also refuse:
+  - marking a living person hidden from the author deceased
+    (`requireNotRevealedByDeath`);
+  - a union or event leaving a person hidden from the author for people all visible to
+    them (`requireNoHiddenSubjectRemoved` → `requireProposerNotExposedByMove`).
+
+  Both are decided on the state at approval and scoped to what is newly exposed: a
+  person the author already sees, or a move onto someone still hidden from them, is
+  allowed.
+- **Reachable UI.** The add-person and link-child controls were owner-only
+  (`Viewer.canWrite`), so contributors never reached the queued notice. A new capability
+  snapshot, `GET …/capabilities` (`TreeCapabilitiesDto`; `:core`
+  `TreePermissions.canReviewSomewhere`), drives those controls. Merges and photos stay
+  owner-only. The notice now says whether the new union or the child link was queued.
+  The new `ProposalsPane` on the tree screen (toolbar, or the notice) lists the
+  server's proposals and renders the redacted values (IDs as names from the bundle,
+  enums localized). Updates get field checkboxes. Approve, reject and withdraw send the
+  proposal's version and appear only with `canReview`/`canWithdraw`. A `409` reloads the
+  list and tree with a localized message. Loading, empty, failure, retry, stale and
+  outcome states are shown. EN/ES strings. No notifications.
+- **Read context for reviewers** (found during independent UI review). The panel
+  showed every place, source and event outside the bundle as the same "another record",
+  so a reviewer couldn't tell which fact a proposal used. A pending event or child-link
+  delete didn't say which record it removes either.
+  - **Server:** `ChangeProposalDto.references` (`ProposalReferenceDto`) describes the
+    places (name, hierarchy) and sources (title, type) a proposal names, in its target
+    and in every `…Id` of the values shown. These are tree-wide records every member can
+    list. It also describes events (type, date as typed, person or union), but only while
+    the caller can see every person the event is about. A hidden event is left out, as if
+    it didn't exist. Lookups are by the proposal's tree.
+  - **Client:** `state/ProposalContext` describes targets and IDs from the bundle and
+    these references. A child link is "child, in the union of A & B", an event is "Birth
+    of Ana · 1915", and a place is "Lima · Peru". Anything else is still "another
+    record"; raw IDs are never shown and nothing is fetched. A withdrawal's answer keeps
+    the context already shown, and the list is read again after every decision.
+- **Final reviewer corrections.** Added the missing test assertion import and kept
+  the panel available to active members after their editing grant is removed, so
+  they can still inspect and withdraw their own pending proposals. The controller
+  regression covers a member with neither edit nor review capability.
+- **Verification.** Ran `:core:jvmTest :server:test :server:installDist
+  :app:shared:jvmTest`, built both development web bundles, and ran all 185 shared
+  tests in each real JS and Wasm browser suite. Live tests used disposable
+  PostgreSQL 16 and Keycloak with verified sign-ins. They exercised the hidden
+  dependency fix, partial and concurrent approvals, stale versions, withdrawal,
+  audit counts, and hidden-event redaction after a move. The English JS and Spanish
+  Wasm UI tests submitted a union, confirmed the child remained unlinked pending
+  review, approved only the name field, checked the biography stayed unchanged,
+  and withdrew the author's pending union. Screenshots were visually checked.
+  The one opt-in live-Keycloak integration test was skipped by the standard suite;
+  the separate live browser checks used Keycloak.
+
+The user requested a pause after FT-014 merges to inspect progress. FT-015 remains
+next in the ordered backlog.
+- **Tests added and verified**:
+  - `ChangeProposalTest` (context): two places, a source and the edited event are each
+    named, for the owner and the proposer. An event the proposer could see when they
+    proposed deleting it, and later can't, is no longer described to them (no type or
+    notes in the response) but still is to the owner.
+  - `ProposalContextTest`: places and sources are distinguished; an event names its
+    type, date and person or union; a child link names the child and the union; whatever
+    the server left out stays unknown.
+  - `ChangeProposalTest`:
+    - death refused for a whole-tree branch owner, then allowed once the author sees the
+      person;
+    - a union dropping a hidden partner and an event moving to a visible person refused,
+      a move onto a hidden person allowed, the owner approving the expansion;
+    - a hidden-dependency delete answering exactly like an unreferenced one, with the
+      reviewer's and the live `409`;
+    - a revoked branch-owner grant reviewing nothing;
+    - another tree's approve URL as the generic `404`;
+    - capability snapshots per role, and with sharing off.
+  - `FamilyTreeControllerTest`:
+    - the snapshot gates controls and the panel;
+    - a failed snapshot leaves owner-only controls;
+    - selected-field approval at the shown version;
+    - no field selected is a local error;
+    - a `409` reloads the list and tree;
+    - actions follow `canReview`/`canWithdraw`;
+    - queued union vs. child-link notices.
+  - `HttpFamilyTreeApiTest`: the capability and proposal routes, with their bodies.
+
+- **Which writes propose.** These writes go through the same path: person update and
+  delete; union create, update and delete; child-link create, update and delete; event
+  create, update and delete; and citation create. Each service now does its work in
+  `…In(scope, …)` functions that run inside a transaction `WriteAccess` began. In
+  `WriteMode.PROPOSE`, a member who can contribute is queued as a proposal (`202` with
+  the `ChangeProposalDto`) where FT-012 and FT-013 refused them:
+  - an outside-the-branch check (`OUTSIDE_BRANCH`);
+  - a reveal check (`REVEALS_PRIVATE`): marking a hidden person deceased, or dropping a
+    hidden union partner or event subject;
+  - a post-change reach check (`requireNoGainedReach`: `WIDENS_REACH`, or
+    `REVEALS_PRIVATE`). Here the change runs inside a JDBC savepoint and is rolled back
+    to it, generation advance included, before the proposal is stored.
+
+  The write still validates its body (`400`), resolves IDs in the tree (`404`) and checks
+  the version (`409`) before anything is queued; a delete's reference checks run only on
+  the authorized path (review fix below). A pending proposal writes
+  only its `change_proposal` row and a `ChangeProposal` `CREATE` audit entry.
+- **What stays refused.** These are refused exactly as before and never queued:
+  - viewers, linked members without an editing grant, invitees and non-members;
+  - an event hidden from the caller: the missing-event `404`, decided before any proposal,
+    so it stays indistinguishable from a random ID;
+  - tree-wide and owner-only operations: places, sources, media uploads, attaching
+    photos or scans (`requireTreeWide`), profile-photo writes, merges, grants,
+    invitations and member linking. Person creation is always live.
+- **Review** (`:core` `ReviewAuthority`). The tree owner reviews everything. Anyone else
+  needs an effective BRANCH_OWNER grant covering every subject. A proposal's subjects are
+  every person its checks touched, before and after the change. A whole-tree ADMIN and a
+  CONTRIBUTOR don't review. A proposer can't review their own proposal (`403`) but can
+  withdraw it. `WriteAccess.beginReview` takes the graph lock (exclusive for a non-owner)
+  and locks the reviewer's membership and grants. For a branch owner, `attachProposer`
+  also locks the proposer's membership and grants. After the replayed change, the
+  approval is refused (`403` `reviewWidensProposerMessage`) if it would widen the
+  proposer's edit reach or reveal anyone to them. Only the tree owner can approve that.
+- **Approval** (`ChangeProposalService.approve`). One READ COMMITTED transaction:
+  1. `beginReview`.
+  2. Lock the proposal `FOR UPDATE`. Then: `404` unless the caller may review it, `403`
+     for one's own proposal, `409` if it's already decided or the version differs.
+  3. Validate the approved fields (`400`).
+  4. Replay the same `…In` write in `WriteMode.REVIEW`. Every person a check touches must
+     be reviewable, and the reviewer's own reach checks apply.
+  5. Mark the proposal `APPLIED` and add the `ChangeProposal` `UPDATE` audit entry.
+
+  Graph changes are audited by the existing code with the reviewer as actor. Updates are
+  approved per field (`:core` `ProposalOperation`/`ProposalField`). Groups that move
+  together are a union's partners, its start and end dates, and an event's person or
+  union. Unapproved fields are sent as stored, at the base version
+  (`ProposalFields.compose`). A record that changed is the write's own stale `409`, and
+  the proposal stays pending. A second reviewer, a retry, or an approval racing a
+  withdrawal waits on the row lock and gets `409`. Foreign-key and duplicate-link
+  failures map to `409` after rollback, as for live writes.
+- **Reject and withdraw.** Rejection uses the same gates and locks, writes no graph
+  change and audits the transition. Only the proposer can withdraw. Anyone else gets the
+  generic `404`, and the owner gets a `403`.
+- **Redaction** (`ChangeProposalViews`). Only the proposer and the proposal's reviewers
+  see a proposal; for everyone else it's the `404` of a missing ID. A reader sees:
+  - the proposed values: the proposer's own input;
+  - the stored values (`current`), the per-field `changed` flag and `stale`, only when the
+    reader can see every person the record is about (`ViewerPolicy.canSeeAll`).
+
+  Subjects are never returned. So a proposer who queued an edit to a hidden living person
+  sees only their own values, not even whether the record changed. The `202` response
+  carries only the proposer's values.
+- **Routes** (`changeProposalRoutes`, only when enabled): `GET …/proposals`,
+  `GET …/proposals/{id}`, `POST …/proposals/{id}/approve|reject|withdraw` (bodies:
+  `ApproveProposalRequest`, `DecideProposalRequest`). Reviewer gate before the body is
+  decoded. Graph routes take the `ChangeProposalSettings` from `Application.module`.
+- **Web client.** `FamilyTreeApi.createUnion` and `addChild` return
+  `WriteResult.Applied` or `WriteResult.Queued` (`202`). The link-child form, the
+  existing client flow that can get a queued result, closes with the localized
+  `Notice.ChangeQueued` (EN/ES). When the new union itself is queued, no child link is
+  attempted. Other client writes are owner-only or never propose. (The review panel and
+  contributor controls came with the review fixes above.)
+
+**Schema.** V10 `change_proposal` (see "Database design").
+
+**Tests added and verified.**
+- `core` `ChangeProposalsTest`: reviewer rule (owner; branch owner across one or more
+  owned branches; cross-branch; contributors, viewers, admins and limited admins don't
+  review), approved-field validation and grouping, compose, slice, differs.
+- `server` `ChangeProposalTest`, HTTP through the production routes on PostgreSQL 16:
+  - proposals off keep the `403` and have no routes;
+  - an out-of-branch update is queued with no graph or Person audit change, is listed
+    only to the proposer and reviewers, and is refused for contributors, viewers and
+    admins as reviewers;
+  - a wrong field is a `400`; a per-field owner approval applies only the given names,
+    is audited as the owner's, and can't be applied twice;
+  - branch-owner approval, withdrawal (and its `404`/`403`), and rejection;
+  - a stale proposal is shown as stale and refused with nothing written, then stays
+    pending;
+  - cross-branch and reach-widening proposals: hidden from the aunt-branch owner, refused
+    for a whole-tree branch owner because the proposer would widen their reach, approved
+    by the owner;
+  - two concurrent approvals apply once;
+  - hidden events are the same `404` as random IDs for update and delete, and nothing is
+    queued; marking a hidden person deceased is `REVEALS_PRIVATE`, with no stored
+    values, changes or staleness for the proposer and full values for the owner;
+  - an event create outside the branch is queued and then applied;
+  - viewers, members without grants, non-members, places, photo removal, malformed bodies,
+    stale versions and other trees' IDs are refused and never queued;
+  - other-tree proposal reads are refused;
+  - union update grouping, with only `UNION_TYPE` approved.
+- `:app:shared`: queued child link and queued union in `FamilyTreeControllerTest`;
+  `HttpFamilyTreeApiTest` decodes `201` as applied and `202` as a proposal.
+
+---
+
 ## 2026-11-18 — FT-013 grant-based living-person redaction
 
-Status: implemented and revised after review; verification pending, so the story stays
-`In progress` until the user's test runs and live check pass.
+Status: completed and merged in PR #26 after independent review, local verification
+and the required CI check. Grant privacy was also verified against disposable
+Keycloak, PostgreSQL and object storage with the JS and Wasm clients.
 
 Living people are now visible to the tree owner and to an active member whose explicit
 grants cover them, on every response route and in the web client. No schema change.
@@ -2050,7 +2269,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 
 ### Status board
 
-**Done (34)** · **In progress (0)** · **To do (21)** · **Blocked (0)**
+**Done (35)** · **In progress (0)** · **To do (20)** · **Blocked (0)**
 
 | Order | ID | Story | Epic | Priority | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -2088,7 +2307,7 @@ the fact (FT-090 to FT-099) so they don't collide with the IDs already in use.
 | — | FT-011 | Invitations + account-to-person linking | E2 | P1 | Done |
 | — | FT-012 | Grant-based authorization | E2 | P1 | Done |
 | — | FT-013 | Grant-based living-person redaction | E2 | P1 | Done |
-| 9 | FT-014 | `ChangeProposal` workflow | E2 | P1 | To do |
+| — | FT-014 | `ChangeProposal` workflow | E2 | P1 | Done |
 | 10 | FT-015 | Maternal/paternal "side" views | E2 | P1 | To do |
 | 11 | FT-016 | Activity feed UI + revert | E2 | P1 | To do |
 | 12 | FT-062 | Decide which citation source types come first | E7 | P2 | To do |
@@ -2298,9 +2517,19 @@ desktop/shared build repair.
   projection, and from the locked grants inside writes, which also may not reveal hidden
   people indirectly. `PersonDto.redacted` marks placeholders; the web client renders it
   instead of recomputing privacy. Invitations stay off until FT-014.
-- **FT-014 `ChangeProposal` workflow.** `To do · P1 · #9` — out-of-branch edits become
+- **FT-014 `ChangeProposal` workflow.** `Done · P1` — out-of-branch edits become
   a proposal with a before/after diff, approved per field by the branch owner or the
   tree owner.
+
+  Implemented as the second half of the default-off `INVITATIONS_ENABLED` sharing gate
+  (2026-11-22 FT-014 entry): V10 `change_proposal`;
+  the FT-012/FT-013 out-of-branch, reach-widening and reveal refusals of person, union,
+  child-link, event and citation writes become audited proposals; review by the tree
+  owner or the branch owner of every affected person, with only the tree owner approving
+  an expansion of the author's access (user decision); approval replays the same service
+  write with only the approved fields, in one transaction; redacted lists and details;
+  a capability snapshot, contributor graph controls and a localized proposal panel on the
+  web tree screen. Core, server, shared JVM and browser checks and both localized live workflows passed.
 - **FT-015 Maternal/paternal "side" views** (`Branch.direction = SIDE`).
   `To do · P1 · #10` — ancestors of an anchor plus all of their descendants, nothing on
   the other side. The resolution rule (depth caps only the ascent) is in `:core`
@@ -2750,6 +2979,18 @@ indexes on the name columns backing the fuzzy duplicate-check.
 
 **`place`** — `tree_id → tree`; shared within a tree, referenced by `event.place_id`.
 
+**`change_proposal`** (V10, FT-014) — `tree_id → tree`; proposer and reviewer are
+same-tree members (`(tree_id, account_id) → membership`). `operation` (12 values, one per
+proposable write), `target_id` (text: person, union or event ID, `union:child`, or the
+union of a new child link; null for other creates), `base_version`, `payload` (the write's
+JSON body without `version`), `subject_ids uuid[]` (non-empty; no foreign keys), `reason`
+(`OUTSIDE_BRANCH`/`WIDENS_REACH`/`REVEALS_PRIVATE`), `status`
+(`PENDING`/`APPLIED`/`REJECTED`/`WITHDRAWN`), `reviewer_account_id`, `approved_fields`
+(JSON list), `created_at`, `decided_at`, `version`. Checks tie `decided_at` to a
+non-pending status, a reviewer to `APPLIED`/`REJECTED`, and `approved_fields` to
+`APPLIED`. Indexed by `(tree_id, status, created_at desc)` and `(tree_id,
+proposer_account_id)`. Rows are never deleted.
+
 **Versions (FT-001).** `person`, `union_record`, `event` and `source` have had
 `version` since V1; V4 added it to `place` and `union_child` (`not null default 1`, so
 existing rows start at 1). Since V5, `union_child.version` comes from
@@ -2889,7 +3130,10 @@ migration if that changes.
   `TreeService.getTreeForWriter` (FT-068). Repositories filter every lookup by
   `tree_id`, and V2's same-tree foreign keys enforce referential isolation in the
   database (FT-065). FT-017 tracks RLS as a later defense-in-depth measure.
-- **No `change_proposal` table yet.** It comes with FT-014. Grants and their resolved
+- **`change_proposal` (V10, FT-014) has no foreign keys to people.** Its subjects are a
+  `uuid[]`, so a pending proposal never blocks a delete or merge; approval re-resolves
+  everything in the tree. Proposals are created only while the sharing gate
+  `INVITATIONS_ENABLED` is on (off by default). Grants and their resolved
   scopes exist since V7 (FT-010) and invitations since V9 (FT-011, off by default).
   Grants and home branches decide writes since FT-012; grants (not home branches) decide
   living-person read redaction since FT-013.

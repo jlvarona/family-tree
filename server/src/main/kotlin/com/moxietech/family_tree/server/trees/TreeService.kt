@@ -1,5 +1,6 @@
 package com.moxietech.family_tree.server.trees
 
+import com.moxietech.family_tree.api.TreeCapabilitiesDto
 import com.moxietech.family_tree.api.TreeDto
 import com.moxietech.family_tree.domain.AccountId
 import com.moxietech.family_tree.domain.AuditAction
@@ -178,6 +179,30 @@ object TreeService {
                     )
                 }
                 read(tree)
+            }
+        }
+
+    /**
+     * FT-014: the caller's capabilities in [treeId] for client controls, from the same
+     * `:core` rules the writes use, in one read-only snapshot (same 404 and 403 as reads).
+     * [sharing] is the sharing gate (`INVITATIONS_ENABLED`): without it nobody reviews.
+     */
+    suspend fun capabilities(treeId: TreeId, callerAccountId: AccountId, sharing: Boolean): TreeCapabilitiesDto =
+        withContext(DatabaseDispatcher) {
+            transaction(transactionIsolation = Connection.TRANSACTION_REPEATABLE_READ, readOnly = true) {
+                val (tree, membership) = loadTreeAndMembership(treeId, callerAccountId)
+                if (!TreePermissions.canRead(tree, callerAccountId, membership)) {
+                    throw ForbiddenException("Not a member of tree ${treeId.value}")
+                }
+                val grants = grantsOf(tree, callerAccountId)
+                TreeCapabilitiesDto(
+                    treeId = tree.id.value,
+                    isOwner = tree.ownerAccountId == callerAccountId,
+                    canEdit = TreePermissions.canEditSomewhere(tree, callerAccountId, membership, grants),
+                    canWriteTreeWide = TreePermissions.canWriteTreeWide(tree, callerAccountId, membership, grants),
+                    canReview = sharing && TreePermissions.canReviewSomewhere(tree, callerAccountId, membership, grants),
+                    proposals = sharing,
+                )
             }
         }
 

@@ -22,6 +22,13 @@ import com.moxietech.family_tree.server.media.MediaAttachments
 import com.moxietech.family_tree.server.media.mediaInUse
 import com.moxietech.family_tree.server.permissions.ReadAccess
 import com.moxietech.family_tree.server.permissions.WriteAccess
+import com.moxietech.family_tree.server.permissions.WriteMode
+import com.moxietech.family_tree.server.permissions.WriteOutcome
+import com.moxietech.family_tree.server.permissions.WriteScope
+import com.moxietech.family_tree.server.permissions.ProposalDraft
+import com.moxietech.family_tree.server.permissions.applied
+import com.moxietech.family_tree.server.collaboration.ProposalPayloads
+import com.moxietech.family_tree.proposals.ProposalOperation
 import com.moxietech.family_tree.server.trees.TreeService
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
@@ -62,16 +69,22 @@ object CitationService {
      * the citation. Attaching a scan needs the owner or a whole-tree admin, checked
      * before the media is touched (an unattached image is the owner's only).
      */
-    suspend fun createCitation(treeId: TreeId, callerAccountId: AccountId, request: CreateCitationRequest): CitationDto {
+    suspend fun createCitation(treeId: TreeId, callerAccountId: AccountId, request: CreateCitationRequest): CitationDto =
+        createCitationOutcome(treeId, callerAccountId, request, WriteMode.DIRECT).applied()
+
+    /**
+     * [createCitation], or (FT-014) a proposal for a fact outside the caller's branches. A
+     * scan is never proposed: attaching media stays a tree-wide operation (403).
+     */
+    internal suspend fun createCitationOutcome(
+        treeId: TreeId,
+        callerAccountId: AccountId,
+        request: CreateCitationRequest,
+        mode: WriteMode,
+    ): WriteOutcome<CitationDto> {
         val tree = TreeService.getTreeForEditor(treeId, callerAccountId)
         val treeUuid = Uuid.parse(tree.id.value)
-        val sourceUuid = parseUuidField("sourceId", request.sourceId)
-        val kind = CitationTargetKind.parse(request.targetType)
-            ?: throw ValidationException(listOf("Unknown citation target type '${request.targetType}'"))
-        val target = CitationTargetRef(kind, parseUuidField("targetId", request.targetId))
-        val confidence = Confidence.entries.firstOrNull { it.level == request.confidence }
-            ?: throw ValidationException(listOf(CITATION_CONFIDENCE_MESSAGE))
-        val mediaUuid = parseOptionalUuidField("mediaId", request.mediaId)
+        validCitation(request)
 
         return withContext(DatabaseDispatcher) {
             // READ COMMITTED (stated, not assumed): a lock that waited for a delete must
@@ -81,41 +94,65 @@ object CitationService {
             transaction(transactionIsolation = Connection.TRANSACTION_READ_COMMITTED) {
                 // FT-012 first: the owner takes no graph lock here, as before; anyone else
                 // takes it exclusive, so the target's people and branches stay as decided.
-                val scope = WriteAccess.begin(treeUuid, callerAccountId, ownerTakesSharedLock = false)
-                if (!CitationRepository.lockSource(treeUuid, sourceUuid)) {
-                    throw NotFoundException("No source with id $sourceUuid")
-                }
-                if (!CitationRepository.lockTarget(treeUuid, target)) throw target.kind.notFound(target.id)
-                scope.requireFact(
-                    subjectsOf(treeUuid, target),
-                    missing = if (target.kind == CitationTargetKind.EVENT) ({ target.kind.notFound(target.id) }) else null,
-                )
-                if (mediaUuid != null) {
-                    scope.requireTreeWide()
-                    MediaAttachments.lockForAttaching(treeUuid, mediaUuid, MediaPurpose.CITATION_SCAN)
-                    if (CitationRepository.findByMedia(treeUuid, mediaUuid) != null) throw mediaInUse(mediaUuid)
-                }
-                val citation = CitationRepository.insert(
-                    treeId = treeUuid,
-                    sourceId = sourceUuid,
-                    target = target,
-                    page = request.page,
-                    confidence = confidence,
-                    note = request.note,
-                    mediaId = mediaUuid,
-                )
-                val dto = citation.toDto()
-                AuditLogRepository.append(
-                    treeId = treeUuid,
-                    actorAccountId = Uuid.parse(callerAccountId.value),
-                    entityType = "Citation",
-                    entityId = citation.id.value,
-                    action = AuditAction.CREATE,
-                    beforeJson = null,
-                    afterJson = AuditJson.encodeToString(dto),
-                )
-                dto
+                val scope = WriteAccess.begin(treeUuid, callerAccountId, ownerTakesSharedLock = false, mode = mode)
+                createCitationIn(scope, treeUuid, request)
             }
+        }
+    }
+
+    private class ValidCitation(val source: Uuid, val target: CitationTargetRef, val confidence: Confidence, val media: Uuid?)
+
+    private fun validCitation(request: CreateCitationRequest): ValidCitation {
+        val sourceUuid = parseUuidField("sourceId", request.sourceId)
+        val kind = CitationTargetKind.parse(request.targetType)
+            ?: throw ValidationException(listOf("Unknown citation target type '${request.targetType}'"))
+        val target = CitationTargetRef(kind, parseUuidField("targetId", request.targetId))
+        val confidence = Confidence.entries.firstOrNull { it.level == request.confidence }
+            ?: throw ValidationException(listOf(CITATION_CONFIDENCE_MESSAGE))
+        val mediaUuid = parseOptionalUuidField("mediaId", request.mediaId)
+        return ValidCitation(sourceUuid, target, confidence, mediaUuid)
+    }
+
+    /** The citation create inside a write transaction [scope] began (live, proposal or approved replay). */
+    internal fun createCitationIn(scope: WriteScope, treeUuid: Uuid, request: CreateCitationRequest): WriteOutcome<CitationDto> {
+        val valid = validCitation(request)
+        val target = valid.target
+        val sourceUuid = valid.source
+        val mediaUuid = valid.media
+        if (!CitationRepository.lockSource(treeUuid, sourceUuid)) {
+            throw NotFoundException("No source with id $sourceUuid")
+        }
+        if (!CitationRepository.lockTarget(treeUuid, target)) throw target.kind.notFound(target.id)
+        scope.requireFact(
+            subjectsOf(treeUuid, target),
+            missing = if (target.kind == CitationTargetKind.EVENT) ({ target.kind.notFound(target.id) }) else null,
+        )
+        if (mediaUuid != null) {
+            scope.requireTreeWide()
+            MediaAttachments.lockForAttaching(treeUuid, mediaUuid, MediaPurpose.CITATION_SCAN)
+            if (CitationRepository.findByMedia(treeUuid, mediaUuid) != null) throw mediaInUse(mediaUuid)
+        }
+        return scope.tentatively({ ProposalDraft(ProposalOperation.CREATE_CITATION, null, null, ProposalPayloads.of(request)) }) {
+            val citation = CitationRepository.insert(
+                treeId = treeUuid,
+                sourceId = sourceUuid,
+                target = target,
+                page = request.page,
+                confidence = valid.confidence,
+                note = request.note,
+                mediaId = mediaUuid,
+            )
+            val dto = citation.toDto()
+            AuditLogRepository.append(
+                treeId = treeUuid,
+                actorAccountId = Uuid.parse(scope.caller.value),
+                entityType = "Citation",
+                entityId = citation.id.value,
+                action = AuditAction.CREATE,
+                beforeJson = null,
+                afterJson = AuditJson.encodeToString(dto),
+            )
+            dto
         }
     }
 

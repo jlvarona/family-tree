@@ -1,6 +1,9 @@
 package com.moxietech.family_tree.server.sources
 
 import com.moxietech.family_tree.api.CreateCitationRequest
+import com.moxietech.family_tree.server.collaboration.ChangeProposalSettings
+import com.moxietech.family_tree.server.collaboration.respondOutcome
+import com.moxietech.family_tree.server.collaboration.writeMode
 import com.moxietech.family_tree.server.config.OIDC_AUTH_NAME
 import com.moxietech.family_tree.server.graph.requirePathParam
 import com.moxietech.family_tree.server.graph.requireTreeId
@@ -23,14 +26,16 @@ import io.ktor.server.routing.post
  * There is no tree-wide citation listing: every read goes through one target and
  * that target's visibility rule (see [CitationService]).
  */
-fun Route.citationRoutes() {
+fun Route.citationRoutes(proposals: ChangeProposalSettings = ChangeProposalSettings.DISABLED) {
+    val mode = proposals.writeMode
     authenticate(OIDC_AUTH_NAME) {
         post("/api/v1/trees/{treeId}/citations") {
             val account = call.currentAccount()
             val treeId = call.requireTreeId()
             requireTreeWriter(treeId, account.id)
             val request = call.receive<CreateCitationRequest>()
-            call.respond(HttpStatusCode.Created, CitationService.createCitation(treeId, account.id, request))
+            // FT-014: a citation on a fact outside the caller's branches answers 202 with the proposal.
+            call.respondOutcome(CitationService.createCitationOutcome(treeId, account.id, request, mode), HttpStatusCode.Created)
         }
         for (kind in CitationTargetKind.entries) {
             get("/api/v1/trees/{treeId}/${kind.collection}/{${kind.pathField}}/citations") {

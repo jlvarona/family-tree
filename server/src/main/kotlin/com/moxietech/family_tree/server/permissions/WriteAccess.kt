@@ -8,18 +8,15 @@ import com.moxietech.family_tree.domain.GrantId
 import com.moxietech.family_tree.domain.GrantRole
 import com.moxietech.family_tree.domain.Membership
 import com.moxietech.family_tree.domain.MembershipStatus
-import com.moxietech.family_tree.domain.Person
 import com.moxietech.family_tree.domain.PersonId
 import com.moxietech.family_tree.domain.Tree
 import com.moxietech.family_tree.domain.TreeId
-import com.moxietech.family_tree.permissions.EditAccess
 import com.moxietech.family_tree.permissions.EditAuthority
 import com.moxietech.family_tree.permissions.PersonVisibility
 import com.moxietech.family_tree.permissions.TreePermissions
 import com.moxietech.family_tree.server.errors.ForbiddenException
 import com.moxietech.family_tree.server.errors.NotFoundException
 import com.moxietech.family_tree.server.graph.GraphWriteLock
-import com.moxietech.family_tree.server.graph.ViewerPolicy
 import com.moxietech.family_tree.server.trees.MembershipRepository
 import com.moxietech.family_tree.server.trees.TreeRepository
 import com.moxietech.family_tree.server.trees.TreeService
@@ -83,8 +80,28 @@ internal object WriteAccess {
     fun revealsPrivateMessage(treeId: String) =
         "This change would reveal private details you can't see in tree $treeId; ask the tree owner or an admin to make it"
 
-    /** See the class comment. [ownerTakesSharedLock]: the owner path's previous [GraphWriteLock] use. */
-    fun begin(treeUuid: Uuid, caller: AccountId, ownerTakesSharedLock: Boolean): WriteScope {
+    /** FT-014: 403 for a member who reviews nothing (not the owner, no BRANCH_OWNER grant). */
+    fun notReviewerMessage(treeId: String) = "Only the tree owner or a branch owner can review change proposals in tree $treeId"
+
+    /** FT-014: 403 when a reviewer doesn't own the branch of every person a proposal affects. */
+    fun outsideReviewMessage(treeId: String) =
+        "This proposal affects people outside the branches you own in tree $treeId; it needs the tree owner or their branch owner"
+
+    /**
+     * FT-014: 403 when a branch owner's approval would let the proposer edit or see people
+     * they couldn't before; only the tree owner grants that ("Owning a higher branch must be
+     * granted by the tree owner or the owner of that branch"; FT-012, FT-013 reach rules).
+     */
+    fun reviewWidensProposerMessage(treeId: String) =
+        "Approving this proposal would widen the proposer's access in tree $treeId; only the tree owner can approve it"
+
+    /**
+     * See the class comment. [ownerTakesSharedLock]: the owner path's previous [GraphWriteLock] use.
+     * [mode] (FT-014): [WriteMode.PROPOSE] queues out-of-branch and reach-widening changes
+     * instead of refusing them (proposals enabled); [WriteMode.DIRECT] refuses as FT-012/FT-013.
+     */
+    fun begin(treeUuid: Uuid, caller: AccountId, ownerTakesSharedLock: Boolean, mode: WriteMode = WriteMode.DIRECT): WriteScope {
+        require(mode != WriteMode.REVIEW) { "Use beginReview" }
         checkReadCommitted()
         val tree = TreeRepository.findById(treeUuid) ?: throw NotFoundException("No tree with id $treeUuid")
         val isOwner = tree.ownerAccountId == caller
@@ -93,14 +110,61 @@ internal object WriteAccess {
             ownerTakesSharedLock -> GraphWriteLock.shared(treeUuid)
         }
         val membership = activeMembership(tree, caller, lock = !isOwner)
-        if (isOwner) return WriteScope(tree, treeUuid, caller, membership, emptyList(), emptyList(), EditAuthority.owner())
+        if (isOwner) return WriteScope(tree, treeUuid, caller, membership, emptyList(), emptyList(), EditAuthority.owner(), mode)
         val callerUuid = Uuid.parse(caller.value)
         val grants = lockGrants(treeUuid, callerUuid)
         val scoped = scopedGrantsFor(treeUuid, grants)
         val authority = authorityFor(treeUuid, callerUuid, membership, scoped)
         if (!authority.canContribute) throw ForbiddenException(noEditAccessMessage(tree.id.value))
-        return WriteScope(tree, treeUuid, caller, membership, grants, scoped, authority)
+        return WriteScope(tree, treeUuid, caller, membership, grants, scoped, authority, mode)
     }
+
+    /**
+     * FT-014: a review (approve or reject) by [reviewer], first in its READ COMMITTED
+     * transaction. Takes [GraphWriteLock] before anything else, shared for the owner and
+     * exclusive for anyone else (as [begin]), so the branches decided on can't change
+     * before the commit; then the reviewer's membership and grants `FOR SHARE` (non-owner).
+     * A member with no effective BRANCH_OWNER grant is a 403. Which proposal they may
+     * review is decided per proposal ([WriteScope.requireReviewable]) and, while it is
+     * applied, per person by every check of the replayed write.
+     */
+    fun beginReview(treeUuid: Uuid, reviewer: AccountId): WriteScope {
+        checkReadCommitted()
+        val tree = TreeRepository.findById(treeUuid) ?: throw NotFoundException("No tree with id $treeUuid")
+        val isOwner = tree.ownerAccountId == reviewer
+        if (isOwner) GraphWriteLock.shared(treeUuid) else GraphWriteLock.exclusive(treeUuid)
+        val membership = activeMembership(tree, reviewer, lock = !isOwner)
+        if (isOwner) return WriteScope(tree, treeUuid, reviewer, membership, emptyList(), emptyList(), EditAuthority.owner(), WriteMode.REVIEW)
+        val reviewerUuid = Uuid.parse(reviewer.value)
+        val grants = lockGrants(treeUuid, reviewerUuid)
+        val scoped = scopedGrantsFor(treeUuid, grants)
+        val scope = WriteScope(tree, treeUuid, reviewer, membership, grants, scoped, authorityFor(treeUuid, reviewerUuid, membership, scoped), WriteMode.REVIEW)
+        if (!scope.review.isReviewer) throw ForbiddenException(notReviewerMessage(tree.id.value))
+        return scope
+    }
+
+    /**
+     * FT-014: the proposer's authority and visibility for a branch owner's approval, under
+     * the review's exclusive graph lock: their membership and grants locked `FOR SHARE`
+     * like [begin]. Null when they are no longer an active member (nothing to widen).
+     */
+    internal fun proposerShadow(tree: Tree, treeUuid: Uuid, proposer: Uuid): ProposerShadow? {
+        if (tree.ownerAccountId.value == proposer.toString()) return null
+        val membership = lockMembership(treeUuid, proposer) ?: return null
+        if (!TreePermissions.canRead(tree, AccountId(proposer.toString()), membership)) return null
+        val grants = lockGrants(treeUuid, proposer)
+        val scoped = scopedGrantsFor(treeUuid, grants)
+        return ProposerShadow(proposer, membership, grants, authorityFor(treeUuid, proposer, membership, scoped), PersonVisibility.member(scoped))
+    }
+
+    /** A proposer as they were when a branch owner's review began; see [proposerShadow]. */
+    internal class ProposerShadow(
+        val account: Uuid,
+        val membership: Membership,
+        val grants: List<Grant>,
+        val authority: EditAuthority,
+        val visibility: PersonVisibility,
+    )
 
     /** Tree-wide records: the owner or a whole-tree admin, decided under the membership and grant locks. */
     fun beginTreeWide(treeUuid: Uuid, caller: AccountId): Tree {
@@ -321,126 +385,6 @@ internal object WriteAccess {
     }
 }
 
-/**
- * FT-012: one write's caller and their [EditAuthority], valid only inside the
- * transaction [WriteAccess.begin] started. Every check throws a [ForbiddenException]
- * that rolls the transaction back.
- */
-internal class WriteScope(
-    val tree: Tree,
-    private val treeUuid: Uuid,
-    val caller: AccountId,
-    private val membership: Membership,
-    private val grants: List<Grant>,
-    scopedGrants: List<EditAuthority.ScopedGrant>,
-    private val authority: EditAuthority,
-) {
-    val isOwner: Boolean get() = authority.isOwner
-    val isTreeWide: Boolean get() = authority.isTreeWide
-
-    /** FT-013: what the caller could see when the write began, from the grants it locked and their scopes then. */
-    private val visibleBefore: PersonVisibility =
-        if (authority.isOwner) PersonVisibility.owner() else PersonVisibility.member(scopedGrants)
-
-    /** Set by [requireNoGainedReach]: what the caller sees after this write's graph change. */
-    private var visibleAfter: PersonVisibility? = null
-
-    /**
-     * FT-013: what this caller may see, for refusals that must not reveal a hidden fact,
-     * for the reveal checks and for write responses shaped like reads. The owner sees
-     * everyone; anyone else through the scopes of the grants [WriteAccess.begin] locked,
-     * computed once at the start under the exclusive graph lock (no new read). After a
-     * graph change ([requireNoGainedReach]) only people visible both before and after it
-     * count, so a response never shows more than either state allows. The home branch
-     * reveals no one.
-     */
-    fun viewer(): ViewerPolicy = ViewerPolicy(visibleAfter?.let(visibleBefore::both) ?: visibleBefore)
-
-    /**
-     * FT-013: 403 when [person] is living, hidden from this caller, and the change would
-     * mark them deceased, which would expose their earlier photo, events and citations to
-     * every member. Editors who can see the person change it as usual.
-     */
-    fun requireNotRevealedByDeath(person: Person, becomesLiving: Boolean) {
-        if (person.isLiving && !becomesLiving && !visibleBefore.canSeeDetails(person)) {
-            throw ForbiddenException(WriteAccess.revealsPrivateMessage(tree.id.value))
-        }
-    }
-
-    /**
-     * FT-013: 403 when a union or an event moves away from a person hidden from this
-     * caller. Its ID, events, citations and scans stay with it and can describe the person
-     * it leaves, so they would become readable through the remaining or new people. Changes
-     * that keep the same people are shaped by the read policy as usual.
-     */
-    fun requireNoHiddenSubjectRemoved(before: List<Person>, afterIds: Collection<Uuid>) {
-        val after = afterIds.mapTo(mutableSetOf()) { it.toString() }
-        if (before.any { it.id.value !in after && !visibleBefore.canSeeDetails(it) }) {
-            throw ForbiddenException(WriteAccess.revealsPrivateMessage(tree.id.value))
-        }
-    }
-
-    fun personAccess(person: Uuid): EditAccess = authority.personAccess(person.toPersonId())
-
-    fun relationshipAccess(people: Collection<Uuid>): EditAccess = authority.relationshipAccess(people.map { it.toPersonId() })
-
-    /** Live access to [person], or 403. */
-    fun requirePerson(person: Uuid) = enforce(personAccess(person))
-
-    /** Live access to at least one of [people] (a union's partners, a child link's parents and child), or 403. */
-    fun requireRelationship(people: Collection<Uuid>) = enforce(relationshipAccess(people))
-
-    /**
-     * A fact about [subjects] (an event: its person or its union's partners; a citation
-     * target's people): live access to at least one of them, or 403. When refused and
-     * [missing] is given, a fact the caller can't see at all ([ViewerPolicy.canSeeAll],
-     * the rule every read uses to omit it) throws [missing] instead, so the refusal
-     * doesn't confirm that a private event exists (as the FT-002 citation route does).
-     */
-    fun requireFact(subjects: List<Person>, missing: (() -> Throwable)? = null) {
-        val access = relationshipAccess(subjects.map { Uuid.parse(it.id.value) })
-        if (access == EditAccess.LIVE) return
-        if (missing != null && !viewer().canSeeAll(subjects)) throw missing()
-        enforce(access)
-    }
-
-    /** Whether this caller may attach media: tree-wide members only (FT-012). */
-    fun requireTreeWide() {
-        if (!isTreeWide) throw ForbiddenException(TreeService.treeWideOnlyMessage(tree.id.value))
-    }
-
-    /**
-     * After a graph change in this transaction (and its generation advance), under the same
-     * exclusive graph lock and locked grants: 403 when the caller could now edit anyone live
-     * they couldn't before (FT-012), or see the details of a living person who was hidden
-     * from them (FT-013: a VIEWER grant with partners, say, would reveal a new partner of
-     * someone the caller can edit). Either rolls the change back. The caller's own
-     * unattached creations are exempt from the read check, so create-then-attach still
-     * works: they entered those details themselves. Nothing to check for tree-wide callers,
-     * who edit and see everyone either way. FT-014 turns these refusals into proposals.
-     */
-    fun requireNoGainedReach() {
-        if (authority.isTreeWide) return
-        val scopedAfter = WriteAccess.scopedGrantsFor(treeUuid, grants)
-        val after = WriteAccess.authorityFor(treeUuid, Uuid.parse(caller.value), membership, scopedAfter)
-        val people = WriteAccess.peopleOf(treeUuid)
-        if (authority.gainedBy(after, people.keys.toPersonIds()).isNotEmpty()) {
-            throw ForbiddenException(WriteAccess.widensReachMessage(tree.id.value))
-        }
-        val seenAfter = PersonVisibility.member(scopedAfter)
-        val living = people.filterValues { it }.keys.toPersonIds()
-        if (visibleBefore.revealedBy(seenAfter, living, exempt = authority.ownUnattachedEditable).isNotEmpty()) {
-            throw ForbiddenException(WriteAccess.revealsPrivateMessage(tree.id.value))
-        }
-        visibleAfter = seenAfter
-    }
-
-    private fun enforce(access: EditAccess) = when (access) {
-        EditAccess.LIVE -> Unit
-        EditAccess.OUTSIDE_BRANCH -> throw ForbiddenException(WriteAccess.outsideBranchMessage(tree.id.value))
-        EditAccess.NONE -> throw ForbiddenException(WriteAccess.noEditAccessMessage(tree.id.value))
-    }
-}
 
 private fun Uuid.toPersonId() = PersonId(toString())
 

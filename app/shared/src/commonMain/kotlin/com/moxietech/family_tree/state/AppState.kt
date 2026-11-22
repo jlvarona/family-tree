@@ -1,6 +1,8 @@
 package com.moxietech.family_tree.state
 
 import com.moxietech.family_tree.api.AccountDto
+import com.moxietech.family_tree.api.ChangeProposalDto
+import com.moxietech.family_tree.api.TreeCapabilitiesDto
 import com.moxietech.family_tree.api.CitationDto
 import com.moxietech.family_tree.api.EventDto
 import com.moxietech.family_tree.api.PersonDto
@@ -48,7 +50,55 @@ data class TreeScreen(
     val notice: Notice? = null,
     /** The owner's merge in progress (FT-007); dropped with the screen, the session or on success. */
     val merge: MergeState? = null,
+    /**
+     * FT-014: what the server says this account may do here (`…/capabilities`). Until it
+     * arrives, or if it fails, only the owner's controls show ([Viewer.canWrite]).
+     */
+    val capabilities: Loadable<TreeCapabilitiesDto> = Loadable.Loading,
+    /** FT-014: the change-proposal panel, while open; dropped with the screen or the session. */
+    val proposals: ProposalsState? = null,
 )
+
+/**
+ * FT-014: the change-proposal panel. [id] identifies this opening and [load] the latest
+ * read of [list], so a late answer for an earlier opening or read is dropped. [selected]
+ * holds, per pending proposal the caller may review field by field, the field names to
+ * approve (all of them at first). [busyId] is the proposal being decided; [outcome] the
+ * last decision made here; [error] the last failure, localized by the panel.
+ */
+data class ProposalsState(
+    val id: Long,
+    val list: Loadable<List<ChangeProposalDto>> = Loadable.Loading,
+    val load: Long = 0,
+    val selected: Map<String, Set<String>> = emptyMap(),
+    val busyId: String? = null,
+    val outcome: ProposalOutcome? = null,
+    val error: ProposalError? = null,
+)
+
+enum class ProposalOutcome { APPLIED, REJECTED, WITHDRAWN }
+
+enum class ProposalError {
+    /** A `409`: the proposal was decided meanwhile or its record changed; the list was reloaded. */
+    CHANGED,
+
+    /** No field selected for a per-field approval (checked before sending). */
+    NO_FIELDS,
+    FORBIDDEN,
+    NOT_FOUND,
+    INVALID,
+    UNAVAILABLE,
+    SERVER,
+}
+
+/** FT-014: what the server queued for review instead of applying it. */
+enum class QueuedChange {
+    /** The new union (so the child wasn't linked yet). */
+    UNION,
+
+    /** The child link. */
+    CHILD_LINK,
+}
 
 /**
  * The owner merging two records of one person (FT-007). [id] identifies this
@@ -224,6 +274,12 @@ sealed interface Notice {
     data class PossibleDuplicates(val createdPersonId: String, val candidates: List<DuplicateMatch>) : Notice
 
     data object ChildLinked : Notice
+
+    /**
+     * FT-014: the server queued [what] as a proposal for the tree owner or the branch
+     * owner to review (`202`); nothing in the tree changed yet.
+     */
+    data class ChangeQueued(val what: QueuedChange) : Notice
 }
 
 /** One near-match from the duplicate check; [name] is null when the UI should show the private placeholder. */

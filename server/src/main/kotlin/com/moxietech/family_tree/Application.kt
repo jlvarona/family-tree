@@ -1,5 +1,7 @@
 package com.moxietech.family_tree
 
+import com.moxietech.family_tree.server.collaboration.ChangeProposalSettings
+import com.moxietech.family_tree.server.collaboration.changeProposalRoutes
 import com.moxietech.family_tree.server.config.AppDatabase
 import com.moxietech.family_tree.server.config.DatabaseConfig
 import com.moxietech.family_tree.server.config.DatabaseSettings
@@ -68,6 +70,8 @@ fun Application.module(
     invitationSettings: InvitationSettings = InvitationSettings(),
     invitations: InvitationService = InvitationService(invitationSettings),
 ) {
+    // FT-014: proposals are the other half of sharing and follow INVITATIONS_ENABLED.
+    val proposals = ChangeProposalSettings.forSharing(invitationSettings)
     install(ContentNegotiation) {
         json(Json { ignoreUnknownKeys = true })
     }
@@ -81,15 +85,16 @@ fun Application.module(
 
     routing {
         accountRoutes()
-        treeRoutes()
-        personRoutes()
-        unionRoutes()
-        eventRoutes()
+        treeRoutes(sharingEnabled = proposals.enabled)
+        personRoutes(proposals)
+        unionRoutes(proposals)
+        eventRoutes(proposals)
         placeRoutes()
         sourceRoutes()
-        citationRoutes()
+        citationRoutes(proposals)
         graphRoutes()
         mediaRoutes(media)
         invitationRoutes(invitations, MemberService(invitationSettings))
+        changeProposalRoutes(proposals)
     }
 }

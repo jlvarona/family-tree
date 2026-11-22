@@ -1,6 +1,9 @@
 package com.moxietech.family_tree.state
 
 import com.moxietech.family_tree.api.AddUnionChildRequest
+import com.moxietech.family_tree.api.ApproveProposalRequest
+import com.moxietech.family_tree.api.ChangeProposalDto
+import com.moxietech.family_tree.proposals.ProposalOperation
 import com.moxietech.family_tree.api.CitationDto
 import com.moxietech.family_tree.api.CreatePersonRequest
 import com.moxietech.family_tree.api.CreateUnionRequest
@@ -20,6 +23,7 @@ import com.moxietech.family_tree.client.ApiFailure
 import com.moxietech.family_tree.client.FamilyTreeApi
 import com.moxietech.family_tree.client.MediaTransfer
 import com.moxietech.family_tree.client.NoMediaTransfer
+import com.moxietech.family_tree.client.WriteResult
 import com.moxietech.family_tree.api.CreateMediaUploadRequest
 import com.moxietech.family_tree.auth.PickedFile
 import com.moxietech.family_tree.media.MediaPurpose
@@ -240,17 +244,39 @@ class FamilyTreeController(
         submit { owner, version ->
             var createdUnionId: String? = null
             try {
+                // FT-014: a write outside the caller's branches may be queued for review
+                // (202) instead of applied; the form closes with a notice saying which part:
+                // a queued union (the child can't be linked to it yet) or the child link.
+                fun queued(what: QueuedChange) {
+                    updateScreen(owner, screen.instance) { it.copy(notice = Notice.ChangeQueued(what)) }
+                    if (formIsCurrent(owner, version)) onLinked()
+                }
                 val unionId = when (choice) {
                     is UnionChoice.Existing -> choice.unionId
-                    is UnionChoice.New -> api.createUnion(
-                        screen.treeId,
-                        CreateUnionRequest(partner1Id = parentId, partner2Id = otherId, type = choice.type.name),
-                    ).id.also { createdUnionId = it }
+                    is UnionChoice.New -> when (
+                        val created = api.createUnion(
+                            screen.treeId,
+                            CreateUnionRequest(partner1Id = parentId, partner2Id = otherId, type = choice.type.name),
+                        )
+                    ) {
+                        is WriteResult.Applied -> created.value.id.also { createdUnionId = it }
+                        // No union exists yet, so the child can't be linked to it; the
+                        // reviewer decides on the union first.
+                        is WriteResult.Queued -> null
+                    }
                 }
                 if (!isCurrent(owner)) return@submit
-                api.addChild(screen.treeId, unionId, AddUnionChildRequest(childId, input.relation.name))
-                updateScreen(owner, screen.instance) { it.copy(notice = Notice.ChildLinked) }
-                if (formIsCurrent(owner, version)) onLinked()
+                if (unionId == null) {
+                    queued(QueuedChange.UNION)
+                } else {
+                    when (api.addChild(screen.treeId, unionId, AddUnionChildRequest(childId, input.relation.name))) {
+                        is WriteResult.Applied -> {
+                            updateScreen(owner, screen.instance) { it.copy(notice = Notice.ChildLinked) }
+                            if (formIsCurrent(owner, version)) onLinked()
+                        }
+                        is WriteResult.Queued -> queued(QueuedChange.CHILD_LINK)
+                    }
+                }
             } catch (e: ApiException) {
                 if (formIsCurrent(owner, version)) {
                     _state.update { it.copy(form = FormState(error = formErrorFor(e.failure), createdUnionId = createdUnionId)) }
@@ -923,12 +949,156 @@ class FamilyTreeController(
 
     private fun loadTreeScreen(instance: Long) {
         val screen = currentScreen(instance) ?: return
-        updateTreeScreen(instance) { it.copy(tree = Loadable.Loading, graph = Loadable.Loading) }
+        updateTreeScreen(instance) { it.copy(tree = Loadable.Loading, graph = Loadable.Loading, capabilities = Loadable.Loading) }
         inSession { owner ->
             val tree = load { api.tree(screen.treeId) }
             updateScreen(owner, instance) { it.copy(tree = tree) }
         }
+        // FT-014: the server's capability snapshot decides which controls show; a failure
+        // leaves only the owner's controls (the server authorizes every write regardless).
+        inSession { owner ->
+            val capabilities = load { api.capabilities(screen.treeId).also { requireRoute(it.treeId, screen.treeId) } }
+            updateScreen(owner, instance) { it.copy(capabilities = capabilities) }
+        }
         refreshTree(instance)
+    }
+
+    // --- FT-014: change proposals --------------------------------------------------------
+
+    /**
+     * Opens the proposal panel when the server's capability snapshot says sharing is on
+     * and this account can propose or review. What it lists, and what each proposal shows,
+     * is decided by the server; the panel only renders it.
+     */
+    fun openProposals() {
+        val screen = _state.value.treeScreen ?: return
+        if (!canUseProposals(screen)) return
+        val panel = ProposalsState(id = nextInstance++)
+        updateTreeScreen(screen.instance) { it.copy(proposals = panel, merge = null) }
+        loadProposals(screen.instance, panel.id)
+    }
+
+    fun closeProposals() = updateTreeScreen(null) { if (it.proposals?.busyId != null) it else it.copy(proposals = null) }
+
+    fun refreshProposals() {
+        val screen = _state.value.treeScreen ?: return
+        val panel = screen.proposals ?: return
+        updateProposals(screen.instance, panel.id) { it.copy(error = null, outcome = null) }
+        loadProposals(screen.instance, panel.id)
+    }
+
+    /** Selects or clears one field of a proposal the caller may review field by field. */
+    fun toggleProposalField(proposalId: String, field: String) = updateProposals(null, null) { panel ->
+        val proposal = panel.list.valueOrNull?.firstOrNull { it.id == proposalId }
+        if (proposal == null || !isPerField(proposal) || proposal.fields.none { it.field == field } || panel.busyId != null) {
+            panel
+        } else {
+            val current = panel.selected[proposalId].orEmpty()
+            val next = if (field in current) current - field else current + field
+            panel.copy(selected = panel.selected + (proposalId to next), error = null)
+        }
+    }
+
+    /** Approves the selected fields (all of a whole-record proposal) at the version shown. */
+    fun approveProposal(proposalId: String) {
+        val panel = _state.value.treeScreen?.proposals ?: return
+        val proposal = panel.list.valueOrNull?.firstOrNull { it.id == proposalId } ?: return
+        if (!proposal.canReview) return
+        val fields = if (isPerField(proposal)) {
+            val chosen = panel.selected[proposalId].orEmpty()
+            proposal.fields.map { it.field }.filter { it in chosen }.ifEmpty {
+                updateProposals(null, panel.id) { it.copy(error = ProposalError.NO_FIELDS) }
+                return
+            }
+        } else {
+            null
+        }
+        decideProposal(proposal, ProposalOutcome.APPLIED) { api.approveProposal(it, proposal.id, ApproveProposalRequest(proposal.version, fields)) }
+    }
+
+    fun rejectProposal(proposalId: String) {
+        val proposal = _state.value.treeScreen?.proposals?.list?.valueOrNull?.firstOrNull { it.id == proposalId } ?: return
+        if (!proposal.canReview) return
+        decideProposal(proposal, ProposalOutcome.REJECTED) { api.rejectProposal(it, proposal.id, proposal.version) }
+    }
+
+    fun withdrawProposal(proposalId: String) {
+        val proposal = _state.value.treeScreen?.proposals?.list?.valueOrNull?.firstOrNull { it.id == proposalId } ?: return
+        if (!proposal.canWithdraw) return
+        decideProposal(proposal, ProposalOutcome.WITHDRAWN) { api.withdrawProposal(it, proposal.id, proposal.version) }
+    }
+
+    /**
+     * Sends one decision. Success replaces the proposal with the server's answer (and an
+     * approval reloads the tree). A `409` means the proposal or its record changed: the
+     * list and the tree reload so the reviewer sees the current state and decides again.
+     */
+    private fun decideProposal(proposal: ChangeProposalDto, outcome: ProposalOutcome, send: suspend (String) -> ChangeProposalDto) {
+        val screen = _state.value.treeScreen ?: return
+        val panel = screen.proposals ?: return
+        if (panel.busyId != null) return
+        updateProposals(screen.instance, panel.id) { it.copy(busyId = proposal.id, error = null, outcome = null) }
+        inSession { owner ->
+            try {
+                val decided = send(screen.treeId)
+                if (!isCurrent(owner)) return@inSession
+                updateProposals(screen.instance, panel.id) { current ->
+                    // A withdrawal answers with the proposer's own values only (no references);
+                    // the record names stay as last read until the list below is read again.
+                    fun merged(old: ChangeProposalDto) = if (decided.references.isEmpty()) decided.copy(references = old.references) else decided
+                    current.copy(
+                        busyId = null,
+                        outcome = outcome,
+                        list = current.list.valueOrNull?.let { list -> Loadable.Ready(list.map { if (it.id == decided.id) merged(it) else it }) } ?: current.list,
+                    )
+                }
+                // Read the list again, so every proposal shows the server's current shaping.
+                loadProposals(screen.instance, panel.id)
+                if (outcome == ProposalOutcome.APPLIED) refreshTree(screen.instance)
+            } catch (e: ApiException) {
+                if (!isCurrent(owner)) return@inSession
+                updateProposals(screen.instance, panel.id) { it.copy(busyId = null, error = proposalErrorFor(e.failure)) }
+                if (e.failure == ApiFailure.CONFLICT || e.failure == ApiFailure.NOT_FOUND) {
+                    loadProposals(screen.instance, panel.id)
+                    refreshTree(screen.instance)
+                }
+            }
+        }
+    }
+
+    private fun loadProposals(instance: Long, panelId: Long) {
+        val screen = currentScreen(instance) ?: return
+        val read = nextInstance++
+        updateProposals(instance, panelId) { it.copy(load = read, list = if (it.list is Loadable.Ready) it.list else Loadable.Loading) }
+        inSession { owner ->
+            val list = load { api.proposals(screen.treeId).filter { Route.sameId(it.treeId, screen.treeId) } }
+            updateScreen(owner, instance) { current ->
+                val panel = current.proposals
+                if (panel == null || panel.id != panelId || panel.load != read) {
+                    current
+                } else {
+                    // Keep earlier choices for proposals still shown; new reviewable ones start with every field.
+                    val selected = list.valueOrNull.orEmpty()
+                        .filter { it.canReview && isPerField(it) }
+                        .associate { p -> p.id to (panel.selected[p.id] ?: p.fields.map { it.field }.toSet()) }
+                    current.copy(proposals = panel.copy(list = list, selected = selected))
+                }
+            }
+        }
+    }
+
+    private fun updateProposals(instance: Long?, panelId: Long?, change: (ProposalsState) -> ProposalsState) = updateTreeScreen(instance) {
+        val panel = it.proposals
+        if (panel == null || (panelId != null && panel.id != panelId)) it else it.copy(proposals = change(panel))
+    }
+
+    private fun proposalErrorFor(failure: ApiFailure): ProposalError = when (failure) {
+        ApiFailure.CONFLICT -> ProposalError.CHANGED
+        ApiFailure.FORBIDDEN -> ProposalError.FORBIDDEN
+        ApiFailure.NOT_FOUND -> ProposalError.NOT_FOUND
+        ApiFailure.INVALID -> ProposalError.INVALID
+        ApiFailure.UNAVAILABLE, ApiFailure.SESSION_EXPIRED -> ProposalError.UNAVAILABLE
+        ApiFailure.SERVER -> ProposalError.SERVER
     }
 
     /**
@@ -1174,6 +1344,24 @@ class FamilyTreeController(
             }
 
         /** The profile fields that differ between two records (FT-007), by the `:core` rule the server applies. */
+        /**
+         * FT-014: every active member can read their own proposals and withdraw a pending
+         * one, including after losing their editing grant. The server filters the list.
+         */
+        fun canUseProposals(screen: TreeScreen): Boolean =
+            screen.capabilities.valueOrNull?.proposals == true
+
+        /**
+         * FT-014: whether to show the graph create and link controls: the server's snapshot
+         * (contributors, branch owners and admins included), or the owner's controls until
+         * it arrives or if it failed. Merges and photos stay owner-only ([Viewer.canWrite]).
+         */
+        fun canEditGraph(screen: TreeScreen, viewer: Viewer): Boolean = screen.capabilities.valueOrNull?.canEdit ?: viewer.canWrite
+
+        /** FT-014: whether a proposal is approved field by field (an update), not as a whole record. */
+        fun isPerField(proposal: ChangeProposalDto): Boolean =
+            ProposalOperation.entries.firstOrNull { it.name == proposal.operation }?.isPerField ?: false
+
         fun differingFields(first: PersonDto, second: PersonDto): Set<MergeField> =
             PersonMerge.differingFields(PersonMerge.profileOf(first.toDomain()), PersonMerge.profileOf(second.toDomain()))
 

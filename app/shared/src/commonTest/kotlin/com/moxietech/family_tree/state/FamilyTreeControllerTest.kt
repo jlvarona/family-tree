@@ -5,6 +5,12 @@ import com.moxietech.family_tree.FakeTransfer
 import com.moxietech.family_tree.TREE_ID
 import com.moxietech.family_tree.api.AccountDto
 import com.moxietech.family_tree.api.AddUnionChildRequest
+import com.moxietech.family_tree.api.ChangeProposalDto
+import com.moxietech.family_tree.api.ApproveProposalRequest
+import com.moxietech.family_tree.api.ProposalFieldDto
+import com.moxietech.family_tree.api.TreeCapabilitiesDto
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import com.moxietech.family_tree.api.CitationDto
 import com.moxietech.family_tree.api.SourceDto
 import com.moxietech.family_tree.client.apiType
@@ -39,6 +45,7 @@ import com.moxietech.family_tree.auth.AuthSession
 import com.moxietech.family_tree.auth.AuthState
 import com.moxietech.family_tree.auth.SignedOutReason
 import com.moxietech.family_tree.client.ApiException
+import com.moxietech.family_tree.client.WriteResult
 import com.moxietech.family_tree.client.ApiFailure
 import com.moxietech.family_tree.client.FamilyTreeApi
 import com.moxietech.family_tree.domain.ChildRelation
@@ -54,6 +61,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -193,17 +201,31 @@ class FamilyTreeControllerTest {
         }
 
         /** Saves the union into the graph, as the server would, so a reload shows it. */
-        override suspend fun createUnion(treeId: String, request: CreateUnionRequest): UnionDto {
+        /** FT-014: when set, the next union or child-link write is queued for review (202) instead. */
+        var queueUnion = false
+        var queueChild = false
+
+        private fun queued(operation: String) = WriteResult.Queued(
+            ChangeProposalDto(
+                id = "p-1", treeId = TREE_ID, operation = operation, status = "PENDING", reason = "OUTSIDE_BRANCH",
+                proposerAccountId = "me", createdAt = "2026-11-18T00:00:00Z", fields = emptyList(), canWithdraw = true, version = 1,
+            ),
+        )
+
+        /** Saves the union into the graph, as the server would, so a reload shows it. */
+        override suspend fun createUnion(treeId: String, request: CreateUnionRequest): WriteResult<UnionDto> {
             calls += "createUnion:${request.partner1Id}+${request.partner2Id}:${request.type}"
+            if (queueUnion) return queued("CREATE_UNION")
             val created = unionOf("u-new-${++unionCount}", request.partner1Id, request.partner2Id, type = request.type)
             graph = graph.copy(unions = graph.unions + created)
-            return created
+            return WriteResult.Applied(created)
         }
 
-        override suspend fun addChild(treeId: String, unionId: String, request: AddUnionChildRequest): UnionDto {
+        override suspend fun addChild(treeId: String, unionId: String, request: AddUnionChildRequest): WriteResult<UnionDto> {
             calls += "addChild:$unionId:${request.childId}:${request.relation}"
             addChildFailures.removeFirstOrNull()?.let { throw ApiException(it) }
-            return graph.unions.single { it.id == unionId }
+            if (queueChild) return queued("ADD_CHILD")
+            return WriteResult.Applied(graph.unions.single { it.id == unionId })
         }
 
         // --- FT-008 -----------------------------------------------------------------------
@@ -302,6 +324,46 @@ class FamilyTreeControllerTest {
             redeemGate?.await()
             redeemFailures.removeFirstOrNull()?.let { throw ApiException(it) }
             return RedeemInvitationResponse(MemberDto(treeId, "owner", "Owner", null, "ACTIVE", 1), emptyList())
+        }
+
+        // --- FT-014 -----------------------------------------------------------------------
+        /** The capability snapshot; the default is the owner with sharing off. */
+        var capabilities = TreeCapabilitiesDto(TREE_ID, isOwner = true, canEdit = true, canWriteTreeWide = true, canReview = false, proposals = false)
+        var proposalList = listOf<ChangeProposalDto>()
+        val decisionFailures = ArrayDeque<ApiFailure>()
+
+        override suspend fun capabilities(treeId: String): TreeCapabilitiesDto {
+            calls += "capabilities:$treeId"
+            return capabilities
+        }
+
+        override suspend fun proposals(treeId: String): List<ChangeProposalDto> {
+            calls += "proposals:$treeId"
+            return proposalList
+        }
+
+        private fun decided(id: String, status: String, fields: List<String>? = null): ChangeProposalDto {
+            decisionFailures.removeFirstOrNull()?.let { throw ApiException(it) }
+            val decided = proposalList.single { it.id == id }.let {
+                it.copy(status = status, approvedFields = fields, canReview = false, canWithdraw = false, version = it.version + 1)
+            }
+            proposalList = proposalList.map { if (it.id == id) decided else it }
+            return decided
+        }
+
+        override suspend fun approveProposal(treeId: String, proposalId: String, request: ApproveProposalRequest): ChangeProposalDto {
+            calls += "approve:$proposalId:v${request.version}:${request.fields}"
+            return decided(proposalId, "APPLIED", request.fields ?: listOf("RECORD"))
+        }
+
+        override suspend fun rejectProposal(treeId: String, proposalId: String, version: Long): ChangeProposalDto {
+            calls += "reject:$proposalId:v$version"
+            return decided(proposalId, "REJECTED")
+        }
+
+        override suspend fun withdrawProposal(treeId: String, proposalId: String, version: Long): ChangeProposalDto {
+            calls += "withdraw:$proposalId:v$version"
+            return decided(proposalId, "WITHDRAWN")
         }
     }
 
@@ -502,6 +564,174 @@ class FamilyTreeControllerTest {
         assertEquals(1, api.calls.count { it.startsWith("createUnion") })
         assertEquals(listOf("addChild:u-new-1:kid:BIRTH", "addChild:u-new-1:kid:BIRTH"), api.calls.filter { it.startsWith("addChild") })
         assertEquals(FormState(), controller.state.value.form)
+    }
+
+    @Test
+    fun aChildLinkQueuedForReviewClosesTheFormWithTheQueuedNotice() = runTest {
+        api.queueChild = true
+        val controller = openTree()
+        var closed = false
+
+        controller.linkChild(LinkChildInput("dad", "mum", UnionChoice.Existing("u1"), "kid", ChildRelation.ADOPTED)) { closed = true }
+        runCurrent()
+
+        assertTrue(closed)
+        assertEquals(Notice.ChangeQueued(QueuedChange.CHILD_LINK), controller.state.value.treeScreen?.notice)
+        assertEquals(FormState(), controller.state.value.form)
+        assertEquals(2, api.calls.count { it == "graph:$TREE_ID" }, "the tree is reloaded and shows it unchanged")
+    }
+
+    @Test
+    fun aUnionQueuedForReviewIsNotFollowedByAChildLink() = runTest {
+        api.queueUnion = true
+        val controller = openTree()
+        var closed = false
+
+        controller.linkChild(LinkChildInput("mum", "dad", UnionChoice.New(UnionType.PARTNERS), "kid", ChildRelation.BIRTH)) { closed = true }
+        runCurrent()
+
+        assertTrue(closed)
+        assertTrue("createUnion:mum+dad:PARTNERS" in api.calls)
+        assertTrue(api.calls.none { it.startsWith("addChild") }, "there is no union to link the child to yet")
+        assertEquals(Notice.ChangeQueued(QueuedChange.UNION), controller.state.value.treeScreen?.notice)
+        assertEquals(null, controller.state.value.form.createdUnionId)
+    }
+
+    // --- FT-014: capability snapshot and the proposal panel --------------------------
+
+    private fun proposal(
+        id: String,
+        operation: String = "UPDATE_PERSON",
+        fields: List<String> = listOf("GIVEN_NAMES", "BIO"),
+        canReview: Boolean = true,
+        canWithdraw: Boolean = false,
+        version: Long = 1,
+    ) = ChangeProposalDto(
+        id = id, treeId = TREE_ID, operation = operation, targetId = "kid", status = "PENDING", reason = "OUTSIDE_BRANCH",
+        proposerAccountId = "someone", createdAt = "2026-11-22T00:00:00Z",
+        fields = fields.map { ProposalFieldDto(it, JsonObject(mapOf("x" to JsonPrimitive("y")))) },
+        canReview = canReview, canWithdraw = canWithdraw, version = version,
+    )
+
+    private fun reviewer() = TreeCapabilitiesDto(TREE_ID, isOwner = false, canEdit = true, canWriteTreeWide = false, canReview = true, proposals = true)
+
+    @Test
+    fun theCapabilitySnapshotLoadsWithTheTreeAndGatesThePanel() = runTest {
+        api.tree = api.tree.copy(ownerAccountId = "someone-else")
+        api.capabilities = TreeCapabilitiesDto(TREE_ID, isOwner = false, canEdit = true, canWriteTreeWide = false, canReview = false, proposals = true)
+        val controller = openTree()
+        val screen = controller.state.value.treeScreen!!
+        assertEquals(api.capabilities, screen.capabilities.valueOrNull)
+        // A contributor gets the graph controls from the server's snapshot, not from ownership.
+        val viewer = Viewer(screen.tree.valueOrNull!!, api.account)
+        assertFalse(viewer.canWrite, "merges and photos stay the owner's")
+        assertTrue(FamilyTreeController.canEditGraph(screen, viewer))
+        assertTrue(FamilyTreeController.canUseProposals(screen))
+
+        // With sharing off (or a viewer), there is no panel and no request.
+        api.capabilities = api.capabilities.copy(proposals = false)
+        val other = openTree()
+        other.openProposals()
+        runCurrent()
+        assertNull(other.state.value.treeScreen?.proposals)
+        assertTrue(api.calls.none { it.startsWith("proposals:") })
+    }
+
+    @Test
+    fun aFailedSnapshotLeavesOnlyTheOwnersControls() = runTest {
+        api.tree = api.tree.copy(ownerAccountId = "someone-else")
+        val failing = object : FamilyTreeApi by api {
+            override suspend fun capabilities(treeId: String): TreeCapabilitiesDto = throw ApiException(ApiFailure.UNAVAILABLE)
+        }
+        bridge.url = "http://localhost:3000/#/trees/$TREE_ID"
+        val controller = FamilyTreeController(session, failing, bridge, backgroundScope, transfer, FamilyTreeController.DEFAULT_PHOTO_CACHE_BYTES)
+            .also { it.start(); runCurrent() }
+        signIn()
+        val screen = controller.state.value.treeScreen!!
+        val viewer = Viewer(screen.tree.valueOrNull!!, api.account)
+        assertFalse(FamilyTreeController.canEditGraph(screen, viewer))
+        assertFalse(FamilyTreeController.canUseProposals(screen))
+    }
+
+    @Test
+    fun aReviewerApprovesOnlyTheSelectedFieldsAtTheVersionShown() = runTest {
+        api.capabilities = reviewer()
+        api.proposalList = listOf(proposal("p1", version = 3))
+        val controller = openTree()
+        controller.openProposals()
+        runCurrent()
+        val panel = controller.state.value.treeScreen!!.proposals!!
+        assertEquals(setOf("GIVEN_NAMES", "BIO"), panel.selected["p1"], "every field starts selected")
+
+        controller.toggleProposalField("p1", "BIO")
+        controller.approveProposal("p1")
+        runCurrent()
+
+        assertTrue("approve:p1:v3:[GIVEN_NAMES]" in api.calls)
+        val after = controller.state.value.treeScreen!!.proposals!!
+        assertEquals(ProposalOutcome.APPLIED, after.outcome)
+        assertEquals("APPLIED", after.list.valueOrNull!!.single().status)
+        assertEquals(2, api.calls.count { it == "graph:$TREE_ID" }, "the tree reloads after an approval")
+    }
+
+    @Test
+    fun noSelectedFieldIsALocalErrorAndSendsNothing() = runTest {
+        api.capabilities = reviewer()
+        api.proposalList = listOf(proposal("p1", fields = listOf("GIVEN_NAMES")))
+        val controller = openTree()
+        controller.openProposals()
+        runCurrent()
+        controller.toggleProposalField("p1", "GIVEN_NAMES")
+        controller.approveProposal("p1")
+        runCurrent()
+        assertEquals(ProposalError.NO_FIELDS, controller.state.value.treeScreen!!.proposals!!.error)
+        assertTrue(api.calls.none { it.startsWith("approve:") })
+    }
+
+    @Test
+    fun aConflictShowsTheChangedMessageAndReloadsTheListAndTree() = runTest {
+        api.capabilities = reviewer()
+        api.proposalList = listOf(proposal("p1", operation = "ADD_CHILD", fields = listOf("RECORD")))
+        val controller = openTree()
+        controller.openProposals()
+        runCurrent()
+        api.decisionFailures += ApiFailure.CONFLICT
+
+        controller.approveProposal("p1")
+        runCurrent()
+
+        assertTrue("approve:p1:v1:null" in api.calls, "a whole-record proposal is approved without a field list")
+        val panel = controller.state.value.treeScreen!!.proposals!!
+        assertEquals(ProposalError.CHANGED, panel.error)
+        assertNull(panel.busyId)
+        assertEquals(2, api.calls.count { it == "proposals:$TREE_ID" }, "the list is read again")
+        assertEquals(2, api.calls.count { it == "graph:$TREE_ID" }, "and the tree")
+        assertEquals("PENDING", panel.list.valueOrNull!!.single().status)
+    }
+
+    @Test
+    fun actionsFollowTheServersFlags() = runTest {
+        api.capabilities = reviewer().copy(canReview = false, canEdit = false)
+        api.proposalList = listOf(proposal("mine", canReview = false, canWithdraw = true), proposal("theirs", canReview = false))
+        val controller = openTree()
+        controller.openProposals()
+        runCurrent()
+
+        controller.approveProposal("theirs")
+        controller.rejectProposal("mine")
+        runCurrent()
+        assertTrue(api.calls.none { it.startsWith("approve:") || it.startsWith("reject:") }, "no review without canReview")
+
+        controller.withdrawProposal("mine")
+        runCurrent()
+        assertTrue("withdraw:mine:v1" in api.calls)
+        assertEquals(ProposalOutcome.WITHDRAWN, controller.state.value.treeScreen!!.proposals!!.outcome)
+        controller.withdrawProposal("theirs")
+        runCurrent()
+        assertTrue(api.calls.none { it == "withdraw:theirs:v1" })
+
+        controller.closeProposals()
+        assertNull(controller.state.value.treeScreen!!.proposals)
     }
 
     @Test
